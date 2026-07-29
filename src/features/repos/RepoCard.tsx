@@ -2,7 +2,7 @@ import { memo } from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { MonoChip, StatePill, StatusDot } from '@/components/wa/primitives'
+import { KindTag, MonoChip, StatePill, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
 import { derive, displayName, taskOf, TONE_TEXT, type Tone } from '@/domain/severity'
 import { repoId, type RepoRef } from '@/domain/types'
@@ -73,7 +73,8 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
                 {repo.name} — open details
               </TooltipContent>
             </Tooltip>
-            <MonoChip>{repo.category}/</MonoChip>
+            <KindTag kind={status.shape.kind} stack={status.shape.stack} />
+            <MonoChip>{repo.category}</MonoChip>
             {prefix && (
               <span className="truncate font-mono text-[10px] text-adaptive-400">{prefix}</span>
             )}
@@ -216,7 +217,7 @@ export function RepoCardSkeleton({ repo }: { repo: RepoRef }) {
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex items-center gap-[7px]">
             <span className="truncate text-sm font-semibold text-adaptive-500">{short}</span>
-            <MonoChip>{repo.category}/</MonoChip>
+            <MonoChip>{repo.category}</MonoChip>
           </div>
           <Skeleton className="h-3 w-40" />
         </div>

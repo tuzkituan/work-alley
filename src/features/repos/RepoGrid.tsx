@@ -7,7 +7,7 @@ import { RecentCommitsPanel } from '@/features/commits/RecentCommitsPanel'
 import { LocalServicesPanel } from '@/features/services/LocalServicesPanel'
 import { Button } from '@/components/ui/button'
 import { derive, displayName } from '@/domain/severity'
-import { CATEGORIES, repoId, type Bootstrap } from '@/domain/types'
+import { repoId, type Bootstrap } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRescanCategory } from '@/hooks/use-category-scan'
@@ -267,28 +267,29 @@ function NoFolderOpen({ boot }: { boot: Bootstrap | undefined }) {
       </div>
 
       <div className="grid w-full max-w-lg grid-cols-2 gap-2">
-        {CATEGORIES.map((c) => {
-          const info = boot?.categories.find((x) => x.category === c)
-          const count = info?.repoCount ?? 0
-          return (
-            <button
-              key={c}
-              type="button"
-              onClick={() => setCategory(c)}
-              className="flex items-center gap-2.5 rounded-md border border-adaptive-200 bg-background px-3 py-2.5 text-left transition-shadow hover:border-adaptive-950 hover:shadow-focus-ring"
-            >
-              <span className="font-mono text-xs font-semibold text-primary-600">{c}/</span>
-              <span className="wa-num flex-1 text-xs text-adaptive-600">
-                {count === 0 && (info?.declaredCount ?? 0) > 0
-                  ? `0 of ${info?.declaredCount} cloned`
-                  : `${count} repo${count === 1 ? '' : 's'}`}
-              </span>
-              {scanned.has(c) && (
-                <span className="font-mono text-[10px] text-adaptive-400">scanned</span>
-              )}
-            </button>
-          )
-        })}
+        {(boot?.categories ?? []).map((info) => (
+          <button
+            key={info.category}
+            type="button"
+            onClick={() => setCategory(info.category)}
+            className="flex items-center gap-2.5 rounded-md border border-adaptive-200 bg-background px-3 py-2.5 text-left transition-shadow hover:border-adaptive-950 hover:shadow-focus-ring"
+          >
+            <span className="font-mono text-xs font-semibold text-primary-600">{info.label}</span>
+            <span className="wa-num flex-1 text-xs text-adaptive-600">
+              {info.repoCount === 0 && info.declaredCount > 0
+                ? `0 of ${info.declaredCount} cloned`
+                : `${info.repoCount} repo${info.repoCount === 1 ? '' : 's'}`}
+            </span>
+            {scanned.has(info.category) && (
+              <span className="font-mono text-[10px] text-adaptive-400">scanned</span>
+            )}
+          </button>
+        ))}
+        {(boot?.categories ?? []).length === 0 && (
+          <div className="col-span-2 text-center text-xs text-adaptive-500">
+            No git repos found in this folder.
+          </div>
+        )}
       </div>
     </div>
   )

@@ -4,7 +4,7 @@ import { openUrl } from '@tauri-apps/plugin-opener'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
-import { MonoChip, SectionLabel, StatePill, StatusDot } from '@/components/wa/primitives'
+import { KindTag, MonoChip, SectionLabel, StatePill, StatusDot } from '@/components/wa/primitives'
 import { RepoMenu } from '@/features/repos/RepoMenu'
 import { api } from '@/ipc/commands'
 import { keys } from '@/queries/keys'
@@ -45,7 +45,8 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
             </Button>
             {d ? <StatusDot tone={d.tone} size={9} /> : <StatusDot tone="idle" size={9} />}
             <h1 className="truncate text-base font-semibold tracking-[-0.01em]">{short}</h1>
-            <MonoChip>{category}/</MonoChip>
+            {status && <KindTag kind={status.shape.kind} stack={status.shape.stack} />}
+            <MonoChip>{category}</MonoChip>
             {prefix && <span className="font-mono text-[11px] text-adaptive-400">{prefix}</span>}
             {d && <StatePill tone={d.tone} label={d.stateLabel} />}
             <div className="flex-1" />
@@ -61,10 +62,23 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
             <RepoMenu repo={repo} status={status} />
           </div>
 
-          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 pl-1 font-mono text-[11.5px] text-adaptive-500">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pl-1 font-mono text-[11.5px] text-adaptive-500">
             <span title={status?.path ?? undefined} className="truncate">
               {status?.path ?? id}
             </span>
+            {status?.shape.stack.map((t) => (
+              <span key={t} className="rounded-sm border border-adaptive-200 px-1 text-[10px]">
+                {t}
+              </span>
+            ))}
+            {status?.shape.isMonorepo && (
+              <span className="rounded-sm border border-adaptive-200 px-1 text-[10px]">
+                monorepo
+              </span>
+            )}
+            {status?.shape.hasDockerfile && (
+              <span className="rounded-sm border border-adaptive-200 px-1 text-[10px]">docker</span>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-2.5 border-t border-adaptive-200 pt-2.5 sm:grid-cols-4">

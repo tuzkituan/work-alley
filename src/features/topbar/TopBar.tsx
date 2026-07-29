@@ -40,9 +40,12 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
           <span className="text-sm font-semibold tracking-[-0.01em]">work-alley</span>
         </div>
 
-        <div className="flex min-w-0 items-center gap-1.5 font-mono text-xs text-adaptive-500">
-          <WorkspaceSwitcher boot={boot} />
-          <Sep />
+        <WorkspaceSwitcher boot={boot} />
+
+        <div
+          data-tauri-drag-region
+          className="flex min-w-0 items-center gap-1.5 font-mono text-xs text-adaptive-500"
+        >
           <span className="wa-num">{repoCount} repos</span>
           <Sep />
           <span className="wa-num">{scriptCount} scripts</span>

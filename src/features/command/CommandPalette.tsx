@@ -13,6 +13,7 @@ import { useUiStore } from '@/stores/ui-store'
 import { useScanStore } from '@/stores/scan-store'
 import { useRunAction } from '@/hooks/use-action'
 import { useTheme } from '@/hooks/use-theme'
+import { shortenHome, useWorkspaceActions } from '@/features/workspace/WorkspacePicker'
 
 /**
  * A real palette, not the decorative pill the design shows.
@@ -30,6 +31,7 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
   const statuses = useScanStore((s) => s.repos)
   const run = useRunAction()
   const { toggleTheme } = useTheme()
+  const workspace = useWorkspaceActions()
   const [query, setQuery] = useState('')
 
   useEffect(() => {
@@ -131,6 +133,33 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
               ))}
             </CommandGroup>
           )}
+
+          <CommandGroup heading="Workspace">
+            <CommandItem
+              value="workspace:open"
+              onSelect={() => {
+                setOpen(false)
+                workspace.pick.mutate()
+              }}
+            >
+              Open a different folder…
+              <span className="ml-auto font-mono text-[10px] text-adaptive-400">⌘O</span>
+            </CommandItem>
+            {(boot?.recentRoots ?? [])
+              .filter((r) => r !== boot?.workspaceRoot)
+              .map((r) => (
+                <CommandItem
+                  key={r}
+                  value={`workspace:${r}`}
+                  onSelect={() => {
+                    setOpen(false)
+                    workspace.set.mutate(r)
+                  }}
+                >
+                  <span className="truncate font-mono text-xs">{shortenHome(r)}</span>
+                </CommandItem>
+              ))}
+          </CommandGroup>
 
           <CommandGroup heading="Actions">
             <CommandItem

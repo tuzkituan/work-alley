@@ -3,37 +3,16 @@
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Category {
-    Be,
-    Fe,
-    Sa,
-    Ui,
-}
+/// A group of repos: the name of an immediate subdirectory of the workspace.
+///
+/// Discovered, not enumerated — the workspace folder is user-chosen, so `be/ fe/
+/// sa/ ui/` is one workspace's shape, not a universal one. The empty string means
+/// "repos sitting directly in the workspace root", which is the common shape for
+/// a plain `~/projects` folder.
+pub type Category = String;
 
-impl Category {
-    pub const ALL: [Category; 4] = [Category::Fe, Category::Sa, Category::Ui, Category::Be];
-
-    pub fn dir(&self) -> &'static str {
-        match self {
-            Category::Be => "be",
-            Category::Fe => "fe",
-            Category::Sa => "sa",
-            Category::Ui => "ui",
-        }
-    }
-
-    pub fn from_dir(s: &str) -> Option<Category> {
-        match s {
-            "be" => Some(Category::Be),
-            "fe" => Some(Category::Fe),
-            "sa" => Some(Category::Sa),
-            "ui" => Some(Category::Ui),
-            _ => None,
-        }
-    }
-}
+/// Repos directly in the root have no subdirectory name.
+pub const ROOT_GROUP: &str = "";
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -43,9 +22,27 @@ pub struct RepoRef {
 }
 
 impl RepoRef {
-    /// `"fe/blazeup-hostapp"` — the stable map key.
+    /// `"fe/blazeup-hostapp"`, or just `"my-repo"` for an ungrouped repo.
     pub fn key(&self) -> String {
-        format!("{}/{}", self.category.dir(), self.name)
+        if self.category.is_empty() {
+            self.name.clone()
+        } else {
+            format!("{}/{}", self.category, self.name)
+        }
+    }
+
+    /// Inverse of `key`.
+    pub fn parse_key(key: &str) -> RepoRef {
+        match key.split_once('/') {
+            Some((group, name)) => RepoRef {
+                category: group.to_string(),
+                name: name.to_string(),
+            },
+            None => RepoRef {
+                category: ROOT_GROUP.to_string(),
+                name: key.to_string(),
+            },
+        }
     }
 }
 
@@ -106,6 +103,8 @@ pub struct RepoStatus {
     /// vite.config. Present whether or not a server is running, so the UI can
     /// offer to free a port held by a stale process.
     pub dev_port: Option<u16>,
+    /// What this repo appears to be — frontend, backend, library, mobile.
+    pub shape: RepoShape,
     /// Tasks this repo declares in package.json — "dev", "storybook".
     pub available_tasks: Vec<String>,
     /// Tasks currently running for this repo. Not a single `dev_server`, because a
@@ -132,6 +131,7 @@ impl RepoStatus {
             last_commit: None,
             ui_dep: UiDep::default(),
             dev_port: None,
+            shape: RepoShape::default(),
             available_tasks: Vec::new(),
             tasks: Vec::new(),
             error: Some(msg.into()),
@@ -385,6 +385,55 @@ pub struct ChangedFile {
     pub conflicted: bool,
 }
 
+// --- repo shape -------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RepoKind {
+    Frontend,
+    Backend,
+    Library,
+    Mobile,
+    Docs,
+    Unknown,
+}
+
+impl RepoKind {
+    /// Group name used when a workspace has no subfolders to group by.
+    pub fn group_name(&self) -> &'static str {
+        match self {
+            RepoKind::Frontend => "frontend",
+            RepoKind::Backend => "backend",
+            RepoKind::Library => "libraries",
+            RepoKind::Mobile => "mobile",
+            RepoKind::Docs => "docs",
+            RepoKind::Unknown => "other",
+        }
+    }
+}
+
+/// What a repo appears to be, from its files. Detected, never configured.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoShape {
+    pub kind: RepoKind,
+    /// Frameworks and languages found, e.g. ["vite", "react", "storybook"].
+    pub stack: Vec<String>,
+    pub has_dockerfile: bool,
+    pub is_monorepo: bool,
+}
+
+impl Default for RepoShape {
+    fn default() -> Self {
+        RepoShape {
+            kind: RepoKind::Unknown,
+            stack: Vec::new(),
+            has_dockerfile: false,
+            is_monorepo: false,
+        }
+    }
+}
+
 // --- packages ---------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -482,8 +531,13 @@ pub struct ScriptDescriptor {
 #[serde(rename_all = "camelCase")]
 pub struct CategoryInfo {
     pub category: Category,
+    /// Display name — the directory name, or the workspace's own name for the
+    /// root group (whose category is the empty string).
+    pub label: String,
     pub present: bool,
+    /// Repos on disk with a .git.
     pub repo_count: u32,
+    /// Repos declared in repos.json, when the workspace has one.
     pub declared_count: u32,
 }
 

@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import { Check, ChevronDown, FolderOpen, FolderSearch } from 'lucide-react'
@@ -24,6 +25,10 @@ export function shortenHome(p: string) {
   return slash === -1 ? '~' : `~${rest.slice(slash)}`
 }
 
+export function useWorkspaceActions() {
+  return useSwitchWorkspace()
+}
+
 function useSwitchWorkspace() {
   const qc = useQueryClient()
 
@@ -47,11 +52,32 @@ function useSwitchWorkspace() {
   return { pick, set, busy: pick.isPending || set.isPending }
 }
 
-/** Topbar control: shows the open workspace and switches between them. */
+/**
+ * Topbar control: shows the open workspace and switches between them.
+ *
+ * Styled as a real button with a folder icon. It used to be plain grey text with a
+ * chevron, which did not read as something you could click — the most important
+ * control in the header was effectively invisible.
+ */
 export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
   const { pick, set, busy } = useSwitchWorkspace()
   const current = boot?.workspaceRoot ?? ''
   const recents = (boot?.recentRoots ?? []).filter((r) => r !== current)
+  // The folder name alone is enough here; the full path is on hover and in the menu.
+  const name = current.split('/').filter(Boolean).pop() ?? 'no workspace'
+
+  // ⌘O / Ctrl+O is the conventional "open" shortcut, and makes this reachable
+  // without hunting for the control at all.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'o' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault()
+        pick.mutate()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [pick])
 
   return (
     <DropdownMenu>
@@ -59,11 +85,12 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
         <button
           type="button"
           disabled={busy}
-          title="Switch workspace folder"
-          className="flex min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 font-mono text-xs text-adaptive-500 hover:bg-adaptive-200 hover:text-adaptive-800"
+          title={`Workspace: ${current || 'none'} — click to switch (⌘O to open a folder)`}
+          className="flex min-w-0 items-center gap-1.5 rounded-md border border-adaptive-200 bg-background px-2 py-1 text-xs font-medium text-adaptive-800 transition-shadow hover:border-adaptive-950 hover:shadow-focus-ring"
         >
-          <span className="truncate">{current ? shortenHome(current) : 'no workspace'}</span>
-          <ChevronDown className="size-3 flex-none" />
+          <FolderOpen className="size-3.5 flex-none text-primary-600" />
+          <span className="max-w-[180px] truncate">{name}</span>
+          <ChevronDown className="size-3 flex-none text-adaptive-400" />
         </button>
       </DropdownMenuTrigger>
 
@@ -71,6 +98,7 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
         <DropdownMenuItem onClick={() => pick.mutate()}>
           <FolderSearch className="size-3.5" />
           Open folder…
+          <span className="ml-auto font-mono text-[10px] text-adaptive-400">⌘O</span>
         </DropdownMenuItem>
 
         {recents.length > 0 && (
@@ -120,13 +148,13 @@ export function WorkspaceWelcome({ boot }: { boot: Bootstrap | undefined }) {
 
         <div className="text-center">
           <h1 className="text-lg font-semibold tracking-[-0.01em]">Choose a workspace</h1>
+          {/* Describes what discovery actually does. An earlier version still
+              named be/ fe/ sa/ ui/ long after that stopped being the rule. */}
           <p className="mt-1 text-sm text-adaptive-600">
-            Point Work Alley at the folder holding your repos. It looks for{' '}
-            <code className="font-mono text-xs">be/</code>{' '}
-            <code className="font-mono text-xs">fe/</code>{' '}
-            <code className="font-mono text-xs">sa/</code>{' '}
-            <code className="font-mono text-xs">ui/</code> subfolders, or a{' '}
-            <code className="font-mono text-xs">repos.json</code>.
+            Point Work Alley at any folder with git repos in it. Repos in subfolders
+            keep those subfolders as groups; repos sitting directly in the folder are
+            grouped by what they are — frontend, backend, library. A single project
+            folder works too.
           </p>
         </div>
 

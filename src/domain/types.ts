@@ -7,8 +7,14 @@
  * be made on both.
  */
 
-export type Category = 'be' | 'fe' | 'sa' | 'ui'
-export const CATEGORIES: Category[] = ['fe', 'sa', 'ui', 'be']
+/**
+ * A group of repos, discovered rather than enumerated.
+ *
+ * A repo inside a subfolder takes that subfolder's name; a repo directly in the
+ * workspace takes its detected kind ("frontend", "backend", …). Always read the
+ * list from `Bootstrap.categories` — never hardcode it.
+ */
+export type Category = string
 
 export interface RepoRef {
   category: Category
@@ -43,6 +49,17 @@ export interface LastCommit {
   relative: string
 }
 
+export type RepoKind = 'frontend' | 'backend' | 'library' | 'mobile' | 'docs' | 'unknown'
+
+/** What a repo appears to be, from its files. Detected, never configured. */
+export interface RepoShape {
+  kind: RepoKind
+  /** Frameworks and languages found, e.g. ["vite", "react", "storybook"]. */
+  stack: string[]
+  hasDockerfile: boolean
+  isMonorepo: boolean
+}
+
 export interface RepoStatus {
   ref: RepoRef
   path: string
@@ -58,6 +75,8 @@ export interface RepoStatus {
   uiDep: UiDep
   /** Resolved from .env / vite.config, present whether or not a server runs. */
   devPort: number | null
+  /** What this repo appears to be. */
+  shape: RepoShape
   /** Tasks this repo declares — "dev", "storybook". */
   availableTasks: string[]
   /** Tasks currently running. A UI library often has dev and storybook both up. */
@@ -213,10 +232,12 @@ export interface ScriptDescriptor {
 
 export interface CategoryInfo {
   category: Category
+  /** Display name — the folder name, or the workspace name for the root group. */
+  label: string
   present: boolean
   /** Repos on disk with a .git. */
   repoCount: number
-  /** Repos declared in repos.json. */
+  /** Repos declared in repos.json, when the workspace has one. */
   declaredCount: number
 }
 

@@ -1,6 +1,7 @@
 mod ansi;
 mod commands;
 mod config;
+mod detect;
 mod docker;
 mod error;
 mod events;
@@ -58,7 +59,12 @@ pub fn scan_once_cli() {
             }
         };
 
-        let found = paths::discover_repos(&root, &model::Category::ALL);
+        let groups: Vec<String> = paths::discover_groups(&root)
+            .into_iter()
+            .map(|(g, _)| g)
+            .collect();
+        println!("groups: {}", groups.iter().map(|g| if g.is_empty() { "<root>".to_string() } else { g.clone() }).collect::<Vec<_>>().join(" "));
+        let found = paths::discover_repos(&root, &groups);
         println!("\n{} repos on disk", found.len());
 
         let began = std::time::Instant::now();

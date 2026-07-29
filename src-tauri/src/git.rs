@@ -272,6 +272,7 @@ pub async fn scan_one(
     status.ui_dep = crate::pkg::read_ui_dep(&path, &ui_package).await;
     status.dev_port = crate::pkg::detect_port(&path).map(|(p, _)| p);
     status.available_tasks = crate::pkg::available_tasks(&path);
+    status.shape = crate::detect::detect(&path);
     status.scan_ms = started.elapsed().as_millis() as u64;
     status
 }
@@ -474,9 +475,14 @@ pub async fn changed_files(
     Ok(parse_changed_files(&text))
 }
 
-pub fn categories_or_all(opt: Option<Vec<Category>>) -> Vec<Category> {
-    opt.filter(|v| !v.is_empty())
-        .unwrap_or_else(|| Category::ALL.to_vec())
+/// The requested groups, or every discovered one.
+pub fn categories_or_all(opt: Option<Vec<Category>>, root: &Path) -> Vec<Category> {
+    opt.filter(|v| !v.is_empty()).unwrap_or_else(|| {
+        crate::paths::discover_groups(root)
+            .into_iter()
+            .map(|(g, _)| g)
+            .collect()
+    })
 }
 
 #[cfg(test)]

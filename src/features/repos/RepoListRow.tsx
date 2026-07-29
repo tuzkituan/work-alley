@@ -1,7 +1,7 @@
 import { memo } from 'react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
-import { StatusDot } from '@/components/wa/primitives'
+import { KindTag, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
 import { derive, displayName, taskOf, TONE_TEXT } from '@/domain/severity'
 import { repoId, type RepoRef } from '@/domain/types'
@@ -92,6 +92,7 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
         >
           {short}
         </button>
+        {status && <KindTag kind={status.shape.kind} stack={status.shape.stack} />}
         {prefix && (
           <span className="hidden truncate font-mono text-[10px] text-adaptive-400 xl:inline">
             {prefix}

@@ -46,21 +46,30 @@ impl Config {
     /// app no longer lives inside the workspace, so walking up from the binary
     /// would find nothing.
     pub fn load(dir: &Path, fallback_root: Option<PathBuf>) -> Self {
+        // An explicit env var is an instruction, so it outranks the saved choice.
+        // Without this, WORK_ALLEY_ROOT silently did nothing once a workspace had
+        // been saved — while the UI still advertised it as an override.
+        let forced = std::env::var_os("WORK_ALLEY_ROOT")
+            .map(PathBuf::from)
+            .filter(|p| is_workspace(p));
+
         let path = dir.join("config.json");
         match std::fs::read_to_string(&path) {
             Ok(s) => match serde_json::from_str::<Config>(&s) {
                 Ok(mut c) => {
-                    if !is_workspace(&c.workspace_root) {
+                    if let Some(f) = forced {
+                        c.workspace_root = f;
+                    } else if !is_workspace(&c.workspace_root) {
                         c.workspace_root = fallback_root.unwrap_or_default();
                     }
                     c
                 }
                 Err(e) => {
                     log::warn!("config.json unreadable ({e}); using defaults");
-                    Config::defaults(fallback_root.unwrap_or_default())
+                    Config::defaults(forced.clone().or(fallback_root).unwrap_or_default())
                 }
             },
-            Err(_) => Config::defaults(fallback_root.unwrap_or_default()),
+            Err(_) => Config::defaults(forced.or(fallback_root).unwrap_or_default()),
         }
     }
 

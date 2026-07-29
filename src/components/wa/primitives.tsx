@@ -168,3 +168,53 @@ export function PanelShell({
 export function Sep() {
   return <span className="text-adaptive-300">·</span>
 }
+
+
+const KIND_STYLE: Record<string, string> = {
+  frontend: 'border-blue-500/[0.38] bg-blue-500/[0.12] text-sev-info',
+  backend: 'border-green-500/[0.38] bg-green-500/[0.12] text-sev-ok',
+  library: 'border-assist-500/40 bg-assist-500/[0.12] text-assist-500',
+  mobile: 'border-amber-500/[0.38] bg-amber-500/[0.12] text-sev-warn',
+  docs: 'border-adaptive-300 bg-adaptive-200/60 text-adaptive-500',
+  unknown: 'border-adaptive-300 bg-adaptive-200/40 text-adaptive-400',
+}
+
+const KIND_LABEL: Record<string, string> = {
+  frontend: 'FE',
+  backend: 'BE',
+  library: 'LIB',
+  mobile: 'APP',
+  docs: 'DOC',
+  unknown: '?',
+}
+
+/**
+ * The detected repo kind, as a compact tag.
+ *
+ * Short by design: it appears on every row, so it has to cost almost no width.
+ * The full kind and stack are in the title attribute.
+ */
+export function KindTag({
+  kind,
+  stack,
+  className,
+}: {
+  kind: string
+  stack?: string[]
+  className?: string
+}) {
+  if (kind === 'unknown' && !stack?.length) return null
+  const detail = stack?.length ? `${kind} · ${stack.join(', ')}` : kind
+  return (
+    <span
+      title={`Detected: ${detail}`}
+      className={cn(
+        'flex-none rounded-sm border px-1 font-mono text-[9.5px] leading-[14px] font-semibold',
+        KIND_STYLE[kind] ?? KIND_STYLE.unknown,
+        className
+      )}
+    >
+      {KIND_LABEL[kind] ?? '?'}
+    </span>
+  )
+}

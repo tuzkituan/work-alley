@@ -1,7 +1,15 @@
-import type { RepoId, RepoRef, RepoStatus } from './types'
+import type { RepoId, RepoKind, RepoRef, RepoStatus } from './types'
 import { repoId } from './types'
 
-export type SectionKey = 'running' | 'hostapp' | 'other'
+export type SectionKey =
+  | 'running'
+  | 'hostapp'
+  | 'frontend'
+  | 'backend'
+  | 'library'
+  | 'mobile'
+  | 'docs'
+  | 'other'
 
 export interface Section {
   key: SectionKey
@@ -12,8 +20,25 @@ export interface Section {
 const LABELS: Record<SectionKey, string> = {
   running: 'Running',
   hostapp: 'Host apps',
-  other: 'Sub-apps & libraries',
+  frontend: 'Frontend',
+  backend: 'Backend',
+  library: 'Libraries',
+  mobile: 'Mobile',
+  docs: 'Docs',
+  other: 'Other',
 }
+
+/** Order sections appear in. Running first because it is what you act on now. */
+const ORDER: SectionKey[] = [
+  'running',
+  'hostapp',
+  'frontend',
+  'backend',
+  'library',
+  'mobile',
+  'docs',
+  'other',
+]
 
 export function isHostapp(name: string): boolean {
   return name === 'blazeup-hostapp' || name.startsWith('blazeup-hostapp-')
@@ -25,35 +50,46 @@ export function isRunning(status: RepoStatus | undefined): boolean {
   return (status?.tasks ?? []).some((t) => t.state === 'up' || t.state === 'starting')
 }
 
+const KIND_SECTION: Record<RepoKind, SectionKey> = {
+  frontend: 'frontend',
+  backend: 'backend',
+  library: 'library',
+  mobile: 'mobile',
+  docs: 'docs',
+  unknown: 'other',
+}
+
 /**
- * Groups a folder's repos into Running / Host apps / everything else.
+ * Groups a folder's repos into sections.
  *
- * Running wins over Host apps deliberately: a running hostapp is something you
- * are working on right now, which is more useful than what kind of repo it is.
- * Order within a section is left as-is (stable, name-ordered from discovery), so
- * rows never reshuffle while a scan streams in.
+ * Precedence is deliberate: Running beats everything (it is what you are working
+ * on right now), then the host-app naming convention, then the *detected* kind.
+ * Kind comes from the repo's files, so this works in a workspace with no naming
+ * convention at all.
  */
 export function buildSections(
   repos: RepoRef[],
   statuses: Map<RepoId, RepoStatus>
 ): Section[] {
-  const running: RepoRef[] = []
-  const hostapp: RepoRef[] = []
-  const other: RepoRef[] = []
-
-  for (const r of repos) {
-    if (isRunning(statuses.get(repoId(r)))) running.push(r)
-    else if (isHostapp(r.name)) hostapp.push(r)
-    else other.push(r)
+  const buckets = new Map<SectionKey, RepoRef[]>()
+  const push = (key: SectionKey, r: RepoRef) => {
+    const list = buckets.get(key)
+    if (list) list.push(r)
+    else buckets.set(key, [r])
   }
 
-  return (
-    [
-      { key: 'running' as const, label: LABELS.running, repos: running },
-      { key: 'hostapp' as const, label: LABELS.hostapp, repos: hostapp },
-      { key: 'other' as const, label: LABELS.other, repos: other },
-    ] satisfies Section[]
-  ).filter((s) => s.repos.length > 0)
+  for (const r of repos) {
+    const st = statuses.get(repoId(r))
+    if (isRunning(st)) push('running', r)
+    else if (isHostapp(r.name)) push('hostapp', r)
+    else push(KIND_SECTION[st?.shape.kind ?? 'unknown'], r)
+  }
+
+  return ORDER.filter((k) => (buckets.get(k)?.length ?? 0) > 0).map((k) => ({
+    key: k,
+    label: LABELS[k],
+    repos: buckets.get(k)!,
+  }))
 }
 
 export type ListItem =
@@ -63,9 +99,8 @@ export type ListItem =
 /**
  * Flattens sections into the virtualizer's item list.
  *
- * Headers are omitted entirely when there is only one section — a lone "Sub-apps
- * & libraries" heading above every row is noise, which is exactly what ui/ (two
- * repos, no hostapps, nothing running) would get.
+ * Headers are omitted entirely when there is only one section — a lone heading
+ * above every row is noise.
  *
  * `perRow` pairs repos for card view. Pairing never crosses a section boundary,
  * so a section always starts on a fresh row.

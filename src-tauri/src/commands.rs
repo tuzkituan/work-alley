@@ -25,19 +25,44 @@ async fn build_bootstrap(state: &Arc<AppState>) -> AppResult<Bootstrap> {
     let tc = state.toolchain();
 
     let declared = declared_counts(&root);
+    let discovered = crate::paths::discover_groups(&root);
+    let workspace_label = root
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("workspace")
+        .to_string();
+
     let mut categories = Vec::new();
     let mut repos = Vec::new();
 
-    for c in Category::ALL {
-        let dir = crate::paths::category_dir(&root, c);
-        let found = crate::paths::discover_repos(&root, &[c]);
+    for (group, count) in &discovered {
+        let found = crate::paths::discover_repos(&root, std::slice::from_ref(group));
         categories.push(CategoryInfo {
-            category: c,
-            present: dir.is_dir(),
-            repo_count: found.len() as u32,
-            declared_count: *declared.get(c.dir()).unwrap_or(&0),
+            category: group.clone(),
+            label: if group.is_empty() {
+                workspace_label.clone()
+            } else {
+                group.clone()
+            },
+            present: true,
+            repo_count: *count,
+            declared_count: *declared.get(group.as_str()).unwrap_or(&0),
         });
         repos.extend(found.into_iter().map(|(r, _)| r));
+    }
+
+    // Groups named in repos.json but with nothing cloned yet still deserve a row,
+    // so "0 of 38 cloned" is visible rather than the group simply missing.
+    for (group, n) in &declared {
+        if *n > 0 && !categories.iter().any(|c| &c.category == group) {
+            categories.push(CategoryInfo {
+                category: group.clone(),
+                label: group.clone(),
+                present: crate::paths::category_dir(&root, group).is_dir(),
+                repo_count: 0,
+                declared_count: *n,
+            });
+        }
     }
 
     let mut warnings = tc.warnings.clone();
@@ -56,18 +81,21 @@ async fn build_bootstrap(state: &Arc<AppState>) -> AppResult<Bootstrap> {
             .iter()
             .map(|p| p.display().to_string())
             .collect(),
-        workspace_root: root,
         categories,
         repos,
         config: cfg,
         tools: tc.to_infos(),
         editors: crate::toolchain::detect_editors(&tc.path_env),
-        scripts: crate::scripts::catalog(),
+        scripts: crate::scripts::discover(&root),
+        workspace_root: root,
         warnings,
     })
 }
 
-/// Counts per category in repos.json, so the UI can show "0 of 38 cloned" for be/.
+/// Per-group counts from repos.json, when the workspace has one.
+///
+/// Any top-level key whose value is an array of objects with a `name` is treated
+/// as a group, so this works for a repos.json with different group names.
 fn declared_counts(root: &std::path::Path) -> std::collections::BTreeMap<String, u32> {
     let mut out = std::collections::BTreeMap::new();
     let Ok(text) = std::fs::read_to_string(root.join("repos.json")) else {
@@ -76,13 +104,19 @@ fn declared_counts(root: &std::path::Path) -> std::collections::BTreeMap<String,
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
         return out;
     };
-    for c in Category::ALL {
-        let n = json
-            .get(c.dir())
-            .and_then(|v| v.as_array())
-            .map(|a| a.len() as u32)
-            .unwrap_or(0);
-        out.insert(c.dir().to_string(), n);
+    let Some(obj) = json.as_object() else {
+        return out;
+    };
+
+    for (key, value) in obj {
+        if let Some(arr) = value.as_array() {
+            let looks_like_repos = arr
+                .iter()
+                .all(|v| v.get("name").and_then(|n| n.as_str()).is_some());
+            if looks_like_repos && !arr.is_empty() {
+                out.insert(key.clone(), arr.len() as u32);
+            }
+        }
     }
     out
 }
@@ -114,10 +148,9 @@ pub async fn pick_workspace(
 ) -> AppResult<Option<Bootstrap>> {
     use tauri_plugin_dialog::DialogExt;
 
-    let start = state.workspace_root();
     let (tx, rx) = tokio::sync::oneshot::channel();
     let mut dialog = app.dialog().file().set_title("Choose a workspace folder");
-    if start.is_dir() {
+    if let Some(start) = picker_start_dir(state.inner()) {
         dialog = dialog.set_directory(&start);
     }
     dialog.pick_folder(move |picked| {
@@ -132,6 +165,40 @@ pub async fn pick_workspace(
         .map_err(|e| AppError::Invalid(e.to_string()))?;
 
     switch_workspace(&app, state.inner(), path).await.map(Some)
+}
+
+/// Where the folder picker should open.
+///
+/// The *parent* of the current workspace, so its siblings are immediately
+/// visible — that is almost always where the next workspace lives. Falls back to
+/// the most recent workspace's parent, and only then to the home directory, since
+/// landing on a bare `~` means scrolling past every dotfolder to find anything.
+fn picker_start_dir(state: &Arc<AppState>) -> Option<PathBuf> {
+    // Collect first: config() returns a guard-free clone, but the iterator would
+    // otherwise borrow a temporary.
+    let mut candidates = vec![state.workspace_root()];
+    candidates.extend(state.config().recent_roots.iter().cloned());
+
+    for root in candidates {
+        if root.as_os_str().is_empty() {
+            continue;
+        }
+        if let Some(parent) = root.parent() {
+            if parent.is_dir() && parent != std::path::Path::new("/") {
+                return Some(parent.to_path_buf());
+            }
+        }
+    }
+
+    // Prefer a common projects directory over the bare home folder.
+    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    for guess in ["Projects", "projects", "dev", "Developer", "code", "src", "work"] {
+        let p = home.join(guess);
+        if p.is_dir() {
+            return Some(p);
+        }
+    }
+    Some(home)
 }
 
 /// Switches to an already-known path, e.g. from the recents list.
@@ -155,7 +222,8 @@ async fn switch_workspace(
 
     if !crate::paths::is_workspace(&path) {
         return Err(AppError::WorkspaceNotFound(format!(
-            "{} has no be/ fe/ sa/ ui/ folder with repos in it, and no repos.json",
+            "no git repository found in {}. Choose a folder that is a repo, contains \
+             repos, or groups them in subfolders.",
             path.display()
         )));
     }
@@ -246,7 +314,7 @@ async fn run_scan(
     let started_unix = crate::git::now_unix();
     let root = state.workspace_root();
     let cfg = state.config();
-    let categories = crate::git::categories_or_all(opts.categories.clone());
+    let categories = crate::git::categories_or_all(opts.categories.clone(), &root);
 
     let Ok(git) = state.toolchain().require("git") else {
         let _ = app.emit(
@@ -332,12 +400,8 @@ async fn run_scan(
         .iter()
         .filter_map(|r| r.ui_dep.resolved.clone())
         .collect();
-    let published = crate::pkg::read_own_version(
-        &root
-            .join(Category::Ui.dir())
-            .join("blazeup-lib-ui"),
-    )
-    .await;
+    // Best-effort: only meaningful in a workspace that has this library.
+    let published = crate::pkg::read_own_version(&root.join("ui").join("blazeup-lib-ui")).await;
     let mut ui_latest_source = None;
     if let Some(p) = published.clone() {
         if let Some(cleaned) = crate::pkg::clean_version(&p) {
@@ -1172,7 +1236,11 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                     })
                 }
                 None => {
-                    let all: Vec<RepoRef> = crate::paths::discover_repos(&root, &Category::ALL)
+                    let groups: Vec<Category> = crate::paths::discover_groups(&root)
+                        .into_iter()
+                        .map(|(g, _)| g)
+                        .collect();
+                    let all: Vec<RepoRef> = crate::paths::discover_repos(&root, &groups)
                         .into_iter()
                         .map(|(r, _)| r)
                         .collect();
@@ -1363,14 +1431,15 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
         }
 
         ActionSpec::Script { script, args } => {
-            let desc = crate::scripts::find(&script)?;
+            let desc = crate::scripts::find(&root, &script)?;
             if desc.mode == ScriptMode::TerminalOnly {
                 return Err(AppError::ScriptInteractive(desc.file.clone()));
             }
             let args = crate::scripts::validate_args(&desc, &args)?;
             let path = script_path(&root, &desc.file)?;
+            let body = std::fs::read_to_string(&path).unwrap_or_default();
 
-            let mut warnings = crate::scripts::extra_warnings(&desc, &args);
+            let mut warnings = crate::scripts::extra_warnings(&desc, &args, &body);
             for t in &desc.required_tools {
                 if !tc.has(t) {
                     warnings.push(format!("{t} is not installed — this script needs it."));
@@ -1402,7 +1471,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
         }
 
         ActionSpec::OpenInTerminal { script, repo } => {
-            let desc = crate::scripts::find(&script)?;
+            let desc = crate::scripts::find(&root, &script)?;
             let path = script_path(&root, &desc.file)?;
             // fe-auto-create-pr.sh auto-detects the repo from $PWD and only shows
             // its repo menu when it can't — so presetting cwd removes the most

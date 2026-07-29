@@ -4,7 +4,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { KvRow, SectionLabel, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
 import { derive, displayName, TONE_TEXT } from '@/domain/severity'
-import { CATEGORIES, repoId, type Bootstrap, type Category, type RepoRef } from '@/domain/types'
+import { repoId, type Bootstrap, type Category, type RepoRef } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
@@ -20,9 +20,15 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
   const scripts = boot?.scripts ?? []
   const run = useRunAction()
 
+  // Groups come from the backend's discovery, in its order (biggest first).
+  const groups = boot?.categories ?? []
   const byCategory = new Map<Category, RepoRef[]>()
-  for (const c of CATEGORIES) byCategory.set(c, [])
-  for (const r of boot?.repos ?? []) byCategory.get(r.category)?.push(r)
+  for (const g of groups) byCategory.set(g.category, [])
+  for (const r of boot?.repos ?? []) {
+    const list = byCategory.get(r.category)
+    if (list) list.push(r)
+    else byCategory.set(r.category, [r])
+  }
 
   return (
     <div className="flex h-full flex-col gap-4 border-r border-adaptive-200 bg-adaptive-100 px-2.5 py-3">
@@ -35,14 +41,20 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
             </span>
           </div>
 
-          {CATEGORIES.map((c) => (
+          {groups.map((g) => (
             <RepoGroup
-              key={c}
-              category={c}
-              repos={byCategory.get(c) ?? []}
-              declared={boot?.categories.find((x) => x.category === c)?.declaredCount ?? 0}
+              key={g.category}
+              category={g.category}
+              label={g.label}
+              repos={byCategory.get(g.category) ?? []}
+              declared={g.declaredCount}
             />
           ))}
+          {groups.length === 0 && (
+            <div className="px-2 py-1.5 text-[11px] text-adaptive-400">
+              No repos found in this folder.
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col gap-1">
@@ -92,10 +104,12 @@ function defaultArgs(schema: Bootstrap['scripts'][number]['argSchema']): string[
 
 const RepoGroup = memo(function RepoGroup({
   category,
+  label,
   repos,
   declared,
 }: {
   category: Category
+  label: string
   repos: RepoRef[]
   declared: number
 }) {
@@ -134,7 +148,7 @@ const RepoGroup = memo(function RepoGroup({
             expanded ? 'text-primary-600' : 'text-adaptive-700'
           )}
         >
-          {category}
+          {label}
         </span>
         <div className="flex-1" />
         {scanning ? (
@@ -153,8 +167,10 @@ const RepoGroup = memo(function RepoGroup({
         {/* be/ is declared in repos.json but empty on disk — a state the 4-repo
             design never had to represent. */}
         {repos.length === 0 ? (
+          // Naming the directory matters: "none of 32 cloned" on its own reads like
+          // a detection failure rather than an empty folder.
           <div className="px-2 py-1.5 text-[11px] text-adaptive-400">
-            {declared > 0 ? `none of ${declared} cloned` : 'empty'}
+            {declared > 0 ? `none of ${declared} cloned into ${category}/` : 'empty'}
           </div>
         ) : (
           repos.map((r) => (
