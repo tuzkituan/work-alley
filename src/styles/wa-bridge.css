@@ -1,42 +1,100 @@
-/* Work Alley bridge layer.
+/* Work Alley's own layer, on top of the stock shadcn theme.
  *
- * tokens.css is vendored verbatim from the blazeup design system and must not be
- * edited. Everything this app needs *in addition* lives here:
- *   1. shadcn semantic names tokens.css doesn't define (--primary, --secondary, …)
- *   2. JetBrains Mono, which design 1a uses but tokens.css doesn't ship
- *   3. severity roles, so a dot / pill / stat value for the same repo state can
- *      never disagree (see src/domain/severity.ts)
+ * shadcn-theme.css stays byte-identical to what `shadcn init` emits. Everything
+ * this app needs *in addition* lives here:
+ *
+ *   1. `--adaptive-*`: a neutral ramp that inverts in dark mode, so one class
+ *      means "one step of contrast away from the background" in both themes.
+ *      Built from Tailwind's own neutral palette — the same values shadcn's
+ *      default base colour uses — so nothing here is a bespoke brand colour.
+ *   2. `--sev-*`: severity roles, so a dot, a pill and a stat value describing
+ *      the same repo state can never disagree (see src/domain/severity.ts).
+ *   3. JetBrains Mono for the output pane and every numeric column.
  */
 
 :root {
-  /* --- shadcn semantic names missing from tokens.css --- */
-  --primary: var(--primary-600);
-  --primary-foreground: #ffffff;
-  --secondary: var(--adaptive-100);
-  --secondary-foreground: var(--adaptive-900);
-  --destructive: var(--error-500);
-  --destructive-foreground: #ffffff;
+  /* --- adaptive ramp: light mode reads low -> high contrast ------------- */
+  --adaptive-50: oklch(0.985 0 0);
+  --adaptive-100: oklch(0.97 0 0);
+  --adaptive-200: oklch(0.922 0 0);
+  --adaptive-300: oklch(0.87 0 0);
+  --adaptive-400: oklch(0.708 0 0);
+  --adaptive-500: oklch(0.556 0 0);
+  --adaptive-600: oklch(0.439 0 0);
+  --adaptive-700: oklch(0.371 0 0);
+  --adaptive-800: oklch(0.269 0 0);
+  --adaptive-900: oklch(0.205 0 0);
+  --adaptive-950: oklch(0.145 0 0);
 
-  /* left rail */
-  --sidebar: var(--adaptive-100);
-  --sidebar-foreground: var(--adaptive-900);
-  --sidebar-border: var(--adaptive-200);
+  /* --- status colours: Tailwind's 500s, used at full strength for text and
+         at /[0.12] and /[0.38] for the pill fills and borders ------------ */
+  --green-500: oklch(0.723 0.219 149.579);
+  --amber-500: oklch(0.769 0.188 70.08);
+  --red-500: oklch(0.637 0.237 25.331);
+  --blue-500: oklch(0.623 0.214 259.815);
 
-  /* --- design 1a uses JetBrains Mono; tokens.css ships a system stack --- */
-  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  --success-500: var(--green-500);
+  --warning-500: var(--amber-500);
+  --error-500: var(--red-500);
+  --info-500: var(--blue-500);
 
-  /* --- severity roles --- */
+  /* --- severity roles --------------------------------------------------- */
   --sev-ok: var(--success-500);
   --sev-warn: var(--warning-500);
   --sev-err: var(--error-500);
   --sev-info: var(--info-500);
   --sev-idle: var(--adaptive-400);
+
+  /* --- accent ----------------------------------------------------------
+   * Stock shadcn has a single `--primary`, not a ramp. These aliases exist so
+   * accent usage reads as a shade, while resolving to shadcn's primary — which
+   * means it flips with the theme instead of going invisible in dark mode.
+   */
+  --primary-50: var(--accent);
+  --primary-100: var(--accent);
+  --primary-200: var(--accent);
+  --primary-300: var(--primary);
+  --primary-400: var(--primary);
+  --primary-500: var(--primary);
+  --primary-600: var(--primary);
+  --primary-700: var(--primary);
+  --primary-800: var(--primary);
+  --primary-900: var(--primary);
+  --primary-950: var(--primary);
+
+  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+
+  /* The hover/focus ring, as one token so every interactive surface agrees. */
+  --shadow-focus-ring: 0 0 0 3px var(--adaptive-300);
 }
 
 .dark {
-  --primary-foreground: #ffffff;
-  --secondary: var(--adaptive-200);
-  /* --sidebar etc. re-resolve automatically via the inverted adaptive ramp */
+  /* The ramp inverts wholesale. This is the whole point of `adaptive`: a border
+   * written as `border-adaptive-200` is a faint border in both themes, and no
+   * component needs a `dark:` variant to say so. */
+  --adaptive-50: oklch(0.145 0 0);
+  --adaptive-100: oklch(0.205 0 0);
+  --adaptive-200: oklch(0.269 0 0);
+  --adaptive-300: oklch(0.371 0 0);
+  --adaptive-400: oklch(0.556 0 0);
+  --adaptive-500: oklch(0.708 0 0);
+  --adaptive-600: oklch(0.87 0 0);
+  --adaptive-700: oklch(0.922 0 0);
+  --adaptive-800: oklch(0.97 0 0);
+  --adaptive-900: oklch(0.985 0 0);
+  --adaptive-950: oklch(1 0 0);
+
+  /* Slightly lighter status colours, so they hold up against a dark surface. */
+  --green-500: oklch(0.792 0.209 151.711);
+  --amber-500: oklch(0.828 0.189 84.429);
+  --red-500: oklch(0.704 0.191 22.216);
+  --blue-500: oklch(0.707 0.165 254.624);
 }
 
 /* The blinking block cursor in the output pane. Must be step-end, not linear. */
@@ -57,7 +115,7 @@
   }
 }
 
-/* Live-updating numbers must not jitter their columns across 63 rows. */
+/* Live-updating numbers must not jitter their columns across dozens of rows. */
 .wa-num {
   font-variant-numeric: tabular-nums;
 }
@@ -101,6 +159,10 @@ body,
  * pixel tracks starve the flexible ones as the panel narrows — a 190px branch
  * column left the repo name 22px and the header collapsed. Below the breakpoint
  * the two lowest-value columns are dropped instead of squeezing everything.
+ *
+ * The name column is the widest by a distance because names are shown in full:
+ * a shared prefix plus a distinctive tail runs to 40 characters, and truncating
+ * the tail hides the only part that identifies the repo.
  */
 .wa-table {
   container-type: inline-size;
@@ -112,11 +174,25 @@ body,
   gap: 8px;
   grid-template-columns:
     18px
-    minmax(120px, 1.7fr)
-    minmax(80px, 1.1fr)
+    minmax(200px, 2.6fr)
+    minmax(80px, 1fr)
     96px
     76px
     84px
+    88px
+    124px;
+}
+
+/* Not every workspace has a shared package to track, so that column is dropped
+   rather than left as an empty track. Only the wide template needs a variant —
+   the narrow one already hides the optional columns. */
+.wa-cols.wa-no-tracked {
+  grid-template-columns:
+    18px
+    minmax(200px, 2.6fr)
+    minmax(80px, 1fr)
+    96px
+    76px
     88px
     124px;
 }
@@ -125,7 +201,7 @@ body,
   .wa-cols {
     grid-template-columns:
       18px
-      minmax(110px, 1.7fr)
+      minmax(160px, 2.6fr)
       minmax(70px, 1fr)
       92px
       84px

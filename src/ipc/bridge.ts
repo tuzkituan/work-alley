@@ -9,7 +9,7 @@ import { useUiStore } from '@/stores/ui-store'
 import { keys } from '@/queries/keys'
 import { repoId, type LogLine, type RepoStatus } from '@/domain/types'
 
-let wired = false
+let wiring: Promise<void> | null = null
 
 /**
  * Routes streamed events into the stores, once.
@@ -17,15 +17,29 @@ let wired = false
  * Must be awaited *before* any command that streams: `start_scan` returns
  * immediately, so a scan:started emitted before the listener attaches would be
  * lost and `total` would never be set.
+ *
+ * Memoised on the promise, exactly like `ensureBridge`. An earlier version did
+ * `await ensureBridge(); if (wired) return; wired = true` — a check *after* an
+ * await, so two concurrent callers both got past it and every handler was
+ * registered twice. React StrictMode calls this twice on mount, so it happened
+ * every single time in development: each run appeared twice in the output pane's
+ * chip strip. (Log lines looked fine only because `append` dedupes by seq.)
+ *
+ * Assigning `wiring` before the async body reaches its first await is what closes
+ * the window; there is no point at which a second caller can see it unset.
  */
-export async function connectBridge(qc: QueryClient) {
+export function connectBridge(qc: QueryClient): Promise<void> {
+  if (wiring) return wiring
+  wiring = wire(qc)
+  return wiring
+}
+
+async function wire(qc: QueryClient) {
   await ensureBridge()
-  if (wired) return
-  wired = true
 
   const scan = useScanStore.getState()
 
-  // 63 repos arrive in a burst; commit them ~1 frame at a time.
+  // Repos arrive in a burst; commit them ~1 frame at a time.
   const repoQueue = createFrameQueue<RepoStatus>((rows) => {
     useScanStore.getState().upsertMany(rows)
   })
@@ -44,8 +58,8 @@ export async function connectBridge(qc: QueryClient) {
     repoQueue.flushNow()
     const st = useScanStore.getState()
     st.finish({
-      uiLatest: snapshot.uiLatest,
-      uiLatestSource: snapshot.uiLatestSource,
+      trackedLatest: snapshot.trackedLatest,
+      trackedLatestSource: snapshot.trackedLatestSource,
       errorCount: snapshot.errorCount,
       durationMs: snapshot.durationMs,
     })
@@ -93,7 +107,7 @@ export async function connectBridge(qc: QueryClient) {
     } else if (status.kind === 'cancelled') {
       toast.info(`${title} cancelled`)
     } else if (status.kind === 'exited') {
-      // Some scripts use a non-zero exit to *report* something (verify-repos.sh
+      // Some scripts use a non-zero exit to *report* something (a drift check
       // exits 1 for "drift detected"), so this is deliberately not an error toast.
       toast.warning(`${title} exited with code ${status.code}`)
     } else if (status.kind === 'failed') {
@@ -102,7 +116,7 @@ export async function connectBridge(qc: QueryClient) {
       toast.info(`${title} stopped`)
     }
 
-    // Rescan only the repo this run touched, not all 63.
+    // Rescan only the repo this run touched, not the whole folder.
     const ref = run?.summary.ref
     if (ref && status.kind !== 'cancelled') {
       api

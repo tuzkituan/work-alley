@@ -5,18 +5,18 @@ import type { Category, NeedsYouKind, RepoId } from '@/domain/types'
 /** Cards read well for a handful of repos; 43 of them need a table. */
 export type ViewMode = 'cards' | 'list'
 
-export type ThemeMode = 'light' | 'dark' | 'system'
+export type ThemeMode = 'light' | 'dark'
 
 interface UiState {
-  /** 'system' follows the OS setting; the other two pin it. */
+  /** An explicit choice. The app does not follow the OS theme. */
   theme: ThemeMode
   /**
-   * The one expanded folder, or null when everything is collapsed.
+   * The selected folder, or null when none is.
    *
-   * An accordion rather than independent toggles: the card grid shows exactly one
-   * folder, and only that folder's repos get scanned, so "which folder" has to be
-   * a single answer. Starts null — nothing is expanded and nothing is scanned
-   * until the user picks a folder.
+   * Exactly one at a time: the grid shows one folder and only that folder gets
+   * scanned, so "which folder" has to be a single answer. Persisted, so reopening
+   * the app returns you to what you were working on — which does mean one scan on
+   * launch, deliberately.
    */
   expandedCategory: Category | null
   /** Repo whose card is highlighted with the primary border. */
@@ -27,7 +27,7 @@ interface UiState {
   filterChip: NeedsYouKind | null
   view: ViewMode
   /** Which top-level page the centre panel shows. */
-  page: 'repos' | 'toolbox'
+  page: 'repos' | 'activity' | 'toolbox'
   paletteOpen: boolean
 
   toggleTheme(): void
@@ -41,7 +41,7 @@ interface UiState {
   toggleFilterChip(kind: NeedsYouKind): void
   clearFilters(): void
   setView(view: ViewMode): void
-  setPage(page: 'repos' | 'toolbox'): void
+  setPage(page: 'repos' | 'activity' | 'toolbox'): void
   setPaletteOpen(open: boolean): void
 }
 
@@ -58,11 +58,7 @@ export const useUiStore = create<UiState>()(
       page: 'repos',
       paletteOpen: false,
 
-      // Cycles light -> dark -> system, so every mode is reachable from one control.
-      toggleTheme: () =>
-        set((s) => ({
-          theme: s.theme === 'light' ? 'dark' : s.theme === 'dark' ? 'system' : 'light',
-        })),
+      toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
       setTheme: (theme) => set({ theme }),
 
       toggleCategory: (category) =>
@@ -88,10 +84,32 @@ export const useUiStore = create<UiState>()(
     }),
     {
       name: 'work-alley:ui',
-      // Only durable preferences persist. expandedCategory is deliberately NOT
-      // persisted: every launch starts fully collapsed, so no git runs until the
-      // user asks for a folder.
-      partialize: (s) => ({ theme: s.theme, view: s.view }),
+      // Durable preferences plus the selected folder, so the app reopens where you
+      // left it. The folder is validated on load: a workspace switch or a renamed
+      // directory must not leave a selection pointing at a folder that is gone.
+      partialize: (s) => ({
+        theme: s.theme,
+        view: s.view,
+        expandedCategory: s.expandedCategory,
+      }),
+      // `partialize` decides what is *written*, not what is read: a blob saved by
+      // an older build is still merged over the defaults on load, keys and all. So
+      // the version is bumped whenever the shape changes, and `migrate` rebuilds the
+      // state from scratch rather than trusting whatever was stored.
+      version: 5,
+      migrate: (persisted) => {
+        const p = (persisted ?? {}) as {
+          theme?: unknown
+          view?: unknown
+          expandedCategory?: unknown
+        }
+        return {
+          theme: p.theme === 'light' || p.theme === 'dark' ? p.theme : 'light',
+          view: p.view === 'cards' || p.view === 'list' ? p.view : 'list',
+          expandedCategory:
+            typeof p.expandedCategory === 'string' ? p.expandedCategory : null,
+        } as never
+      },
     }
   )
 )

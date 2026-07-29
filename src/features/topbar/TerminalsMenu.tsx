@@ -1,4 +1,4 @@
-import { Terminal } from 'lucide-react'
+import { ListChecks } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -12,15 +12,17 @@ import { StatusDot } from '@/components/wa/primitives'
 import { api } from '@/ipc/commands'
 import { runScope, useRunStore } from '@/stores/run-store'
 import { useUiStore } from '@/stores/ui-store'
-import { displayName } from '@/domain/severity'
 import type { Tone } from '@/domain/severity'
 
 /**
- * How many terminals are open, and which.
+ * How many *commands* are running, and where.
  *
  * Necessary once output became per-repo: a run in another repo's scope is
  * invisible from where you are standing, so the count has to live somewhere
  * always on screen. Selecting an entry jumps to that scope.
+ *
+ * Not to be confused with the integrated terminal — these are the app's own runs,
+ * whose output is a replayable log. The terminal is a pty with a shell in it.
  */
 export function TerminalsMenu() {
   const runs = useRunStore((s) => s.runs)
@@ -37,9 +39,9 @@ export function TerminalsMenu() {
         <Button
           variant={running.length > 0 ? 'waPrimary' : 'waOutline'}
           size="wa"
-          title={`${running.length} running, ${all.length} terminal${all.length === 1 ? '' : 's'} open`}
+          title={`${running.length} running, ${all.length} command${all.length === 1 ? '' : 's'} in the output pane`}
         >
-          <Terminal className="size-3.5" />
+          <ListChecks className="size-3.5" />
           <span className="wa-num">
             {running.length > 0 ? `${running.length}/${all.length}` : all.length}
           </span>
@@ -49,8 +51,8 @@ export function TerminalsMenu() {
       <DropdownMenuContent align="end" className="w-80">
         <DropdownMenuLabel className="text-[11px] font-semibold">
           {all.length === 0
-            ? 'No terminals open'
-            : `${running.length} running · ${all.length} open`}
+            ? 'Nothing has run yet'
+            : `${running.length} running · ${all.length} in the output pane`}
         </DropdownMenuLabel>
 
         {all.length > 0 && <DropdownMenuSeparator />}
@@ -60,7 +62,7 @@ export function TerminalsMenu() {
           .reverse()
           .map((r) => {
             const scope = runScope(r)
-            const label = scope ? displayName(scope.split('/')[1] ?? scope).short : 'workspace'
+            const label = scope ? (scope.split('/')[1] ?? scope) : 'workspace'
             const st = r.summary.status
             const tone: Tone =
               st.kind === 'running'

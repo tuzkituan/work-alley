@@ -20,14 +20,14 @@ const buttonVariants = cva(
           "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
         link: "text-primary underline-offset-4 hover:underline",
 
-        // --- design 1a variants ---------------------------------------------
-        // The design's focus/hover ring is --adaptive-300, not --ring (brand
-        // orange), so these override new-york's ring treatment. Stock variants
-        // above are left untouched.
+        // --- app variants ----------------------------------------------------
+        // These use one ring token (--shadow-focus-ring) for both hover and
+        // focus, which the stock variants do not. Stock variants above are left
+        // untouched so a shadcn component update still applies cleanly.
         waOutline:
           "border border-adaptive-200 bg-background text-adaptive-800 hover:border-adaptive-950 hover:shadow-focus-ring focus-visible:border-adaptive-950 focus-visible:ring-0 focus-visible:shadow-focus-ring",
         waPrimary:
-          "border border-primary-600 bg-primary-600 text-white hover:bg-primary-500 hover:border-adaptive-950 hover:shadow-focus-ring focus-visible:ring-0 focus-visible:shadow-focus-ring",
+          "border border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:border-adaptive-950 hover:shadow-focus-ring focus-visible:ring-0 focus-visible:shadow-focus-ring",
         waDanger:
           "border border-error-500 bg-transparent text-error-500 hover:shadow-focus-ring focus-visible:ring-0 focus-visible:shadow-focus-ring",
         waGhost:
@@ -38,10 +38,21 @@ const buttonVariants = cva(
       size: {
         default: "h-9 px-4 py-2 has-[>svg]:px-3",
 
-        // --- design 1a sizes ------------------------------------------------
+        // --- app sizes --------------------------------------------------------
+        //
+        // Exactly two heights, because controls that sit in a row must line up:
+        //
+        //   30px  toolbars, dialogs, page-level actions      wa   / waIconLg
+        //   26px  inside a card, a table row or a chip strip  waSm / waIcon
+        //
+        // There used to be five (30/28/26/24 plus a 26px icon), so a card's
+        // actions were 28px next to a 26px icon button and a list row mixed 24px
+        // with 26px — visibly ragged. Only the padding and type size vary now.
         wa: "h-[30px] gap-1.5 rounded-md px-2.5 text-xs font-semibold",
-        waSm: "h-[28px] gap-1.5 rounded-md px-2.5 text-xs font-semibold",
-        waXs: "h-6 gap-1 rounded-[5px] px-2 text-[11px] font-semibold",
+        waIconLg: "size-[30px] rounded-md text-xs",
+        waSm: "h-[26px] gap-1.5 rounded-[5px] px-2.5 text-[11px] font-semibold",
+        // Kept as a distinct name for intent (a tight in-row action), same height.
+        waXs: "h-[26px] gap-1 rounded-[5px] px-2 text-[11px] font-semibold",
         waChip: "h-[26px] gap-1 rounded-[5px] px-[9px] text-[11px] font-normal",
         waIcon: "size-[26px] rounded-[5px] text-xs",
         xs: "h-6 gap-1 rounded-md px-2 text-xs has-[>svg]:px-1.5 [&_svg:not([class*='size-'])]:size-3",

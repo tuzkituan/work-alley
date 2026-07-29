@@ -1,4 +1,5 @@
 mod ansi;
+mod clone;
 mod commands;
 mod config;
 mod detect;
@@ -67,6 +68,12 @@ pub fn scan_once_cli() {
         let found = paths::discover_repos(&root, &groups);
         println!("\n{} repos on disk", found.len());
 
+        let tracked_name = commands::tracked_package(&root, &cfg).map(|t| t.name);
+        println!(
+            "shared package: {}",
+            tracked_name.as_deref().unwrap_or("<none detected>")
+        );
+
         let began = std::time::Instant::now();
         let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(cfg.scan_concurrency));
         let mut set = tokio::task::JoinSet::new();
@@ -74,10 +81,10 @@ pub fn scan_once_cli() {
             let permit = sem.clone();
             let git = git.clone();
             let stale = cfg.stale_days;
-            let ui = cfg.ui_package_name.clone();
+            let tracked = tracked_name.clone();
             set.spawn(async move {
                 let _p = permit.acquire_owned().await;
-                git::scan_one(git, repo, path, stale, ui).await
+                git::scan_one(git, repo, path, stale, tracked).await
             });
         }
 
@@ -110,7 +117,7 @@ pub fn scan_once_cli() {
                 r.dirty_count + r.untracked_count,
                 a,
                 b,
-                r.ui_dep.resolved.clone().unwrap_or_else(|| "-".into()),
+                r.tracked_dep.resolved.clone().unwrap_or_else(|| "-".into()),
                 match r.stale {
                     model::StaleState::Stale { days, .. } => format!("{days}d"),
                     model::StaleState::Fresh { .. } => "fresh".into(),
@@ -187,6 +194,9 @@ pub fn run() {
             commands::get_bootstrap,
             commands::pick_workspace,
             commands::set_workspace,
+            commands::close_workspace,
+            commands::pick_folder,
+            commands::parse_clone_urls,
             commands::get_config,
             commands::set_config,
             commands::start_scan,
@@ -198,6 +208,8 @@ pub fn run() {
             commands::list_dev_servers,
             commands::list_branches,
             commands::list_packages,
+            commands::list_package_versions,
+            commands::preview_checkout,
             commands::list_pull_requests,
             commands::list_changed_files,
             commands::repo_commits,

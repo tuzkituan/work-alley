@@ -1,26 +1,111 @@
-use crate::model::UiDep;
+use crate::model::TrackedDep;
 use std::path::Path;
 
-/// Reads the workspace UI package version a repo declares.
+const DEP_FIELDS: [&str; 3] = ["dependencies", "devDependencies", "peerDependencies"];
+
+/// What a repo's `package.json` says about itself and what it depends on.
+pub struct Manifest {
+    pub name: Option<String>,
+    pub version: Option<String>,
+    pub deps: Vec<String>,
+    /// Raw `packageManager` field, e.g. `"pnpm@9.1.0"`.
+    pub package_manager: Option<String>,
+}
+
+/// Reads a repo's manifest. Absent or malformed files are simply "no manifest".
+pub fn read_manifest(repo: &Path) -> Option<Manifest> {
+    let text = std::fs::read_to_string(repo.join("package.json")).ok()?;
+    let json = serde_json::from_str::<serde_json::Value>(&text).ok()?;
+
+    let mut deps = Vec::new();
+    for field in DEP_FIELDS {
+        if let Some(obj) = json.get(field).and_then(|v| v.as_object()) {
+            deps.extend(obj.keys().cloned());
+        }
+    }
+
+    Some(Manifest {
+        name: json.get("name").and_then(|v| v.as_str()).map(String::from),
+        version: json.get("version").and_then(|v| v.as_str()).map(String::from),
+        deps,
+        package_manager: json
+            .get("packageManager")
+            .and_then(|v| v.as_str())
+            .map(String::from),
+    })
+}
+
+/// A shared package that lives in this workspace and that other repos consume.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackedPackage {
+    pub name: String,
+    /// The version the library repo itself declares, when it is cloned here.
+    pub published: Option<String>,
+    pub dependents: usize,
+}
+
+/// The workspace's own shared package, or None.
+///
+/// Chosen rather than configured: the package that lives in this workspace *and*
+/// that the most other repos depend on is, by definition, the one whose version
+/// drift matters. A hardcoded package name only ever describes one workspace.
+///
+/// Two dependents is the floor — a library nothing consumes yet is not a column
+/// worth showing on 60 cards.
+pub fn pick_tracked(manifests: &[Manifest]) -> Option<TrackedPackage> {
+    let local: Vec<&Manifest> = manifests.iter().filter(|m| m.name.is_some()).collect();
+
+    let mut best: Option<TrackedPackage> = None;
+    for lib in &local {
+        let name = lib.name.as_deref().unwrap();
+        let dependents = manifests
+            .iter()
+            .filter(|m| m.name.as_deref() != Some(name))
+            .filter(|m| m.deps.iter().any(|d| d == name))
+            .count();
+        if dependents < 2 {
+            continue;
+        }
+        // Ties break on name so the choice is stable across scans.
+        let better = match &best {
+            Some(b) => (dependents, std::cmp::Reverse(name)) > (b.dependents, std::cmp::Reverse(b.name.as_str())),
+            None => true,
+        };
+        if better {
+            best = Some(TrackedPackage {
+                name: name.to_string(),
+                published: lib.version.clone(),
+                dependents,
+            });
+        }
+    }
+
+    best
+}
+
+/// Reads the version of the tracked package that a repo declares.
 ///
 /// Ranges that semver cannot parse (`workspace:*`, git URLs, `*`) keep `declared`
 /// and leave `resolved` as None — the UI renders "n/a" rather than crashing or
 /// inventing a version.
-pub async fn read_ui_dep(repo: &Path, ui_package: &str) -> UiDep {
+pub async fn read_tracked_dep(repo: &Path, tracked: Option<&str>) -> TrackedDep {
+    let Some(tracked) = tracked else {
+        return TrackedDep::default();
+    };
     let Ok(text) = tokio::fs::read_to_string(repo.join("package.json")).await else {
-        return UiDep::default();
+        return TrackedDep::default();
     };
     let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) else {
-        return UiDep::default();
+        return TrackedDep::default();
     };
 
-    for field in ["dependencies", "devDependencies", "peerDependencies"] {
+    for field in DEP_FIELDS {
         if let Some(range) = json
             .get(field)
-            .and_then(|d| d.get(ui_package))
+            .and_then(|d| d.get(tracked))
             .and_then(|v| v.as_str())
         {
-            return UiDep {
+            return TrackedDep {
                 declared: Some(range.to_string()),
                 resolved: clean_version(range),
                 field: Some(field.to_string()),
@@ -28,15 +113,7 @@ pub async fn read_ui_dep(repo: &Path, ui_package: &str) -> UiDep {
         }
     }
 
-    UiDep::default()
-}
-
-/// Reads a package's own `version`, used to find the published UI version from
-/// `ui/blazeup-lib-ui` itself.
-pub async fn read_own_version(repo: &Path) -> Option<String> {
-    let text = tokio::fs::read_to_string(repo.join("package.json")).await.ok()?;
-    let json = serde_json::from_str::<serde_json::Value>(&text).ok()?;
-    json.get("version")?.as_str().map(|s| s.to_string())
+    TrackedDep::default()
 }
 
 /// `"^1.22.6"` -> `Some("1.22.6")`; `"workspace:*"` -> `None`.
@@ -58,23 +135,44 @@ pub fn max_version(candidates: impl IntoIterator<Item = String>) -> Option<Strin
         .map(|v| v.to_string())
 }
 
-/// Derives the dev command from the lockfile.
+/// Which package manager runs this repo's scripts.
 ///
-/// Hardcoding `bun run dev` would be wrong for roughly half the workspace: fe/
-/// alone has 23 bun.lock, 19 package-lock.json and 2 yarn.lock.
-pub fn dev_command(repo: &Path) -> Option<(&'static str, Vec<String>)> {
-    if repo.join("bun.lock").exists() || repo.join("bun.lockb").exists() {
-        Some(("bun", vec!["run".into(), "dev".into()]))
-    } else if repo.join("yarn.lock").exists() {
-        Some(("yarn", vec!["dev".into()]))
-    } else if repo.join("package-lock.json").exists() {
-        Some(("npm", vec!["run".into(), "dev".into()]))
-    } else if repo.join("package.json").exists() {
-        // No lockfile yet — bun is the workspace default.
-        Some(("bun", vec!["run".into(), "dev".into()]))
-    } else {
-        None
+/// Order of evidence: the standard `packageManager` field, then the lockfile, then
+/// whatever the caller found installed. Hardcoding one manager is wrong even
+/// inside a single workspace — mixed lockfiles across repos are normal.
+pub fn package_manager(repo: &Path, fallback: &str) -> Option<String> {
+    if !repo.join("package.json").exists() {
+        return None;
     }
+
+    // `"packageManager": "pnpm@9.1.0"` is the corepack standard and the most
+    // explicit statement a repo can make.
+    if let Some(m) = read_manifest(repo) {
+        if let Some(declared) = declared_package_manager(&m) {
+            return Some(declared);
+        }
+    }
+
+    for (lockfile, tool) in [
+        ("bun.lock", "bun"),
+        ("bun.lockb", "bun"),
+        ("pnpm-lock.yaml", "pnpm"),
+        ("yarn.lock", "yarn"),
+        ("package-lock.json", "npm"),
+    ] {
+        if repo.join(lockfile).exists() {
+            return Some(tool.to_string());
+        }
+    }
+
+    Some(fallback.to_string())
+}
+
+fn declared_package_manager(m: &Manifest) -> Option<String> {
+    // Stored on the Manifest only as raw text; parse "name@version".
+    let raw = m.package_manager.as_deref()?;
+    let name = raw.split('@').next()?.trim();
+    matches!(name, "bun" | "npm" | "pnpm" | "yarn").then(|| name.to_string())
 }
 
 /// The long-running tasks this repo declares. Order is the UI's display order.
@@ -88,7 +186,9 @@ pub fn available_tasks(repo: &Path) -> Vec<String> {
     let Some(scripts) = json.get("scripts").and_then(|v| v.as_object()) else {
         return Vec::new();
     };
-    ["dev", "storybook"]
+    // Long-running by convention. A curated list on purpose: offering every script
+    // as a "task" would put `build` and `test` behind a Stop button.
+    ["dev", "start", "serve", "storybook"]
         .into_iter()
         .filter(|t| scripts.contains_key(*t))
         .map(|t| t.to_string())
@@ -96,10 +196,10 @@ pub fn available_tasks(repo: &Path) -> Vec<String> {
 }
 
 /// The package-manager invocation for a named task.
-pub fn task_command(repo: &Path, task: &str) -> Option<(&'static str, Vec<String>)> {
-    let (tool, _) = dev_command(repo)?;
-    let args = match tool {
-        // yarn takes the script name directly; bun and npm need `run`.
+pub fn task_command(repo: &Path, task: &str, fallback: &str) -> Option<(String, Vec<String>)> {
+    let tool = package_manager(repo, fallback)?;
+    let args = match tool.as_str() {
+        // yarn takes the script name directly; the others need `run`.
         "yarn" => vec![task.to_string()],
         _ => vec!["run".to_string(), task.to_string()],
     };
@@ -148,9 +248,9 @@ pub fn has_dev_script(repo: &Path) -> bool {
 
 /// Resolves the dev-server port without starting anything.
 ///
-/// `VITE_APP_PORT` in `.env` covers 40 of 44 repos here; the rest fall back to the
-/// literal default baked into vite.config.ts, which differs per repo. A wrong
-/// guess is corrected later by sniffing vite's own banner.
+/// An env file is the most common place a project pins its port; failing that, the
+/// literal default in the vite config. Either can be wrong, so a guess is always
+/// corrected later by sniffing the dev server's own startup banner.
 pub fn detect_port(repo: &Path) -> Option<(u16, crate::model::PortSource)> {
     use crate::model::PortSource;
 
@@ -194,8 +294,9 @@ pub fn parse_env_port(text: &str) -> Option<u16> {
     None
 }
 
-/// Matches the workspace convention:
-/// `const port = env.VITE_APP_PORT ? Number(env.VITE_APP_PORT) : 8000`
+/// Handles both the plain `server: { port: N }` form and the common
+/// `const port = env.VITE_APP_PORT ? Number(env.VITE_APP_PORT) : 8000` idiom,
+/// where the literal after the colon is the fallback.
 pub fn parse_vite_default_port(text: &str) -> Option<u16> {
     for line in text.lines() {
         if line.contains("VITE_APP_PORT") {
@@ -249,6 +350,80 @@ mod tests {
         // 1.9 vs 1.10 must compare numerically, not lexically.
         let v2 = max_version(vec!["1.9.0".into(), "1.10.0".into()]);
         assert_eq!(v2.as_deref(), Some("1.10.0"));
+    }
+
+    fn manifest(name: Option<&str>, version: Option<&str>, deps: &[&str]) -> Manifest {
+        Manifest {
+            name: name.map(String::from),
+            version: version.map(String::from),
+            deps: deps.iter().map(|s| s.to_string()).collect(),
+            package_manager: None,
+        }
+    }
+
+    #[test]
+    fn tracks_the_local_package_with_the_most_dependents() {
+        let ms = vec![
+            manifest(Some("@acme/ui"), Some("2.1.0"), &[]),
+            manifest(Some("@acme/utils"), Some("1.0.0"), &[]),
+            manifest(Some("app-a"), None, &["@acme/ui", "react"]),
+            manifest(Some("app-b"), None, &["@acme/ui"]),
+            manifest(Some("app-c"), None, &["@acme/utils", "@acme/ui"]),
+        ];
+        let t = pick_tracked(&ms).expect("a shared package exists");
+        assert_eq!(t.name, "@acme/ui");
+        assert_eq!(t.dependents, 3);
+        // The library repo's own version is the drift baseline.
+        assert_eq!(t.published.as_deref(), Some("2.1.0"));
+    }
+
+    #[test]
+    fn a_library_nobody_consumes_is_not_tracked() {
+        let ms = vec![
+            manifest(Some("@acme/ui"), Some("1.0.0"), &[]),
+            manifest(Some("app-a"), None, &["@acme/ui"]),
+        ];
+        // One dependent is not a workspace-wide concern worth a column.
+        assert_eq!(pick_tracked(&ms), None);
+    }
+
+    #[test]
+    fn a_workspace_with_no_shared_package_tracks_nothing() {
+        let ms = vec![
+            manifest(Some("app-a"), None, &["react"]),
+            manifest(Some("app-b"), None, &["react"]),
+            manifest(None, None, &[]),
+        ];
+        assert_eq!(pick_tracked(&ms), None);
+        // External deps must never be mistaken for a local library.
+        assert!(pick_tracked(&ms).is_none());
+    }
+
+    #[test]
+    fn package_manager_prefers_the_declared_field_over_the_lockfile() {
+        let d = std::env::temp_dir().join(format!("wa-pm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("package.json"), r#"{"packageManager":"pnpm@9.1.0"}"#).unwrap();
+        std::fs::write(d.join("package-lock.json"), "{}").unwrap();
+        assert_eq!(package_manager(&d, "npm").as_deref(), Some("pnpm"));
+
+        // Without the field, the lockfile decides.
+        std::fs::write(d.join("package.json"), "{}").unwrap();
+        assert_eq!(package_manager(&d, "bun").as_deref(), Some("npm"));
+
+        // With neither, the caller's installed manager decides — not a constant.
+        std::fs::remove_file(d.join("package-lock.json")).unwrap();
+        assert_eq!(package_manager(&d, "bun").as_deref(), Some("bun"));
+        assert_eq!(package_manager(&d, "yarn").as_deref(), Some("yarn"));
+    }
+
+    #[test]
+    fn a_repo_without_a_manifest_has_no_package_manager() {
+        let d = std::env::temp_dir().join(format!("wa-pm-none-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        assert_eq!(package_manager(&d, "npm"), None);
     }
 
     #[test]

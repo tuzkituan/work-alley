@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, ExternalLink, GitPullRequest, RefreshCw } from 'lucide-react'
+import { ArrowLeft, ExternalLink, GitPullRequest, RefreshCw, SquareTerminal } from 'lucide-react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
@@ -9,26 +9,27 @@ import { RepoMenu } from '@/features/repos/RepoMenu'
 import { api } from '@/ipc/commands'
 import { keys } from '@/queries/keys'
 import { cn } from '@/lib/utils'
-import { derive, displayName, taskOf, TONE_TEXT, type Tone } from '@/domain/severity'
+import { derive, taskOf, TONE_TEXT, type Tone } from '@/domain/severity'
 import type { ChangedFile, PullRequest, RepoId, RepoRef } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunStore } from '@/stores/run-store'
 import { useRunAction } from '@/hooks/use-action'
+import { shortPackageName, useTrackedPackage } from '@/hooks/use-tracked-package'
 
 export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
   const closeDetail = useUiStore((s) => s.closeDetail)
   const status = useScanStore((s) => s.repos.get(id))
-  const uiLatest = useScanStore((s) => s.uiLatest)
+  const trackedLatest = useScanStore((s) => s.trackedLatest)
+  const trackedPackage = useTrackedPackage()
   const runningHere = useRunStore((s) => s.runningByScope[id] ?? 0)
   const run = useRunAction()
 
   const [category, ...rest] = id.split('/')
   const name = rest.join('/')
   const repo = { category, name } as RepoRef
-  const { short, prefix } = displayName(name)
 
-  const d = status ? derive(status, uiLatest) : null
+  const d = status ? derive(status, trackedLatest) : null
   const dev = taskOf(status, 'dev')
   const sb = taskOf(status, 'storybook')
   const devUp = dev?.state === 'up' || dev?.state === 'starting'
@@ -44,10 +45,9 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
               <ArrowLeft className="size-4" />
             </Button>
             {d ? <StatusDot tone={d.tone} size={9} /> : <StatusDot tone="idle" size={9} />}
-            <h1 className="truncate text-base font-semibold tracking-[-0.01em]">{short}</h1>
+            <h1 className="truncate text-base font-semibold tracking-[-0.01em]">{name}</h1>
             {status && <KindTag kind={status.shape.kind} stack={status.shape.stack} />}
             <MonoChip>{category}</MonoChip>
-            {prefix && <span className="font-mono text-[11px] text-adaptive-400">{prefix}</span>}
             {d && <StatePill tone={d.tone} label={d.stateLabel} />}
             <div className="flex-1" />
             {runningHere > 0 && (
@@ -85,18 +85,31 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
             <Field label="Branch" value={status?.detached ? '(detached)' : (status?.branch ?? '—')} />
             <Field label="Sync" value={d?.syncLabel ?? '—'} tone={d?.syncTone} />
             <Field label="Changes" value={d?.dirtyLabel ?? '—'} tone={d?.dirtyTone} />
-            <Field
-              label="blazeup-ui"
-              value={status?.uiDep.resolved ?? (status?.uiDep.declared ? 'n/a' : '—')}
-              tone={
-                status?.uiDep.resolved && uiLatest && status.uiDep.resolved !== uiLatest
-                  ? 'warn'
-                  : 'idle'
-              }
-            />
+            {trackedPackage && (
+              <Field
+                label={shortPackageName(trackedPackage)}
+                value={status?.trackedDep.resolved ?? (status?.trackedDep.declared ? 'n/a' : '—')}
+                tone={
+                  status?.trackedDep.resolved &&
+                  trackedLatest &&
+                  status.trackedDep.resolved !== trackedLatest
+                    ? 'warn'
+                    : 'idle'
+                }
+              />
+            )}
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5 border-t border-adaptive-200 pt-2.5">
+            <Button
+              variant="waOutline"
+              size="waSm"
+              title="Open a shell in this repo"
+              onClick={() => run({ kind: 'openShell', ref: repo })}
+            >
+              <SquareTerminal className="size-3" />
+              Terminal
+            </Button>
             <Button variant="waOutline" size="waSm" onClick={() => run({ kind: 'pull', ref: repo })}>
               Pull
             </Button>

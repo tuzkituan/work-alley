@@ -1,4 +1,5 @@
-import { Search } from 'lucide-react'
+import { useState } from 'react'
+import { GitBranch, Moon, Search, SquareTerminal, Sun, Wrench } from 'lucide-react'
 import { WindowControls } from './WindowControls'
 import { TerminalsMenu } from './TerminalsMenu'
 import { WorkspaceSwitcher } from '@/features/workspace/WorkspacePicker'
@@ -6,13 +7,18 @@ import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { KeyCap, Sep } from '@/components/wa/primitives'
 import { useTheme } from '@/hooks/use-theme'
+import { useAppIdentity } from '@/hooks/use-bootstrap'
+import { CheckoutAllDialog } from '@/features/actions/CheckoutAllDialog'
 import { useRunAction } from '@/hooks/use-action'
 import { useUiStore } from '@/stores/ui-store'
 import { useScanStore } from '@/stores/scan-store'
 import type { Bootstrap } from '@/domain/types'
 
 export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
-  const { toggleTheme, label, mode } = useTheme()
+  const { toggleTheme, theme } = useTheme()
+  const { name } = useAppIdentity()
+  const page = useUiStore((s) => s.page)
+  const setPage = useUiStore((s) => s.setPage)
   const run = useRunAction()
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen)
   const expanded = useUiStore((s) => s.expandedCategory)
@@ -20,10 +26,12 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
   const total = useScanStore((s) => s.total)
   const received = useScanStore((s) => s.received)
 
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
+
   const repoCount = boot?.repos.length ?? 0
   const scriptCount = boot?.scripts.length ?? 0
 
-  // Bulk actions follow the open folder. "Pull All" across 63 repos when the user
+  // Bulk actions follow the open folder. "Pull All" across every repo when
   // is looking at one folder would act well outside what they can see.
   const targets = (boot?.repos ?? []).filter((r) => !expanded || r.category === expanded)
   const scopeLabel = expanded ? `${expanded}/` : 'All'
@@ -34,10 +42,10 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
         {/* The bar doubles as the title bar. The drag attribute goes on the inert
             areas only — putting it on the whole bar would swallow button clicks. */}
         <div data-tauri-drag-region className="flex items-center gap-2">
-          <div className="flex size-[22px] items-center justify-center rounded-md bg-gradient-to-b from-[#EA580C] to-[#F97316] text-[13px] font-bold text-white">
-            W
+          <div className="flex size-[22px] items-center justify-center rounded-md bg-primary text-[13px] font-bold text-primary-foreground">
+            {name.charAt(0)}
           </div>
-          <span className="text-sm font-semibold tracking-[-0.01em]">work-alley</span>
+          <span className="text-sm font-semibold tracking-[-0.01em]">{name}</span>
         </div>
 
         <WorkspaceSwitcher boot={boot} />
@@ -57,7 +65,7 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
         <button
           type="button"
           onClick={() => setPaletteOpen(true)}
-          className="flex items-center gap-2 rounded-md border border-adaptive-200 bg-background px-2.5 py-[5px] text-xs text-adaptive-400 transition-shadow hover:border-adaptive-950 hover:shadow-focus-ring"
+          className="flex h-[30px] items-center gap-2 rounded-md border border-adaptive-300 bg-background px-2.5 text-xs text-adaptive-400 transition-shadow hover:border-adaptive-950 hover:shadow-focus-ring"
         >
           <Search className="size-3" />
           <span>Search repos, branches, scripts</span>
@@ -68,19 +76,36 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
 
         <Button
           variant="waOutline"
-          size="wa"
-          onClick={toggleTheme}
-          title={
-            mode === 'system'
-              ? 'Following the system theme — click for light'
-              : `${label} theme — click to change`
-          }
+          size="waIconLg"
+          className="border-adaptive-300"
+          title="Open a terminal in the workspace folder"
+          onClick={() => run({ kind: 'openShell', ref: null })}
         >
-          {label}
+          <SquareTerminal className="size-3.5" />
+        </Button>
+        <Button
+          variant={page === 'toolbox' ? 'waPrimary' : 'waOutline'}
+          size="waIconLg"
+          className={page === 'toolbox' ? undefined : 'border-adaptive-300'}
+          title={page === 'toolbox' ? 'Back to the workspace' : 'Toolbox — your dev tools'}
+          onClick={() => setPage(page === 'toolbox' ? 'repos' : 'toolbox')}
+        >
+          <Wrench className="size-3.5" />
+        </Button>
+        <Button
+          variant="waOutline"
+          size="waIconLg"
+          // Stronger edge than the page default: see the note on the search field.
+          className="border-adaptive-300"
+          onClick={toggleTheme}
+          title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
+        >
+          {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
         </Button>
         <Button
           variant="waOutline"
           size="wa"
+          className="border-adaptive-300"
           disabled={targets.length === 0}
           // Scoped to the open folder. This previously said "Fetch sa/" but sent
           // ref: null, which fetches every repo in the workspace — the label and
@@ -99,10 +124,28 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
         >
           Pull {scopeLabel}
         </Button>
+        <Button
+          variant="waOutline"
+          size="wa"
+          className="border-adaptive-300"
+          disabled={targets.length === 0}
+          title={`Check out a branch across every repo in ${scopeLabel}`}
+          onClick={() => setCheckoutOpen(true)}
+        >
+          <GitBranch className="size-3.5" />
+          Checkout
+        </Button>
 
         <span className="mx-1 h-5 w-px bg-adaptive-200" />
         <WindowControls />
       </div>
+
+      <CheckoutAllDialog
+        open={checkoutOpen}
+        onOpenChange={setCheckoutOpen}
+        repos={targets}
+        scopeLabel={scopeLabel}
+      />
 
       {/* Determinate scan progress. The chrome is already painted; this only
           reports how much real git state has landed. */}

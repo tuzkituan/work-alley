@@ -10,8 +10,12 @@ pub struct Config {
     pub stale_days: i64,
     pub scan_concurrency: usize,
     pub recent_commit_limit: u32,
-    pub ui_package_name: String,
-    /// Keyed by repo key ("fe/blazeup-hostapp").
+    /// Pins the shared package whose version drift is tracked. Normally None:
+    /// the workspace's shared package is detected from what the repos actually
+    /// depend on, which is the only thing that works across workspaces.
+    #[serde(default)]
+    pub tracked_package: Option<String>,
+    /// Keyed by repo key ("frontend/my-app").
     #[serde(default)]
     pub dev_command_overrides: BTreeMap<String, Vec<String>>,
     #[serde(default)]
@@ -32,7 +36,7 @@ impl Config {
             stale_days: 9,
             scan_concurrency: (cpus * 2).min(16),
             recent_commit_limit: 30,
-            ui_package_name: "@blazeupai/blazeup-ui".into(),
+            tracked_package: None,
             dev_command_overrides: BTreeMap::new(),
             port_overrides: BTreeMap::new(),
             max_log_lines_per_run: 5_000,

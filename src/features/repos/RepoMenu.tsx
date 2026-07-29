@@ -79,6 +79,11 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
         )}
 
         <DropdownMenuSeparator />
+        {/* A real shell in the repo, as opposed to the run log below. */}
+        <DropdownMenuItem onClick={() => run({ kind: 'openShell', ref: repo })}>
+          Open terminal here
+        </DropdownMenuItem>
+        <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => run({ kind: 'branchList', ref: repo })}>
           Branches…
         </DropdownMenuItem>

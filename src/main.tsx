@@ -9,7 +9,7 @@ const queryClient = new QueryClient({
     queries: {
       retry: 1,
       staleTime: 30_000,
-      // A desktop window regains focus constantly; refetching 63 repos on every
+      // A desktop window regains focus constantly; refetching every repo on each
       // alt-tab would be a disaster.
       refetchOnWindowFocus: false,
     },

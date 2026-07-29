@@ -14,7 +14,6 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { useActionStore } from '@/hooks/use-action'
-import { displayName } from '@/domain/severity'
 import { cn } from '@/lib/utils'
 
 export function ConfirmActionDialog() {
@@ -123,7 +122,7 @@ export function ConfirmActionDialog() {
                   className="flex items-center gap-2 border-b border-adaptive-200 px-2 py-1 text-xs last:border-b-0"
                 >
                   <span className="w-5 font-mono text-[11px] text-adaptive-400">{t.category}</span>
-                  <span className="text-adaptive-800">{displayName(t.name).short}</span>
+                  <span className="text-adaptive-800">{t.name}</span>
                 </div>
               ))}
             </div>

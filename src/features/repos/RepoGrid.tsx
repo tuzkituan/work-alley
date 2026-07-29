@@ -3,10 +3,8 @@ import { useVirtualizer } from '@tanstack/react-virtual'
 import { FolderOpen, LayoutGrid, Rows3 } from 'lucide-react'
 import { CARD_HEIGHT, RepoCard } from './RepoCard'
 import { RepoListHeader, RepoListRow, ROW_HEIGHT } from './RepoListRow'
-import { RecentCommitsPanel } from '@/features/commits/RecentCommitsPanel'
-import { LocalServicesPanel } from '@/features/services/LocalServicesPanel'
 import { Button } from '@/components/ui/button'
-import { derive, displayName } from '@/domain/severity'
+import { derive, searchAlias } from '@/domain/severity'
 import { repoId, type Bootstrap } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
@@ -30,7 +28,7 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
   const setView = useUiStore((s) => s.setView)
 
   const statuses = useScanStore((s) => s.repos)
-  const uiLatest = useScanStore((s) => s.uiLatest)
+  const trackedLatest = useScanStore((s) => s.trackedLatest)
   const scanning = useScanStore((s) => s.scanning)
   const durationMs = useScanStore((s) => s.durationMs)
   const isScanned = useScanStore((s) => (expanded ? s.scanned.has(expanded) : false))
@@ -46,22 +44,21 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
     const needle = filterText.trim().toLowerCase()
     return inFolder.filter((r) => {
       if (needle) {
-        const { short } = displayName(r.name)
-        const hay = `${r.category}/${r.name} ${short}`.toLowerCase()
+        const hay = `${r.category}/${r.name} ${searchAlias(r.name)}`.toLowerCase()
         if (!hay.includes(needle)) return false
       }
       if (filterChip) {
         const st = statuses.get(repoId(r))
         // Not yet scanned — cannot claim it matches.
         if (!st) return false
-        if (!derive(st, uiLatest).kinds.includes(filterChip)) return false
+        if (!derive(st, trackedLatest).kinds.includes(filterChip)) return false
       }
       return true
     })
     // Order is stable (name, as discovered) and deliberately NOT re-sorted while a
     // scan streams in — reordering a virtualized list under the cursor makes it
     // jump.
-  }, [inFolder, statuses, uiLatest, filterText, filterChip])
+  }, [inFolder, statuses, trackedLatest, filterText, filterChip])
 
   const perRow = view === 'cards' ? 2 : 1
   const items = useMemo(
@@ -210,10 +207,6 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
           </>
         )}
 
-        <div className="grid grid-cols-[1.15fr_1fr] gap-3">
-          <RecentCommitsPanel repoCount={inFolder.length} scope={expanded} />
-          <LocalServicesPanel />
-        </div>
       </div>
     </div>
   )

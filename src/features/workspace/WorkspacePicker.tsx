@@ -1,7 +1,7 @@
 import { useEffect } from 'react'
-import { useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Check, ChevronDown, FolderOpen, FolderSearch } from 'lucide-react'
+import { Check, ChevronDown, FolderOpen, FolderSearch, Plus, Wrench, X } from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -11,18 +11,33 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
+import { useUiStore } from '@/stores/ui-store'
 import { api } from '@/ipc/commands'
 import { keys } from '@/queries/keys'
 import { IpcError } from '@/ipc/errors'
 import type { Bootstrap } from '@/domain/types'
 
-/** `/home/me/work-alley` -> `~/work-alley` */
-export function shortenHome(p: string) {
-  const home = '/home/'
-  if (!p.startsWith(home)) return p
+/**
+ * `/home/me/projects` -> `~/projects`.
+ *
+ * Takes the home directory rather than assuming `/home/` — that prefix is wrong
+ * on macOS (`/Users/`) and for any account outside the default location.
+ */
+export function shortenHome(p: string, home: string | null) {
+  if (!home || !p.startsWith(home)) return p
   const rest = p.slice(home.length)
-  const slash = rest.indexOf('/')
-  return slash === -1 ? '~' : `~${rest.slice(slash)}`
+  if (rest === '') return '~'
+  return rest.startsWith('/') ? `~${rest}` : p
+}
+
+/** The home directory, for abbreviating paths. */
+export function useHomeDir(): string | null {
+  const { data } = useQuery({
+    queryKey: keys.bootstrap,
+    queryFn: () => api.getBootstrap(),
+    select: (b) => b.homeDir,
+  })
+  return data ?? null
 }
 
 export function useWorkspaceActions() {
@@ -43,24 +58,30 @@ function useSwitchWorkspace() {
   }
 
   const pick = useMutation({ mutationFn: () => api.pickWorkspace(), onSuccess: apply, onError: report })
+  const close = useMutation({
+    mutationFn: () => api.closeWorkspace(),
+    onSuccess: apply,
+    onError: report,
+  })
   const set = useMutation({
     mutationFn: (path: string) => api.setWorkspace(path),
     onSuccess: apply,
     onError: report,
   })
 
-  return { pick, set, busy: pick.isPending || set.isPending }
+  return { pick, set, close, busy: pick.isPending || set.isPending || close.isPending }
 }
 
 /**
  * Topbar control: shows the open workspace and switches between them.
  *
- * Styled as a real button with a folder icon. It used to be plain grey text with a
- * chevron, which did not read as something you could click — the most important
- * control in the header was effectively invisible.
+ * Styled as a real button with a folder icon. It used to be plain grey text with
+ * a chevron, which did not read as something you could click — the most
+ * important control in the header was effectively invisible.
  */
 export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
-  const { pick, set, busy } = useSwitchWorkspace()
+  const { pick, set, close, busy } = useSwitchWorkspace()
+  const home = boot?.homeDir ?? null
   const current = boot?.workspaceRoot ?? ''
   const recents = (boot?.recentRoots ?? []).filter((r) => r !== current)
   // The folder name alone is enough here; the full path is on hover and in the menu.
@@ -86,9 +107,9 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
           type="button"
           disabled={busy}
           title={`Workspace: ${current || 'none'} — click to switch (⌘O to open a folder)`}
-          className="flex min-w-0 items-center gap-1.5 rounded-md border border-adaptive-200 bg-background px-2 py-1 text-xs font-medium text-adaptive-800 transition-shadow hover:border-adaptive-950 hover:shadow-focus-ring"
+          className="flex h-[30px] min-w-0 items-center gap-1.5 rounded-md border border-adaptive-300 bg-background px-2 text-xs font-medium text-adaptive-800 transition-shadow hover:border-adaptive-950 hover:shadow-focus-ring"
         >
-          <FolderOpen className="size-3.5 flex-none text-primary-600" />
+          <FolderOpen className="size-3.5 flex-none text-primary" />
           <span className="max-w-[180px] truncate">{name}</span>
           <ChevronDown className="size-3 flex-none text-adaptive-400" />
         </button>
@@ -109,7 +130,7 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
             </DropdownMenuLabel>
             {recents.map((r) => (
               <DropdownMenuItem key={r} onClick={() => set.mutate(r)} className="font-mono text-xs">
-                <span className="truncate">{shortenHome(r)}</span>
+                <span className="truncate">{shortenHome(r, home)}</span>
               </DropdownMenuItem>
             ))}
           </>
@@ -120,7 +141,13 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
             <DropdownMenuSeparator />
             <DropdownMenuItem disabled className="font-mono text-xs">
               <Check className="size-3.5" />
-              <span className="truncate">{shortenHome(current)}</span>
+              <span className="truncate">{shortenHome(current, home)}</span>
+            </DropdownMenuItem>
+            {/* Closing keeps the folder in Recent — "close" means stop looking at
+                this, not forget it. */}
+            <DropdownMenuItem onClick={() => close.mutate()}>
+              <X className="size-3.5" />
+              Close folder
             </DropdownMenuItem>
           </>
         )}
@@ -135,14 +162,22 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
  * Deliberately not a modal: there is nothing behind it to interact with, and the
  * only useful action is choosing a folder.
  */
-export function WorkspaceWelcome({ boot }: { boot: Bootstrap | undefined }) {
+export function WorkspaceWelcome({
+  boot,
+  onSetUp,
+}: {
+  boot: Bootstrap | undefined
+  onSetUp: () => void
+}) {
   const { pick, set, busy } = useSwitchWorkspace()
+  const setPage = useUiStore((s) => s.setPage)
+  const home = boot?.homeDir ?? null
   const recents = boot?.recentRoots ?? []
 
   return (
     <div className="flex h-full items-center justify-center bg-background p-10">
       <div className="flex w-full max-w-lg flex-col items-center gap-5">
-        <div className="flex size-11 items-center justify-center rounded-lg bg-gradient-to-b from-[#EA580C] to-[#F97316] text-lg font-bold text-white">
+        <div className="flex size-11 items-center justify-center rounded-lg bg-primary text-lg font-bold text-primary-foreground">
           W
         </div>
 
@@ -151,17 +186,25 @@ export function WorkspaceWelcome({ boot }: { boot: Bootstrap | undefined }) {
           {/* Describes what discovery actually does. An earlier version still
               named be/ fe/ sa/ ui/ long after that stopped being the rule. */}
           <p className="mt-1 text-sm text-adaptive-600">
-            Point Work Alley at any folder with git repos in it. Repos in subfolders
-            keep those subfolders as groups; repos sitting directly in the folder are
+            Point it at any folder with git repos in it. Repos in subfolders keep
+            those subfolders as groups; repos sitting directly in the folder are
             grouped by what they are — frontend, backend, library. A single project
-            folder works too.
+            folder works too. Nothing cloned yet? Paste the URLs instead.
           </p>
         </div>
 
-        <Button variant="waPrimary" size="wa" disabled={busy} onClick={() => pick.mutate()}>
-          <FolderOpen className="size-3.5" />
-          {busy ? 'Opening…' : 'Open folder…'}
-        </Button>
+        <div className="flex flex-wrap items-center justify-center gap-2">
+          <Button variant="waPrimary" size="wa" disabled={busy} onClick={() => pick.mutate()}>
+            <FolderOpen className="size-3.5" />
+            {busy ? 'Opening…' : 'Open folder…'}
+          </Button>
+          {/* Opening a folder only works if you already have the repos. On a new
+              machine you do not, and without this the first run is a dead end. */}
+          <Button variant="waOutline" size="wa" onClick={onSetUp}>
+            <Plus className="size-3.5" />
+            Set up from git URLs…
+          </Button>
+        </div>
 
         {recents.length > 0 && (
           <div className="w-full">
@@ -178,12 +221,23 @@ export function WorkspaceWelcome({ boot }: { boot: Bootstrap | undefined }) {
                   className="flex w-full items-center gap-2 border-b border-adaptive-200 px-3 py-2 text-left font-mono text-xs text-adaptive-700 last:border-b-0 hover:bg-adaptive-100"
                 >
                   <FolderOpen className="size-3.5 flex-none text-adaptive-400" />
-                  <span className="truncate">{shortenHome(r)}</span>
+                  <span className="truncate">{shortenHome(r, home)}</span>
                 </button>
               ))}
             </div>
           </div>
         )}
+
+        {/* Reachable before any folder is open: a fresh machine usually needs git
+            and a package manager before it can clone anything at all. */}
+        <button
+          type="button"
+          onClick={() => setPage('toolbox')}
+          className="flex items-center gap-1.5 text-[11px] text-adaptive-500 hover:text-adaptive-800"
+        >
+          <Wrench className="size-3" />
+          Check your developer tools
+        </button>
 
         <p className="text-center text-[11px] text-adaptive-400">
           You can also set <code className="font-mono">WORK_ALLEY_ROOT</code> to override this.

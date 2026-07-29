@@ -11,7 +11,7 @@ import type { Category } from '@/domain/types'
  * Scans a folder the first time it is expanded, and never before.
  *
  * Nothing is scanned at launch: with everything collapsed there is no folder in
- * view, so running git across all 63 repos would be work nobody asked for. A
+ * view, so running git across every repo would be work nobody asked for. A
  * folder is scanned once and then cached; "Rescan" re-runs it explicitly.
  */
 export function useCategoryScan(toolsReady: boolean) {

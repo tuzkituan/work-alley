@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown } from 'lucide-react'
+import { ArrowDown, X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { SectionLabel, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
@@ -8,17 +8,24 @@ import { api } from '@/ipc/commands'
 import { runScope, useRunStore, type Run } from '@/stores/run-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
-import { displayName } from '@/domain/severity'
-import type { LogLine, Severity } from '@/domain/types'
+import { useContainerRuntime, useHeadlessScripts } from '@/hooks/use-bootstrap'
+import { SEVERITY_CLASS } from './severity-class'
+import type { LogLine } from '@/domain/types'
 import type { Tone } from '@/domain/severity'
 
-const SEVERITY_CLASS: Record<Severity, string> = {
-  cmd: 'text-primary-600 font-semibold',
-  ok: 'text-sev-ok',
-  warn: 'text-sev-warn',
-  err: 'text-sev-err',
-  info: 'text-sev-info',
-  out: 'text-adaptive-800',
+/**
+ * Compact age, for the run chips: `now`, `12s`, `4m`, `2h`.
+ *
+ * Not a wall-clock time: "started 4m ago" answers "which one did I just start",
+ * which is the actual question when several runs of the same command are listed.
+ */
+function ago(startedUnix: number): string {
+  const secs = Math.max(0, Math.floor(Date.now() / 1000) - startedUnix)
+  if (secs < 5) return 'now'
+  if (secs < 60) return `${secs}s`
+  if (secs < 3600) return `${Math.floor(secs / 60)}m`
+  if (secs < 86_400) return `${Math.floor(secs / 3600)}h`
+  return `${Math.floor(secs / 86_400)}d`
 }
 
 /** One 200KB stack-trace line would otherwise measure into a giant row. */
@@ -28,7 +35,10 @@ export function OutputPane() {
   const runs = useRunStore((s) => s.runs)
   const activeRunId = useRunStore((s) => s.activeRunId)
   const setActive = useRunStore((s) => s.setActive)
+  const scripts = useHeadlessScripts()
+  const runtime = useContainerRuntime()
   const clear = useRunStore((s) => s.clear)
+  const dismiss = useRunStore((s) => s.dismiss)
   const run = useRunAction()
 
   // The pane is scoped: the selected repo's own terminal, or the workspace scope
@@ -58,10 +68,16 @@ export function OutputPane() {
   const activeInScope = activeRunId && scopeIds.includes(activeRunId) ? activeRunId : null
   const shownId = activeInScope ?? scopeIds[scopeIds.length - 1] ?? null
   const active = shownId ? runs.get(shownId) : undefined
-  const recent = scopeIds.slice(-6)
+  // Newest first: with several runs of the same command in one repo, the one you
+  // just started is the one you want, and it was previously last in a wrapped grid.
+  const recent = useMemo(() => [...scopeIds].reverse(), [scopeIds])
+  const finished = useMemo(
+    () => recent.filter((id) => runs.get(id)?.summary.status.kind !== 'running'),
+    [recent, runs]
+  )
 
   const scopeLabel = scope
-    ? displayName(scope.split('/')[1] ?? scope).short
+    ? (scope.split('/')[1] ?? scope)
     : 'workspace'
 
   return (
@@ -93,37 +109,83 @@ export function OutputPane() {
             Cancel
           </Button>
         )}
+        {finished.length > 1 && (
+          <Button
+            variant="waOutline"
+            size="waXs"
+            title={`Dismiss ${finished.length} finished runs in this scope`}
+            onClick={() => {
+              // Finished runs accumulate one per start; without this the strip grows
+              // until it is unreadable, which is exactly what it did.
+              for (const id of finished) {
+                dismiss(id)
+                void api.dismissRun(id).catch(() => {})
+              }
+            }}
+          >
+            Dismiss {finished.length}
+          </Button>
+        )}
         <Button
           variant="waOutline"
           size="waXs"
           disabled={!active}
+          title="Clear this run's output"
           onClick={() => active && clear(active.runId)}
         >
           Clear
         </Button>
       </div>
 
-      {/* One chip per concurrent run. */}
+      {/* One chip per run in this scope.
+       *
+       * A single scrolling row, not a wrapping grid: every run in one repo has the
+       * same `kind`, so a grid of a dozen identical "devStart" chips over four rows
+       * was impossible to read. Each chip now carries how long ago it started —
+       * within one scope that is the only thing that tells them apart — and can be
+       * dismissed individually. */}
       {recent.length > 1 && (
-        <div className="flex flex-none flex-wrap gap-1 border-b border-adaptive-200 px-2.5 py-1.5">
+        <div className="wa-scroll flex flex-none items-center gap-1 overflow-x-auto border-b border-adaptive-200 px-2.5 py-1.5">
           {recent.map((id) => {
             const r = runs.get(id)
             if (!r) return null
+            const running = r.summary.status.kind === 'running'
             return (
-              <button
+              <span
                 key={id}
-                type="button"
-                onClick={() => setActive(id)}
                 className={cn(
-                  'flex items-center gap-1.5 rounded-[5px] border px-1.5 py-0.5 font-mono text-[10.5px]',
+                  'flex h-[22px] flex-none items-center gap-1.5 rounded-[5px] border pl-1.5 font-mono text-[10.5px]',
+                  running ? 'pr-1.5' : 'pr-0.5',
                   id === activeRunId
                     ? 'border-adaptive-400 bg-background text-adaptive-900'
                     : 'border-adaptive-200 text-adaptive-500 hover:border-adaptive-400'
                 )}
               >
-                <StatusDot tone={runTone(r)} size={5} />
-                <span className="max-w-24 truncate">{r.summary.kind}</span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setActive(id)}
+                  title={`${r.summary.title} — ${statusLabel(r)}`}
+                  className="flex items-center gap-1.5"
+                >
+                  <StatusDot tone={runTone(r)} size={5} />
+                  <span className="max-w-28 truncate">{r.summary.kind}</span>
+                  <span className="wa-num text-adaptive-400">{ago(r.summary.startedUnix)}</span>
+                </button>
+                {/* Only finished runs: dismissing a live one would orphan it. */}
+                {!running && (
+                  <button
+                    type="button"
+                    aria-label="Dismiss this run"
+                    onClick={() => {
+                      dismiss(id)
+                      void api.dismissRun(id).catch(() => {})
+                    }}
+                    className="flex size-3.5 flex-none items-center justify-center rounded-sm text-adaptive-400 hover:bg-adaptive-200 hover:text-adaptive-900"
+                  >
+                    <X className="size-2.5" />
+                  </button>
+                )}
+              </span>
             )
           })}
         </div>
@@ -131,23 +193,31 @@ export function OutputPane() {
 
       {active ? <LogView run={active} /> : <EmptyLog scope={scopeLabel} />}
 
+      {/* Quick actions. The script chips come from whatever this workspace has in
+          scripts/ — there is no built-in script to hardcode. */}
       <div className="flex flex-none flex-wrap gap-1.5 border-t border-adaptive-200 px-2.5 py-2.5">
         <Button variant="waDashed" size="waChip" onClick={() => run({ kind: 'prList' })}>
           gh pr list
         </Button>
-        <Button variant="waDashed" size="waChip" onClick={() => run({ kind: 'dockerPs' })}>
-          docker ps
-        </Button>
-        <Button
-          variant="waDashed"
-          size="waChip"
-          onClick={() => run({ kind: 'script', script: 'verify-repos', args: [] })}
-        >
-          verify-repos
-        </Button>
+        {runtime && (
+          <Button variant="waDashed" size="waChip" onClick={() => run({ kind: 'dockerPs' })}>
+            {runtime} ps
+          </Button>
+        )}
         <Button variant="waDashed" size="waChip" onClick={() => run({ kind: 'fetchAll', ref: null })}>
           fetch --all
         </Button>
+        {scripts.map((s) => (
+          <Button
+            key={s.id}
+            variant="waDashed"
+            size="waChip"
+            title={s.description}
+            onClick={() => run({ kind: 'script', script: s.id, args: [] })}
+          >
+            {s.id}
+          </Button>
+        ))}
       </div>
     </div>
   )

@@ -21,7 +21,7 @@ export interface RepoRef {
   name: string
 }
 
-/** `"fe/blazeup-hostapp"` — the stable key used for maps and React keys. */
+/** `"frontend/my-app"` — the stable key used for maps and React keys. */
 export type RepoId = string
 export const repoId = (r: RepoRef): RepoId => `${r.category}/${r.name}`
 
@@ -35,7 +35,7 @@ export type StaleState =
   | { kind: 'fresh'; lastFetchUnix: number }
   | { kind: 'stale'; lastFetchUnix: number; days: number }
 
-export interface UiDep {
+export interface TrackedDep {
   declared: string | null
   resolved: string | null
   field: 'dependencies' | 'devDependencies' | 'peerDependencies' | null
@@ -72,7 +72,7 @@ export interface RepoStatus {
   sync: SyncState
   stale: StaleState
   lastCommit: LastCommit | null
-  uiDep: UiDep
+  trackedDep: TrackedDep
   /** Resolved from .env / vite.config, present whether or not a server runs. */
   devPort: number | null
   /** What this repo appears to be. */
@@ -101,8 +101,8 @@ export interface WorkspaceSnapshot {
   finishedUnix: number | null
   repos: RepoStatus[]
   commits: CommitEntry[]
-  uiLatest: string | null
-  uiLatestSource: 'published' | 'declared' | null
+  trackedLatest: string | null
+  trackedLatestSource: 'published' | 'declared' | null
   okCount: number
   errorCount: number
   durationMs: number
@@ -118,7 +118,7 @@ export interface LogLine {
   severity: Severity
   text: string
   unix: number
-  /** Set on bulk runs so 63 interleaved repos can be rendered grouped. */
+  /** Set on bulk runs so interleaved repos can be rendered grouped. */
   repo: RepoId | null
 }
 
@@ -224,7 +224,7 @@ export interface ScriptDescriptor {
   danger: Danger
   requiredTools: string[]
   argSchema: ScriptArg[]
-  /** e.g. verify-repos.sh exits 1 for "drift detected" — not a failure. */
+  /** e.g. a script that exits 1 for "drift detected" — not a failure. */
   nonZeroExitMeaning: string | null
   /** Short mono hint shown in the rail, e.g. "gh" / "npm" / "git". */
   hint: string
@@ -246,7 +246,8 @@ export interface Config {
   staleDays: number
   scanConcurrency: number
   recentCommitLimit: number
-  uiPackageName: string
+  /** Pins the shared package to track; null means "detect it". */
+  trackedPackage: string | null
   devCommandOverrides: Record<string, string[]>
   portOverrides: Record<string, number>
   maxLogLinesPerRun: number
@@ -269,6 +270,17 @@ export interface Bootstrap {
   /** Editors found on this machine, for the "open in…" action. */
   editors: EditorInfo[]
   scripts: ScriptDescriptor[]
+  /**
+   * The shared package whose version drift is tracked, detected from what the
+   * repos depend on. Null in a workspace with no shared package — the column is
+   * hidden rather than shown empty.
+   */
+  trackedPackage: string | null
+  /**
+   * The user's home directory, for abbreviating paths to `~/…`. Sent rather than
+   * assumed: it is `/home/x` on Linux and `/Users/x` on macOS.
+   */
+  homeDir: string | null
   warnings: string[]
 }
 
@@ -331,6 +343,56 @@ export interface PackageStatus {
 
 export type Danger = 'low' | 'medium' | 'high'
 
+export interface FolderPick {
+  path: string
+  /** Non-hidden entries already there, so the UI can warn before cloning into it. */
+  entryCount: number
+}
+
+/** What "checkout to the default branch" would do to one repo. */
+export interface CheckoutPreview {
+  ref: RepoRef
+  current: string | null
+  /**
+   * The branch this repo would end up on. Null means unknown (no origin/HEAD) or
+   * absent here, so the repo is skipped rather than guessed at.
+   */
+  target: string | null
+  /** False when a named branch exists neither locally nor on origin. */
+  targetExists: boolean
+  dirtyCount: number
+  alreadyThere: boolean
+}
+
+/** What to do about repos with local changes when switching branches. */
+export type DirtyPolicy = 'skip' | 'stash' | 'discard'
+
+export interface PackageVersion {
+  /** Passed back as ActionSpec.version. */
+  value: string
+  label: string
+  /** "LTS", "latest", "recommended" — shown beside the label. */
+  note: string | null
+}
+
+export interface ParsedRepoUrl {
+  url: string
+  name: string
+  host: string
+}
+
+export interface RejectedUrlLine {
+  /** 1-based, matching the textarea. */
+  line: number
+  text: string
+  reason: string
+}
+
+export interface ParsedUrls {
+  repos: ParsedRepoUrl[]
+  rejected: RejectedUrlLine[]
+}
+
 export type ActionSpec =
   | { kind: 'pull'; ref: RepoRef }
   | { kind: 'pullMany'; refs: RepoRef[] }
@@ -340,9 +402,14 @@ export type ActionSpec =
   | { kind: 'devStop'; ref: RepoRef; task?: string }
   | { kind: 'script'; script: string; args: string[] }
   | { kind: 'openInTerminal'; script: string; ref: RepoRef | null }
+  /** Opens the system terminal emulator. Read-only: skips the confirm dialog. */
+  | { kind: 'openShell'; ref: RepoRef | null }
+  /** `branch` omitted means each repo's own default, from origin/HEAD. */
+  | { kind: 'checkout'; refs: RepoRef[]; branch?: string; dirty: DirtyPolicy }
   | { kind: 'openInEditor'; ref: RepoRef; editor: string }
-  | { kind: 'package'; id: string; op: PackageOp }
+  | { kind: 'package'; id: string; op: PackageOp; version?: string }
   | { kind: 'dockerPs' }
+  | { kind: 'cloneUrls'; root: string; urls: string[] }
   | { kind: 'killPort'; port: number; ref: RepoRef | null }
   /** Read-only inspections. These skip the confirmation dialog. */
   | { kind: 'status'; ref: RepoRef }
@@ -417,5 +484,5 @@ export type NeedsYouKind =
   | 'behind'
   | 'stale'
   | 'error'
-  | 'uiMismatch'
+  | 'packageDrift'
   | 'detached'

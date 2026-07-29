@@ -71,7 +71,7 @@ function ControlButton({
       onClick={onClick}
       className={cn(
         'flex size-7 items-center justify-center rounded-md text-adaptive-500 transition-colors',
-        danger ? 'hover:bg-error-500 hover:text-white' : 'hover:bg-adaptive-200 hover:text-adaptive-900'
+        danger ? 'hover:bg-error-500 hover:text-background' : 'hover:bg-adaptive-200 hover:text-adaptive-900'
       )}
     >
       {children}

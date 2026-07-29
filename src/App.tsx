@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ResizableHandle,
@@ -18,9 +18,13 @@ import { CommandPalette } from '@/features/command/CommandPalette'
 import { WorkspaceWelcome } from '@/features/workspace/WorkspacePicker'
 import { Toolbox } from '@/features/toolbox/Toolbox'
 import { useUiStore } from '@/stores/ui-store'
+import { cn } from '@/lib/utils'
 import { api } from '@/ipc/commands'
 import { connectBridge } from '@/ipc/bridge'
 import { isTauri } from '@/ipc/guard'
+import { ActivityPanel } from '@/features/activity/ActivityPanel'
+import { InitWorkspace } from '@/features/workspace/InitWorkspace'
+import { learnNamePrefixes } from '@/domain/severity'
 import { useCategoryScan } from '@/hooks/use-category-scan'
 import { IpcError } from '@/ipc/errors'
 import { keys } from '@/queries/keys'
@@ -57,10 +61,11 @@ function Dashboard() {
   // Read once: re-reading on every render would fight the drag.
   const [savedLayout] = useState(loadLayout)
   const page = useUiStore((s) => s.page)
+  const detailRepoId = useUiStore((s) => s.detailRepoId)
   const { theme } = useTheme()
-  const [connected, setConnected] = useState(false)
+  const [setupMode, setSetupMode] = useState(false)
 
-  // get_bootstrap paints the entire chrome — real counts, all 63 rail rows, the
+  // get_bootstrap paints the entire chrome — real counts, every folder, the
   // real scripts list — before a single git process has run.
   const {
     data: boot,
@@ -76,26 +81,76 @@ function Dashboard() {
     retryDelay: 200,
   })
 
+  // Repo names are abbreviated for display by stripping whatever prefix this
+  // workspace's repos happen to share. That has to be learned from the names
+  // themselves before anything renders one.
+  learnNamePrefixes(useMemo(() => (boot?.repos ?? []).map((r) => r.name), [boot?.repos]))
+
+  // The selected folder is remembered across launches, so it can name a folder
+  // that no longer exists — a different workspace, or a renamed directory. Clearing
+  // it here stops the scan hook chasing a folder that is not there.
+  const setCategory = useUiStore((s) => s.setCategory)
+  const selected = useUiStore((s) => s.expandedCategory)
+  useEffect(() => {
+    if (!boot || selected === null) return
+    if (!boot.categories.some((c) => c.category === selected)) setCategory(null)
+  }, [boot, selected, setCategory])
+
   // Scans the open folder, once a folder is open *and* the toolchain is resolved.
   useCategoryScan(boot?.toolsReady ?? false)
 
   // Attach listeners as soon as the backend is up. No scan is started here: with
-  // every folder collapsed there is nothing in view, so scanning all 63 repos
+  // no folder selected there is nothing in view, so scanning every repo
   // would be work nobody asked for.
   useEffect(() => {
-    if (!boot || connected) return
-    setConnected(true)
+    if (!boot) return
+    // No local guard: `connectBridge` is memoised on its promise, so calling it
+    // twice is a no-op. A local `connected` flag used to sit here, which is what
+    // made the double-registration bug look impossible — the real guard was inside
+    // the bridge and it was checked after an await.
     void connectBridge(qc)
-  }, [boot, connected, qc])
+  }, [boot, qc])
 
   if (error && !boot) return <FatalError message={error.message} />
+
+  // The Toolbox describes this machine, not the open folder, so it takes the whole
+  // window and works with no workspace at all — which is exactly when someone needs
+  // to install their tools.
+  if (page === 'toolbox') {
+    return (
+      <TooltipProvider delayDuration={400}>
+        <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
+          <TopBar boot={boot} />
+          <Toolbox toolsReady={boot?.toolsReady ?? false} />
+        </div>
+        <ConfirmActionDialog />
+        <Toaster theme={theme} position="bottom-right" />
+      </TooltipProvider>
+    )
+  }
 
   // No folder chosen yet, or the saved one has gone. Nothing else is meaningful
   // until this is answered, so it replaces the whole window rather than nagging.
   if (boot && !boot.hasWorkspace) {
     return (
       <TooltipProvider>
-        <WorkspaceWelcome boot={boot} />
+        {setupMode ? (
+          <InitWorkspace
+            boot={boot}
+            onCancel={() => setSetupMode(false)}
+            onDone={(path) => {
+              setSetupMode(false)
+              // The folder only becomes a workspace once something is cloned into
+              // it, so switching is the last step, not the first.
+              void api.setWorkspace(path).then((b) => qc.setQueryData(keys.bootstrap, b))
+            }}
+          />
+        ) : (
+          <WorkspaceWelcome boot={boot} onSetUp={() => setSetupMode(true)} />
+        )}
+        {/* The clone goes through the same confirmation gate as everything else,
+            so the dialog has to be mounted on this screen too. */}
+        <ConfirmActionDialog />
         <Toaster theme={theme} position="bottom-right" />
       </TooltipProvider>
     )
@@ -124,12 +179,15 @@ function Dashboard() {
             <LeftRail boot={boot} />
           </ResizablePanel>
 
-          <ResizableHandle className="hover:bg-primary-600 data-[dragging]:bg-primary-600" />
+          <ResizableHandle className="hover:bg-primary data-[dragging]:bg-primary" />
 
           <ResizablePanel id="main" minSize="420px">
             <div className="flex h-full min-w-0 flex-col overflow-hidden">
-              {page === 'toolbox' ? (
-                <Toolbox toolsReady={boot?.toolsReady ?? false} />
+              {/* Hidden on a repo's detail page: that view replaces the centre
+                  panel entirely and has its own back button. */}
+              {!detailRepoId && <MainTabs />}
+              {page === 'activity' ? (
+                <ActivityPanel boot={boot} />
               ) : (
                 <>
                   <NeedsYouStrip />
@@ -139,7 +197,7 @@ function Dashboard() {
             </div>
           </ResizablePanel>
 
-          <ResizableHandle className="hover:bg-primary-600 data-[dragging]:bg-primary-600" />
+          <ResizableHandle className="hover:bg-primary data-[dragging]:bg-primary" />
 
           <ResizablePanel id="output" defaultSize="372px" minSize="260px" maxSize="900px">
             <OutputPane />
@@ -199,6 +257,45 @@ function WarningBar({ warnings }: { warnings: string[] }) {
   )
 }
 
+// Workspace-scoped views only. The Toolbox is about the machine, not the open
+// folder, so it is a full-window page reached from the top bar instead.
+const TABS = [
+  { id: 'repos', label: 'Repos' },
+  { id: 'activity', label: 'Activity' },
+] as const
+
+/**
+ * The centre panel's pages.
+ *
+ * A strip rather than a Radix Tabs: the panels are already independent scroll
+ * containers driven by `page` in the store, and Tabs would add a second source of
+ * truth for which one is showing.
+ */
+function MainTabs() {
+  const page = useUiStore((s) => s.page)
+  const setPage = useUiStore((s) => s.setPage)
+
+  return (
+    <div className="flex flex-none items-center gap-1 border-b border-adaptive-200 px-3 pt-2">
+      {TABS.map((t) => (
+        <button
+          key={t.id}
+          type="button"
+          onClick={() => setPage(t.id)}
+          className={cn(
+            'h-[30px] rounded-t-md border-b-2 px-2.5 text-xs font-semibold transition-colors',
+            page === t.id
+              ? 'border-primary text-adaptive-950'
+              : 'border-transparent text-adaptive-500 hover:text-adaptive-800'
+          )}
+        >
+          {t.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 function FatalError({ message }: { message: string }) {
   return (
     <div className="flex h-full items-center justify-center bg-background p-10">
@@ -206,9 +303,8 @@ function FatalError({ message }: { message: string }) {
         <h1 className="text-base font-semibold text-error-500">Could not start</h1>
         <p className="text-sm text-adaptive-700">{message}</p>
         <p className="text-xs text-adaptive-500">
-          Work Alley looks for the nearest ancestor directory containing{' '}
-          <code className="font-mono">repos.json</code> and a{' '}
-          <code className="font-mono">be/ fe/ sa/ ui/</code> directory. Set{' '}
+          Work Alley opens the folder you last chose, or the nearest one above the
+          working directory that contains git repos. Set{' '}
           <code className="font-mono">WORK_ALLEY_ROOT</code> to override.
         </p>
         <Button variant="waPrimary" size="wa" onClick={() => window.location.reload()}>

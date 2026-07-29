@@ -3,8 +3,8 @@ import type { DevServer, NeedsYouKind, RepoStatus, SyncState } from './types'
 /**
  * One table drives every colour in the app.
  *
- * The design paints the same repo state in four places — the rail dot, the card
- * dot, the state pill and the stat-strip values. If each derived its colour
+ * The same repo state is painted in four places — the rail dot, the card dot,
+ * the state pill and the stat-strip values. If each derived its colour
  * independently they would eventually disagree. Everything reads from here.
  */
 export type Tone = 'ok' | 'warn' | 'err' | 'info' | 'idle'
@@ -25,7 +25,7 @@ export const TONE_BG: Record<Tone, string> = {
   idle: 'bg-sev-idle',
 }
 
-/** The design's rgba(…, 0.12) fill / rgba(…, 0.38) border tints, as tokens. */
+/** Pill fill and border tints: the status colour at 12% and 38% opacity. */
 export const TONE_TINT: Record<Tone, string> = {
   ok: 'bg-green-500/[0.12] border-green-500/[0.38]',
   warn: 'bg-amber-500/[0.12] border-amber-500/[0.38]',
@@ -73,20 +73,20 @@ export function behind(sync: SyncState): number {
   return sync.kind === 'diverged' ? sync.behind : 0
 }
 
-export function derive(repo: RepoStatus, uiLatest: string | null): RepoDerived {
+export function derive(repo: RepoStatus, trackedLatest: string | null): RepoDerived {
   const kinds: NeedsYouKind[] = []
   const b = behind(repo.sync)
   const a = ahead(repo.sync)
   const dirty = repo.dirtyCount + repo.untrackedCount
   const isStale = repo.stale.kind === 'stale'
-  const uiMismatch =
-    !!uiLatest && !!repo.uiDep.resolved && repo.uiDep.resolved !== uiLatest
+  const packageDrift =
+    !!trackedLatest && !!repo.trackedDep.resolved && repo.trackedDep.resolved !== trackedLatest
 
   if (repo.error) kinds.push('error')
   if (dirty > 0) kinds.push('uncommitted')
   if (b > 0) kinds.push('behind')
   if (isStale) kinds.push('stale')
-  if (uiMismatch) kinds.push('uiMismatch')
+  if (packageDrift) kinds.push('packageDrift')
   if (repo.detached) kinds.push('detached')
 
   // Worst-wins ordering.
@@ -94,7 +94,7 @@ export function derive(repo: RepoStatus, uiLatest: string | null): RepoDerived {
     ? 'err'
     : repo.conflictCount > 0
       ? 'err'
-      : uiMismatch || repo.detached
+      : packageDrift || repo.detached
         ? 'err'
         : dirty > 0 || b > 0 || isStale
           ? 'warn'
@@ -110,7 +110,7 @@ export function derive(repo: RepoStatus, uiLatest: string | null): RepoDerived {
       ? `${repo.conflictCount} conflict${repo.conflictCount > 1 ? 's' : ''}`
       : repo.detached
         ? 'detached HEAD'
-        : uiMismatch
+        : packageDrift
           ? 'ui mismatch'
           : dirty > 0
             ? 'uncommitted'
@@ -151,28 +151,85 @@ export const NEEDS_YOU_META: Record<NeedsYouKind, { label: string; tone: Tone }>
   behind: { label: 'behind', tone: 'warn' },
   stale: { label: 'stale', tone: 'warn' },
   error: { label: 'errored', tone: 'err' },
-  uiMismatch: { label: 'ui mismatch', tone: 'err' },
+  packageDrift: { label: 'version drift', tone: 'err' },
   detached: { label: 'detached', tone: 'err' },
 }
 
-/** Strips the shared prefixes 43 of 63 repo names carry, for display. */
-const PREFIXES = [
-  'blazeup-subapp-sa-',
-  'blazeup-subapp-',
-  'blazeup-hostapp-',
-  'blazeup-microservice-',
-  'blazeup-lib-',
-  'blazeup-mobile-',
-  'blazeup-',
-]
+// --- name prefixes ----------------------------------------------------------
+//
+// Many workspaces name repos with a shared prefix (`acme-service-billing`,
+// `acme-service-auth`, …).
+//
+// Names are shown in full everywhere — an abbreviated name is a name you then have
+// to hover to confirm, and the full one is what you type in a terminal or paste
+// into a message. The stripped form survives only as a *search alias*, so typing
+// `billing` ranks `acme-service-billing` as a prefix match rather than burying it
+// among mid-string hits.
+//
+// The prefixes are *learned from the names in the workspace*, never hardcoded —
+// a fixed list only ever describes one organisation's conventions.
 
-export function displayName(name: string): { short: string; prefix: string | null } {
-  for (const p of PREFIXES) {
-    if (name.startsWith(p) && name.length > p.length) {
-      return { short: name.slice(p.length), prefix: p.replace(/-$/, '') }
+/** How many repos must share a prefix before it counts as noise. */
+const MIN_SHARED = 3
+
+let learnedFrom = ''
+let prefixes: string[] = []
+
+/**
+ * Derives the shared prefixes in a set of repo names, longest first.
+ *
+ * Candidates are whole hyphen-separated token boundaries only, so
+ * `acme-billing` and `acme-bank` cannot produce a `acme-b` prefix that cuts a
+ * word in half.
+ */
+export function derivePrefixes(names: string[]): string[] {
+  const counts = new Map<string, number>()
+
+  for (const name of names) {
+    const tokens = name.split('-')
+    // Proper prefixes only: stripping must always leave something behind.
+    for (let i = 1; i < tokens.length; i++) {
+      const candidate = `${tokens.slice(0, i).join('-')}-`
+      counts.set(candidate, (counts.get(candidate) ?? 0) + 1)
     }
   }
-  return { short: name, prefix: null }
+
+  return [...counts.entries()]
+    .filter(([, n]) => n >= MIN_SHARED)
+    .map(([p]) => p)
+    .sort((a, b) => b.length - a.length || a.localeCompare(b))
+}
+
+/**
+ * Teaches `searchAlias` the naming conventions of the open workspace.
+ *
+ * Call once per workspace, with every repo name. Cheap and idempotent: it
+ * recomputes only when the set of names actually changes, so passing the same
+ * list on every render costs a string compare.
+ */
+export function learnNamePrefixes(names: string[]): void {
+  const key = names.join('\n')
+  if (key === learnedFrom) return
+  learnedFrom = key
+  prefixes = derivePrefixes(names)
+}
+
+/** Test seam: forget what was learned, so cases cannot leak into each other. */
+export function resetNamePrefixes(): void {
+  learnedFrom = ''
+  prefixes = []
+}
+
+/**
+ * The name with its shared prefix removed, for *matching only*.
+ *
+ * Never rendered: repo names are shown in full. This exists so a query can match
+ * the distinctive part of a name at prefix position.
+ */
+export function searchAlias(name: string): string {
+  // prefixes is sorted longest-first, so the first match strips the most.
+  const hit = prefixes.find((p) => name.startsWith(p) && name.length > p.length)
+  return hit ? name.slice(hit.length) : name
 }
 
 

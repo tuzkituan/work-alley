@@ -5,12 +5,16 @@ import type {
   ActionSpec,
   Bootstrap,
   ChangedFile,
+  CheckoutPreview,
   CommitEntry,
   PackageStatus,
+  PackageVersion,
   PullRequestsResult,
   Config,
   DevServer,
   DockerStatus,
+  FolderPick,
+  ParsedUrls,
   RepoRef,
   RepoStatus,
   RunLogPage,
@@ -32,6 +36,12 @@ export const api = {
   /** Native folder picker. Resolves to null when cancelled. */
   pickWorkspace: () => call<Bootstrap | null>('pick_workspace'),
   setWorkspace: (path: string) => call<Bootstrap>('set_workspace', { path }),
+  /** Returns to the first-run picker without forgetting the folder. */
+  closeWorkspace: () => call<Bootstrap>('close_workspace'),
+  /** Folder picker that does not require the folder to be a workspace yet. */
+  pickFolder: () => call<FolderPick | null>('pick_folder'),
+  /** Read-only URL validation, safe to call as the user types. */
+  parseCloneUrls: (text: string) => call<ParsedUrls>('parse_clone_urls', { text }),
   getConfig: () => call<Config>('get_config'),
   setConfig: (patch: Partial<Config>) => call<Config>('set_config', { patch }),
 
@@ -46,6 +56,12 @@ export const api = {
   listDevServers: () => call<DevServer[]>('list_dev_servers'),
   listBranches: (repo: RepoRef) => call<string[]>('list_branches', { repo }),
   listPackages: () => call<PackageStatus[]>('list_packages'),
+  /** Read-only: what a checkout would do, per repo. `branch` null = each default. */
+  previewCheckout: (refs: RepoRef[], branch: string | null) =>
+    call<CheckoutPreview[]>('preview_checkout', { refs, branch }),
+
+  /** Installable versions for one tool. Empty when the manager cannot list them. */
+  listPackageVersions: (id: string) => call<PackageVersion[]>('list_package_versions', { id }),
   listPullRequests: (repo: RepoRef) => call<PullRequestsResult>('list_pull_requests', { repo }),
   listChangedFiles: (repo: RepoRef) => call<ChangedFile[]>('list_changed_files', { repo }),
   repoCommits: (repo: RepoRef, limit?: number) =>

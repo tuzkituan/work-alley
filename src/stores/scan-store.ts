@@ -24,8 +24,8 @@ interface ScanState {
   scanned: Set<Category>
   scanning: Category | null
   commits: CommitEntry[]
-  uiLatest: string | null
-  uiLatestSource: 'published' | 'declared' | null
+  trackedLatest: string | null
+  trackedLatestSource: 'published' | 'declared' | null
   errorCount: number
   durationMs: number
   message: string | null
@@ -44,8 +44,8 @@ interface ScanState {
   upsertMany(rows: RepoStatus[]): void
   setCommits(commits: CommitEntry[]): void
   finish(p: {
-    uiLatest: string | null
-    uiLatestSource: 'published' | 'declared' | null
+    trackedLatest: string | null
+    trackedLatestSource: 'published' | 'declared' | null
     errorCount: number
     durationMs: number
   }): void
@@ -62,8 +62,8 @@ export const useScanStore = create<ScanState>()((set) => ({
   scanned: new Set(),
   scanning: null,
   commits: [],
-  uiLatest: null,
-  uiLatestSource: null,
+  trackedLatest: null,
+  trackedLatestSource: null,
   errorCount: 0,
   durationMs: 0,
   message: null,
@@ -128,8 +128,8 @@ export const useScanStore = create<ScanState>()((set) => ({
 
   setCommits: (commits) => set({ commits }),
 
-  finish: ({ uiLatest, uiLatestSource, errorCount, durationMs }) =>
-    set({ phase: 'done', uiLatest, uiLatestSource, errorCount, durationMs }),
+  finish: ({ trackedLatest, trackedLatestSource, errorCount, durationMs }) =>
+    set({ phase: 'done', trackedLatest, trackedLatestSource, errorCount, durationMs }),
 
   fail: (message) => set({ phase: 'error', message }),
 

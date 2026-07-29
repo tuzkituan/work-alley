@@ -118,6 +118,119 @@ pub fn now_unix() -> i64 {
         .unwrap_or(0)
 }
 
+/// The branch a repo considers its default.
+///
+/// From `refs/remotes/origin/HEAD`, which `git clone` sets — the only *local*
+/// source of truth for what the remote's default is. `git remote show origin`
+/// would also answer, but it hits the network, and this runs for every repo.
+///
+/// Falls back to whichever of origin/main or origin/master exists, because
+/// origin/HEAD is missing in repos cloned with older git or fetched by hand.
+/// Returns None when nothing can be determined, which the caller must treat as
+/// "leave this repo alone" rather than guessing.
+pub async fn default_branch(git: &Path, repo: &Path) -> Option<String> {
+    if let Ok(out) = git_output(
+        git,
+        repo,
+        &["symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD"],
+    )
+    .await
+    {
+        if let Some(b) = parse_origin_head(&out) {
+            return Some(b);
+        }
+    }
+
+    // One process for both candidates, in preference order.
+    if let Ok(out) = git_output(
+        git,
+        repo,
+        &[
+            "for-each-ref",
+            "--format=%(refname:short)",
+            "refs/remotes/origin/main",
+            "refs/remotes/origin/master",
+        ],
+    )
+    .await
+    {
+        let mut found: Vec<String> = out
+            .lines()
+            .filter_map(|l| parse_origin_head(l))
+            .collect();
+        // for-each-ref sorts alphabetically, so main lands before master anyway;
+        // sort explicitly rather than relying on that.
+        found.sort_by_key(|b| if b == "main" { 0 } else { 1 });
+        if let Some(b) = found.into_iter().next() {
+            return Some(b);
+        }
+    }
+
+    None
+}
+
+/// Whether a branch exists in a repo, locally and/or on origin.
+///
+/// One process for both: `git checkout <b>` succeeds when either is true — if only
+/// the remote has it, git creates a tracking branch — so the caller needs to know
+/// "somewhere" rather than "where".
+pub async fn branch_exists(git: &Path, repo: &Path, branch: &str) -> (bool, bool) {
+    let local_ref = format!("refs/heads/{branch}");
+    let remote_ref = format!("refs/remotes/origin/{branch}");
+    let Ok(out) = git_output(
+        git,
+        repo,
+        &["for-each-ref", "--format=%(refname)", &local_ref, &remote_ref],
+    )
+    .await
+    else {
+        return (false, false);
+    };
+    (
+        out.lines().any(|l| l.trim() == local_ref),
+        out.lines().any(|l| l.trim() == remote_ref),
+    )
+}
+
+/// Rejects anything git itself would reject, plus anything that has no business
+/// being interpolated into a generated command.
+///
+/// The name reaches a shell single-quoted, so this is defence in depth rather than
+/// the only guard — but a name git will refuse is better caught before 60 repos
+/// each report the same failure.
+pub fn valid_branch_name(name: &str) -> bool {
+    let n = name.trim();
+    if n.is_empty() || n.len() > 255 {
+        return false;
+    }
+    // git-check-ref-format's rules, the ones that matter here.
+    if n.starts_with('-') || n.starts_with('/') || n.ends_with('/') || n.ends_with('.') {
+        return false;
+    }
+    if n.ends_with(".lock") || n.contains("..") || n.contains("//") || n.contains("@{") {
+        return false;
+    }
+    if n == "@" {
+        return false;
+    }
+    !n.chars().any(|c| {
+        c.is_whitespace()
+            || c.is_control()
+            || matches!(c, '~' | '^' | ':' | '?' | '*' | '[' | '\\' | '\'' | '"')
+    })
+}
+
+/// `"origin/main"` -> `Some("main")`. Anything without the prefix is not a branch
+/// on this remote and is ignored rather than passed through.
+pub fn parse_origin_head(text: &str) -> Option<String> {
+    let line = text.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let name = line.strip_prefix("origin/")?;
+    (!name.is_empty() && name != "HEAD").then(|| name.to_string())
+}
+
 // --- running git ------------------------------------------------------------
 
 /// Builds a `git` command with the hardening every child gets.
@@ -140,7 +253,7 @@ pub fn harden(c: &mut tokio::process::Command) {
         "ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new",
     );
     // This is what *enforces* a read-only scan: plain `git status` refreshes and
-    // writes .git/index, which would dirty 63 repos' mtimes and fight the user's
+    // writes .git/index, which would dirty every repo's mtime and fight the user's
     // own git.
     c.env("GIT_OPTIONAL_LOCKS", "0");
     c.env("NO_COLOR", "1");
@@ -218,7 +331,7 @@ pub async fn scan_one(
     repo: RepoRef,
     path: PathBuf,
     stale_days: i64,
-    ui_package: String,
+    tracked_package: Option<String>,
 ) -> RepoStatus {
     let started = Instant::now();
     let now = now_unix();
@@ -269,7 +382,7 @@ pub async fn scan_one(
         }
     }
 
-    status.ui_dep = crate::pkg::read_ui_dep(&path, &ui_package).await;
+    status.tracked_dep = crate::pkg::read_tracked_dep(&path, tracked_package.as_deref()).await;
     status.dev_port = crate::pkg::detect_port(&path).map(|(p, _)| p);
     status.available_tasks = crate::pkg::available_tasks(&path);
     status.shape = crate::detect::detect(&path);
@@ -500,6 +613,54 @@ mod tests {
 ? .env.local
 ";
 
+    #[test]
+    fn validates_branch_names() {
+        for good in ["main", "develop", "v26", "release/2026.1", "fix/lewis.nguyen/sync", "a_b-c.d"] {
+            assert!(valid_branch_name(good), "{good} should be valid");
+        }
+        for bad in [
+            "",
+            "   ",
+            "-start-with-dash",
+            "/leading",
+            "trailing/",
+            "trailing.",
+            "some.lock",
+            "a..b",
+            "a//b",
+            "HEAD@{0}",
+            "@",
+            "has space",
+            "tilde~1",
+            "caret^",
+            "colon:x",
+            "question?",
+            "star*",
+            "bracket[",
+            // Quotes and backslashes would also be a problem in a generated command.
+            "quote'x",
+            "dquote\"x",
+        ] {
+            assert!(!valid_branch_name(bad), "{bad:?} should be rejected");
+        }
+    }
+
+    #[test]
+    fn parses_origin_head_into_a_branch_name() {
+        assert_eq!(parse_origin_head("origin/main").as_deref(), Some("main"));
+        assert_eq!(parse_origin_head("  origin/develop\n").as_deref(), Some("develop"));
+        // A branch with slashes in it is still one branch.
+        assert_eq!(
+            parse_origin_head("origin/release/2026.1").as_deref(),
+            Some("release/2026.1")
+        );
+        // Not on this remote, or not a branch: must not be passed through.
+        assert_eq!(parse_origin_head("main"), None);
+        assert_eq!(parse_origin_head("upstream/main"), None);
+        assert_eq!(parse_origin_head("origin/HEAD"), None);
+        assert_eq!(parse_origin_head(""), None);
+        assert_eq!(parse_origin_head("   "), None);
+    }
     #[test]
     fn parses_real_status() {
         let p = parse_porcelain_v2(REAL);

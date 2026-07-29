@@ -4,7 +4,7 @@
     "target": "es2023",
     "lib": ["ES2023", "DOM"],
     "module": "esnext",
-    "types": ["vite/client"],
+    "types": ["vite/client", "bun"],
     "allowArbitraryExtensions": true,
     "skipLibCheck": true,
 
@@ -16,7 +16,7 @@
     "noEmit": true,
     "jsx": "react-jsx",
 
-    /* Path alias — resolved at build time by vite-tsconfig-paths */
+    /* Path alias — resolved at build time by Vite's native tsconfigPaths */
     "paths": { "@/*": ["./src/*"] },
 
     /* Linting */

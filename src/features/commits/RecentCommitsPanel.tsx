@@ -46,7 +46,7 @@ export function RecentCommitsPanel({
             <span className="w-[52px] flex-none font-mono text-[11px] text-primary-600">
               {c.sha}
             </span>
-            {/* With 63 repos the category is the only disambiguator, so it stays. */}
+            {/* Ungrouped here, so the folder name is the only disambiguator. */}
             <span className="w-5 flex-none font-mono text-[11px] text-adaptive-400">
               {c.ref.category}
             </span>

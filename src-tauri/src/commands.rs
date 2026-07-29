@@ -65,6 +65,9 @@ async fn build_bootstrap(state: &Arc<AppState>) -> AppResult<Bootstrap> {
         }
     }
 
+    // Before the struct literal, which moves `cfg`.
+    let tracked = tracked_package(&root, &cfg).map(|t| t.name);
+
     let mut warnings = tc.warnings.clone();
     let has_workspace = crate::paths::is_workspace(&root);
     if has_workspace && !crate::paths::scripts_dir(&root).is_dir() {
@@ -87,9 +90,48 @@ async fn build_bootstrap(state: &Arc<AppState>) -> AppResult<Bootstrap> {
         tools: tc.to_infos(),
         editors: crate::toolchain::detect_editors(&tc.path_env),
         scripts: crate::scripts::discover(&root),
+        tracked_package: tracked,
+        home_dir: dirs_home(),
         workspace_root: root,
         warnings,
     })
+}
+
+/// The user's home directory, for abbreviating paths in the UI.
+fn dirs_home() -> Option<PathBuf> {
+    #[cfg(windows)]
+    let var = "USERPROFILE";
+    #[cfg(not(windows))]
+    let var = "HOME";
+    std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_dir())
+}
+
+/// The workspace's shared package, whose version drift is worth a column.
+///
+/// Detected, not configured. Reads every repo's `package.json` once — the same
+/// order of work as the discovery walk that just ran — and picks the locally
+/// published package the most repos consume. `config.tracked_package` pins it for
+/// the rare workspace where the automatic choice is wrong.
+pub(crate) fn tracked_package(root: &std::path::Path, cfg: &Config) -> Option<crate::pkg::TrackedPackage> {
+    let manifests: Vec<crate::pkg::Manifest> = crate::paths::discover_all(root)
+        .into_iter()
+        .filter_map(|(_, path)| crate::pkg::read_manifest(&path))
+        .collect();
+
+    match &cfg.tracked_package {
+        Some(pinned) => Some(crate::pkg::TrackedPackage {
+            name: pinned.clone(),
+            published: manifests
+                .iter()
+                .find(|m| m.name.as_deref() == Some(pinned.as_str()))
+                .and_then(|m| m.version.clone()),
+            dependents: manifests
+                .iter()
+                .filter(|m| m.deps.iter().any(|d| d == pinned))
+                .count(),
+        }),
+        None => crate::pkg::pick_tracked(&manifests),
+    }
 }
 
 /// Per-group counts from repos.json, when the workspace has one.
@@ -211,6 +253,71 @@ pub async fn set_workspace(
     switch_workspace(&app, state.inner(), PathBuf::from(path)).await
 }
 
+/// Closes the open workspace, returning to the first-run picker.
+///
+/// Deliberately does not forget the folder: it stays at the top of the recents
+/// list, because "close" means "stop looking at this", not "forget it existed".
+#[tauri::command]
+pub async fn close_workspace(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Bootstrap> {
+    // An empty root is the same state as first run, so every "no workspace" path
+    // in the UI already handles it.
+    state.set_workspace_root(PathBuf::new());
+    let _ = app.emit(events::WORKSPACE_CHANGED, ());
+    build_bootstrap(state.inner()).await
+}
+
+/// Opens a folder picker without switching to it.
+///
+/// Used when setting up a new workspace: the folder is usually empty at that
+/// point, so it is not yet a workspace and `pick_workspace` would reject it.
+#[tauri::command]
+pub async fn pick_folder(app: AppHandle, state: State<'_, Arc<AppState>>) -> AppResult<Option<FolderPick>> {
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = tokio::sync::oneshot::channel();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("Choose a folder for the new workspace");
+    if let Some(start) = picker_start_dir(state.inner()) {
+        dialog = dialog.set_directory(&start);
+    }
+    dialog.pick_folder(move |picked| {
+        let _ = tx.send(picked);
+    });
+
+    let Ok(Some(folder)) = rx.await else {
+        return Ok(None);
+    };
+    let path = folder
+        .into_path()
+        .map_err(|e| AppError::Invalid(e.to_string()))?;
+
+    // Reported, not enforced: cloning into a folder that already has things in it
+    // is allowed, but the user should know before confirming.
+    let existing = std::fs::read_dir(&path)
+        .map(|it| {
+            it.filter_map(Result::ok)
+                .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+                .count()
+        })
+        .unwrap_or(0);
+
+    Ok(Some(FolderPick {
+        path: path.display().to_string(),
+        entry_count: existing as u32,
+    }))
+}
+
+/// Validates pasted git URLs. Read-only, so the UI can call it as the user types.
+#[tauri::command]
+pub async fn parse_clone_urls(text: String) -> AppResult<crate::clone::ParsedUrls> {
+    Ok(crate::clone::parse_repo_urls(&text))
+}
+
 async fn switch_workspace(
     app: &AppHandle,
     state: &Arc<AppState>,
@@ -291,14 +398,9 @@ pub async fn rescan_repo(
     let git = state.toolchain().require("git")?;
     let path = crate::paths::resolve_repo(&root, &repo)?;
 
-    let mut status = crate::git::scan_one(
-        git,
-        repo.clone(),
-        path,
-        cfg.stale_days,
-        cfg.ui_package_name.clone(),
-    )
-    .await;
+    let tracked = tracked_package(&root, &cfg).map(|t| t.name);
+    let mut status =
+        crate::git::scan_one(git, repo.clone(), path, cfg.stale_days, tracked).await;
     status.tasks = state.dev_servers_for_repo(&repo.key());
     Ok(status)
 }
@@ -324,6 +426,10 @@ async fn run_scan(
         return;
     };
 
+    // Detected from the whole workspace, not just the categories being scanned —
+    // the shared library often lives in a group the user is not looking at.
+    let tracked = tracked_package(&root, &cfg);
+
     let found = crate::paths::discover_repos(&root, &categories);
     let total = found.len();
     log::info!("scan {scan_id}: starting, {total} repos");
@@ -344,14 +450,14 @@ async fn run_scan(
         let permit = sem.clone();
         let git = git.clone();
         let stale_days = cfg.stale_days;
-        let ui_pkg = cfg.ui_package_name.clone();
+        let tracked_name = tracked.as_ref().map(|t| t.name.clone());
         let repo_for_err = repo.clone();
         let path_for_err = path.clone();
 
         set.spawn(async move {
             let _p = permit.acquire_owned().await;
             // scan_one never returns Err — a failure lands in RepoStatus::error.
-            let r = crate::git::scan_one(git, repo, path, stale_days, ui_pkg).await;
+            let r = crate::git::scan_one(git, repo, path, stale_days, tracked_name).await;
             (repo_for_err, path_for_err, r)
         });
     }
@@ -395,24 +501,26 @@ async fn run_scan(
     // Sort into a stable order for the snapshot; the UI keeps its own ordering.
     repos.sort_by_key(|r| r.repo.key());
 
-    // --- blazeup-ui drift baseline -------------------------------------------
+    // --- shared-package drift baseline ---------------------------------------
+    // "Latest" is the newest version seen anywhere: the library repo's own
+    // version when it is cloned here, otherwise the highest version any repo
+    // declares. Both are discovered, so this works in any workspace.
     let mut candidates: Vec<String> = repos
         .iter()
-        .filter_map(|r| r.ui_dep.resolved.clone())
+        .filter_map(|r| r.tracked_dep.resolved.clone())
         .collect();
-    // Best-effort: only meaningful in a workspace that has this library.
-    let published = crate::pkg::read_own_version(&root.join("ui").join("blazeup-lib-ui")).await;
-    let mut ui_latest_source = None;
+    let published = tracked.as_ref().and_then(|t| t.published.clone());
+    let mut tracked_latest_source = None;
     if let Some(p) = published.clone() {
         if let Some(cleaned) = crate::pkg::clean_version(&p) {
             candidates.push(cleaned);
         }
     }
-    let ui_latest = crate::pkg::max_version(candidates);
-    if ui_latest.is_some() {
-        ui_latest_source = Some(
+    let tracked_latest = crate::pkg::max_version(candidates);
+    if tracked_latest.is_some() {
+        tracked_latest_source = Some(
             if published.as_deref().and_then(crate::pkg::clean_version).as_deref()
-                == ui_latest.as_deref()
+                == tracked_latest.as_deref()
             {
                 "published".to_string()
             } else {
@@ -458,8 +566,8 @@ async fn run_scan(
         error_count,
         repos,
         commits,
-        ui_latest,
-        ui_latest_source,
+        tracked_latest,
+        tracked_latest_source,
         duration_ms: began.elapsed().as_millis() as u64,
     };
 
@@ -677,6 +785,10 @@ pub async fn run_action(
             );
             procs::cancel_run(state.inner(), &run_id)?;
             Ok(run_id)
+        }
+        "openShell" => {
+            procs::open_shell(&state.toolchain(), &pending.cwd)?;
+            Ok(String::new())
         }
         "openInTerminal" => {
             procs::open_terminal(&state.toolchain(), &pending.cwd, &pending.argv)?;
@@ -938,8 +1050,9 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
-        ActionSpec::Package { id, op } => {
-            let plan = crate::packages::plan(&tc, &id, op).map_err(AppError::Invalid)?;
+        ActionSpec::Package { id, op, version } => {
+            let plan = crate::packages::plan(&tc, &id, op, version.as_deref())
+                .map_err(AppError::Invalid)?;
             let entry = crate::packages::find(&id)
                 .ok_or_else(|| AppError::Invalid(format!("unknown package '{id}'")))?;
             let verb = match op {
@@ -955,7 +1068,10 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 } else {
                     "package".into()
                 },
-                title: format!("{verb} {}", entry.label),
+                title: match &version {
+                    Some(v) => format!("{verb} {} {v}", entry.label),
+                    None => format!("{verb} {}", entry.label),
+                },
                 description: plan.description,
                 argv: plan.argv,
                 preview: None,
@@ -1108,7 +1224,8 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 repo.clone(),
                 cwd.clone(),
                 cfg.stale_days,
-                cfg.ui_package_name.clone(),
+                // The preflight only needs dirty counts, so skip the manifest read.
+                None,
             )
             .await;
 
@@ -1157,6 +1274,95 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
+        ActionSpec::CloneUrls { root: target, urls } => {
+            let git = tc.require("git")?;
+            let target = PathBuf::from(&target);
+            if !target.is_absolute() {
+                return Err(AppError::Invalid("the workspace folder must be an absolute path".into()));
+            }
+            // Created up front so the clone command has somewhere to run, and so a
+            // permission problem surfaces here rather than mid-clone.
+            std::fs::create_dir_all(&target)
+                .map_err(|e| AppError::Invalid(format!("{}: {e}", target.display())))?;
+            let target = target
+                .canonicalize()
+                .map_err(|e| AppError::Invalid(format!("{}: {e}", target.display())))?;
+
+            let parsed = crate::clone::parse_repo_urls(&urls.join("\n"));
+            if !parsed.rejected.is_empty() {
+                // The UI validates as you type, so reaching here means the two
+                // disagree. Refusing beats cloning a subset silently.
+                return Err(AppError::Invalid(format!(
+                    "{} of these URLs could not be parsed",
+                    parsed.rejected.len()
+                )));
+            }
+            if parsed.repos.is_empty() {
+                return Err(AppError::Invalid("no repositories to clone".into()));
+            }
+
+            let mut warnings = Vec::new();
+            let mut already: Vec<String> = Vec::new();
+            for r in &parsed.repos {
+                let dir = target.join(&r.name);
+                if dir.exists() {
+                    already.push(r.name.clone());
+                }
+            }
+            if !already.is_empty() {
+                // Skipped, not overwritten — see the generated command.
+                warnings.push(format!(
+                    "{} folder(s) already exist and will be skipped: {}",
+                    already.len(),
+                    already.join(", ")
+                ));
+            }
+            if parsed.repos.iter().any(|r| !r.url.starts_with("http"))
+                && std::env::var_os("SSH_AUTH_SOCK").is_none()
+            {
+                warnings.push(
+                    "SSH_AUTH_SOCK is not set, so ssh clones may fail to authenticate.".into(),
+                );
+            }
+            warnings.push(format!(
+                "{} repositories will be cloned into {}.",
+                parsed.repos.len() - already.len(),
+                target.display()
+            ));
+
+            let hosts: std::collections::BTreeSet<&str> =
+                parsed.repos.iter().map(|r| r.host.as_str()).collect();
+            warnings.push(format!(
+                "Clones from: {}.",
+                hosts.into_iter().collect::<Vec<_>>().join(", ")
+            ));
+
+            Ok(Built {
+                kind: "cloneUrls".into(),
+                title: format!("Clone {} repositories", parsed.repos.len()),
+                description: format!("Set up a new workspace in {}.", target.display()),
+                argv: clone_all_argv(&git, &target, &parsed.repos),
+                preview: Some(vec![
+                    git.display().to_string(),
+                    "clone".into(),
+                    "--progress".into(),
+                    "<url>".into(),
+                    format!("{}/<name>", target.display()),
+                ]),
+                cwd: target.clone(),
+                env: vec![],
+                // Network writes into a fresh directory, and nothing existing is
+                // modified: worth confirming, not worth a typed phrase.
+                danger: Danger::Medium,
+                warnings,
+                typed_confirm: None,
+                repo: None,
+                targets: vec![],
+                task: None,
+                read_only: false,
+            })
+        }
+
         ActionSpec::PullMany { refs } => {
             let git = tc.require("git")?;
             if refs.is_empty() {
@@ -1171,7 +1377,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                     r.clone(),
                     p,
                     cfg.stale_days,
-                    cfg.ui_package_name.clone(),
+                    None,
                 )
                 .await;
                 dirty_total += s.dirty_count + s.untracked_count;
@@ -1307,9 +1513,6 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
 
         ActionSpec::DevStart { repo, task } => {
             let task = task.unwrap_or_else(|| "dev".to_string());
-            if task != "dev" && task != "storybook" {
-                return Err(AppError::Invalid(format!("unknown task '{task}'")));
-            }
             let cwd = crate::paths::resolve_repo(&root, &repo)?;
             let key = repo.key();
             let tkey = crate::state::task_key(&key, &task);
@@ -1317,6 +1520,9 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             if state.dev.lock().unwrap().contains_key(&tkey) {
                 return Err(AppError::DevAlreadyRunning(tkey));
             }
+            // The only gate on `task`: it must be one of the long-running scripts
+            // this repo actually declares. A closed set derived from the repo, so
+            // no caller can name an arbitrary script here.
             if !crate::pkg::available_tasks(&cwd).contains(&task) {
                 return Err(AppError::Invalid(format!(
                     "{key} has no \"{task}\" script in package.json"
@@ -1333,10 +1539,16 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                     argv
                 }
                 _ => {
-                    let (tool, args) = crate::pkg::task_command(&cwd, &task).ok_or_else(|| {
-                        AppError::Invalid(format!("{key} has no package.json — nothing to run"))
-                    })?;
-                    let bin = tc.require(tool)?;
+                    // The fallback only applies when the repo states no preference
+                    // at all — no `packageManager` field and no lockfile.
+                    let fallback = tc.preferred_package_manager().unwrap_or("npm");
+                    let (tool, args) = crate::pkg::task_command(&cwd, &task, fallback)
+                        .ok_or_else(|| {
+                            AppError::Invalid(format!(
+                                "{key} has no package.json — nothing to run"
+                            ))
+                        })?;
+                    let bin = tc.require(&tool)?;
                     let mut argv = vec![bin.display().to_string()];
                     argv.extend(args);
                     argv
@@ -1470,6 +1682,191 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
+        ActionSpec::Checkout { refs, branch, dirty } => {
+            let git = tc.require("git")?;
+            if refs.is_empty() {
+                return Err(AppError::Invalid("no repos selected".into()));
+            }
+
+            let named = match branch.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+                Some(b) if !crate::git::valid_branch_name(b) => {
+                    return Err(AppError::Invalid(format!(
+                        "\"{b}\" is not a valid branch name"
+                    )))
+                }
+                Some(b) => Some(b.to_string()),
+                None => None,
+            };
+
+            // Preflight every repo. This is what makes the dialog worth reading: it
+            // says how many will actually change, how many are already there, and
+            // how many have work that the policy is about to act on.
+            let mut plans: Vec<(RepoRef, PathBuf, String, u32)> = Vec::new();
+            let mut no_default: Vec<String> = Vec::new();
+            let mut already: u32 = 0;
+            let mut dirty_repos: Vec<String> = Vec::new();
+
+            for r in &refs {
+                let path = crate::paths::resolve_repo(&root, r)?;
+                let target = match &named {
+                    Some(b) => {
+                        let (local, remote) = crate::git::branch_exists(&git, &path, b).await;
+                        // Either is enough — checkout creates a tracking branch from
+                        // the remote. Neither means this repo simply does not have it.
+                        if local || remote {
+                            Some(b.clone())
+                        } else {
+                            None
+                        }
+                    }
+                    // Guessing "main" could check out a branch that does not exist,
+                    // or worse, one that does but is not the default.
+                    None => crate::git::default_branch(&git, &path).await,
+                };
+                let Some(target) = target else {
+                    no_default.push(r.key());
+                    continue;
+                };
+                let status =
+                    crate::git::scan_one(git.clone(), r.clone(), path.clone(), cfg.stale_days, None)
+                        .await;
+                let d = status.dirty_count + status.untracked_count;
+                let on_target = status.branch.as_deref() == Some(target.as_str());
+
+                if on_target && d == 0 {
+                    already += 1;
+                    continue;
+                }
+                if d > 0 {
+                    dirty_repos.push(r.key());
+                }
+                plans.push((r.clone(), path, target, d));
+            }
+
+            let what = match &named {
+                Some(b) => format!("branch {b}"),
+                None => "their default branch".to_string(),
+            };
+
+            if plans.is_empty() {
+                return Err(AppError::Invalid(format!(
+                    "nothing to do — {already} already on {what}, {} without it",
+                    no_default.len()
+                )));
+            }
+
+            let mut warnings = Vec::new();
+            warnings.push(format!(
+                "{} repo(s) will switch branch.",
+                plans.iter().filter(|(_, _, _, d)| *d == 0).count()
+                    + dirty_repos.len()
+                    - if dirty == DirtyPolicy::Skip { dirty_repos.len() } else { 0 }
+            ));
+            if already > 0 {
+                warnings.push(format!("{already} already on {what}."));
+            }
+            if !no_default.is_empty() {
+                warnings.push(match &named {
+                    Some(b) => format!(
+                        "{} skipped — no branch \"{b}\" locally or on origin: {}",
+                        no_default.len(),
+                        no_default.join(", ")
+                    ),
+                    None => format!(
+                        "{} skipped — no origin/HEAD, so the default branch is unknown: {}",
+                        no_default.len(),
+                        no_default.join(", ")
+                    ),
+                });
+            }
+            if !dirty_repos.is_empty() {
+                let n = dirty_repos.len();
+                warnings.push(match dirty {
+                    DirtyPolicy::Skip => format!(
+                        "{n} repo(s) have local changes and will be left alone: {}",
+                        dirty_repos.join(", ")
+                    ),
+                    DirtyPolicy::Stash => format!(
+                        "{n} repo(s) will be stashed first — recover with `git stash pop`: {}",
+                        dirty_repos.join(", ")
+                    ),
+                    DirtyPolicy::Discard => format!(
+                        "{n} repo(s) will have local changes DELETED, including untracked \
+                         files. This cannot be undone: {}",
+                        dirty_repos.join(", ")
+                    ),
+                });
+            }
+
+            let danger = match dirty {
+                DirtyPolicy::Discard if !dirty_repos.is_empty() => Danger::High,
+                DirtyPolicy::Stash if !dirty_repos.is_empty() => Danger::Medium,
+                _ => Danger::Low,
+            };
+
+            Ok(Built {
+                kind: "checkout".into(),
+                title: match &named {
+                    Some(b) => format!("Check out {b} in {} repos", plans.len()),
+                    None => format!("Check out {} repos on their default branch", plans.len()),
+                },
+                description: match &named {
+                    Some(b) => format!("Switches each repo to {b}."),
+                    None => "Switches each repo to the branch origin/HEAD points at.".into(),
+                },
+                argv: checkout_default_argv(&git, &plans, dirty),
+                preview: Some(vec![
+                    git.display().to_string(),
+                    "checkout".into(),
+                    named.clone().unwrap_or_else(|| "<default branch>".into()),
+                ]),
+                cwd: root.clone(),
+                env: vec![],
+                danger,
+                warnings,
+                // Deleting other people's uncommitted work deserves more than a
+                // click, and the phrase has to be typed rather than confirmed.
+                typed_confirm: (danger == Danger::High).then(|| "discard".to_string()),
+                repo: None,
+                targets: plans.iter().map(|(r, _, _, _)| r.clone()).collect(),
+                task: None,
+                read_only: false,
+            })
+        }
+
+        ActionSpec::OpenShell { repo } => {
+            let cwd = match &repo {
+                Some(r) => crate::paths::resolve_repo(&root, r)?,
+                None => root.clone(),
+            };
+            let where_ = repo
+                .as_ref()
+                .map(|r| r.key())
+                .unwrap_or_else(|| "the workspace".to_string());
+            Ok(Built {
+                kind: "openShell".into(),
+                title: format!("Terminal in {where_}"),
+                description: format!("Opens your terminal emulator in {}.", cwd.display()),
+                // The emulator is resolved at dispatch, so there is nothing to show
+                // here beyond where it will start.
+                argv: vec![],
+                preview: None,
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: repo.clone(),
+                targets: repo.map(|r| vec![r]).unwrap_or_default(),
+                task: None,
+                // Opening a shell changes nothing by itself, so it needs no
+                // confirmation — a terminal button that asks first is a nuisance.
+                // What the user then types is their own business, exactly as it is
+                // in any other terminal.
+                read_only: true,
+            })
+        }
+
         ActionSpec::OpenInTerminal { script, repo } => {
             let desc = crate::scripts::find(&root, &script)?;
             let path = script_path(&root, &desc.file)?;
@@ -1522,10 +1919,123 @@ fn bulk_pull_argv(git: &std::path::Path, root: &std::path::Path, refs: &[RepoRef
             "echo \"[..]   {key}\"; {git} -C {path} pull --rebase --autostash || echo \"[FAIL] {key}\";\n",
             key = r.key(),
             git = git.display(),
-            path = p.display(),
+            // Quoted: a workspace path containing a space would otherwise split.
+            path = shell_single_quote(&p.display().to_string()),
         ));
     }
     script.push_str("echo \"[OK]   bulk pull finished\";\n");
+    vec!["bash".into(), "-c".into(), script]
+}
+
+/// One `git clone` per repo, sequentially, with per-repo result markers.
+///
+/// Sequential on purpose: parallel clones interleave progress output into
+/// something unreadable, and they all contend for the same network anyway.
+///
+/// `-d` guards every clone: an existing directory is skipped rather than written
+/// into, so re-running this after a partial failure cannot damage what worked.
+fn clone_all_argv(
+    git: &std::path::Path,
+    root: &std::path::Path,
+    repos: &[crate::clone::RepoUrl],
+) -> Vec<String> {
+    let mut script = String::new();
+    for r in repos {
+        let dir = root.join(&r.name);
+        script.push_str(&format!(
+            // `rmdir` after a failure, never `rm -rf`: it only succeeds on an
+            // empty directory, so it can clear the husk an interrupted clone
+            // leaves behind — making a retry possible — and can never delete
+            // anything that has content in it.
+            "if [ -d {dir} ]; then echo \"[SKIP] {name} — folder already exists\"; \
+             else echo \"[..]   {name}\"; \
+             if {git} clone --progress {url} {dir}; then echo \"[OK]   {name}\"; \
+             else rmdir {dir} 2>/dev/null; echo \"[FAIL] {name}\"; fi; fi\n",
+            // Safe bare: clone::repo_name allows only [A-Za-z0-9._-].
+            name = r.name,
+            url = shell_single_quote(&r.url),
+            dir = shell_single_quote(&dir.display().to_string()),
+            git = git.display(),
+        ));
+    }
+    script.push_str("echo \"[OK]   clone finished\";\n");
+    vec!["bash".into(), "-c".into(), script]
+}
+
+/// Wraps a value for `bash -c`. URLs and names are user input, so they can never
+/// be interpolated bare — a `;` in a URL would otherwise be a second command.
+fn shell_single_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
+/// One checkout per repo, with the dirty policy applied first.
+///
+/// `checkout` rather than `switch`, so this works with the git versions still
+/// shipped by long-term-support distributions.
+///
+/// Each repo is a self-contained `if` chain, deliberately: an earlier version used
+/// `continue` to skip a repo whose stash failed, wrapped in a one-iteration `for`
+/// loop. `continue` there ends the *loop*, so a single stash failure silently
+/// abandoned every remaining repo — the worst possible failure for a bulk action,
+/// because the summary line still said it had finished.
+fn checkout_default_argv(
+    git: &std::path::Path,
+    plans: &[(RepoRef, PathBuf, String, u32)],
+    dirty: crate::model::DirtyPolicy,
+) -> Vec<String> {
+    use crate::model::DirtyPolicy;
+    let mut script = String::new();
+
+    for (repo, path, target, dirty_count) in plans {
+        let key = repo.key();
+        let p = shell_single_quote(&path.display().to_string());
+        let g = git.display().to_string();
+        let t = shell_single_quote(target);
+
+        // The checkout itself, reused by every branch below.
+        let checkout = format!(
+            "{g} -C {p} checkout {t} -q && echo \"[OK]   {key} -> {target}\" \
+             || echo \"[FAIL] {key} — checkout {target} failed\""
+        );
+
+        if *dirty_count == 0 {
+            // The policy applies only to repos with local changes; a clean repo is
+            // always a plain checkout, even under "discard".
+            script.push_str(&format!("{checkout};\n"));
+            continue;
+        }
+
+        match dirty {
+            DirtyPolicy::Skip => {
+                script.push_str(&format!(
+                    "echo \"[SKIP] {key} — {dirty_count} local change(s)\";\n"
+                ));
+            }
+            DirtyPolicy::Stash => {
+                // -u includes untracked files, which is what the change count on the
+                // card means. The checkout only runs if the stash actually worked.
+                script.push_str(&format!(
+                    "echo \"[..]   {key} — stashing {dirty_count} change(s)\"; \
+                     if {g} -C {p} stash push -u -q -m 'work-alley: before checkout {target}'; \
+                     then {checkout}; \
+                     else echo \"[FAIL] {key} — stash failed, left on its current branch\"; fi;\n"
+                ));
+            }
+            DirtyPolicy::Discard => {
+                // Both halves are needed: reset drops tracked modifications, clean
+                // drops untracked files, and an untracked file left behind can still
+                // block the checkout.
+                script.push_str(&format!(
+                    "echo \"[..]   {key} — discarding {dirty_count} change(s)\"; \
+                     if {g} -C {p} reset --hard -q && {g} -C {p} clean -fdq; \
+                     then {checkout}; \
+                     else echo \"[FAIL] {key} — could not clean, left alone\"; fi;\n"
+                ));
+            }
+        }
+    }
+
+    script.push_str("echo \"[OK]   checkout finished\";\n");
     vec!["bash".into(), "-c".into(), script]
 }
 
@@ -1537,7 +2047,7 @@ fn bulk_fetch_argv(git: &std::path::Path, root: &std::path::Path, refs: &[RepoRe
             "{git} -C {path} fetch --all --prune -q && echo \"[OK]   {key}\" || echo \"[FAIL] {key}\";\n",
             key = r.key(),
             git = git.display(),
-            path = p.display(),
+            path = shell_single_quote(&p.display().to_string()),
         ));
     }
     vec!["bash".into(), "-c".into(), script]
@@ -1547,6 +2057,103 @@ fn bulk_fetch_argv(git: &std::path::Path, root: &std::path::Path, refs: &[RepoRe
 #[tauri::command]
 pub async fn list_packages(state: State<'_, Arc<AppState>>) -> AppResult<Vec<PackageStatus>> {
     Ok(crate::packages::list(&state.toolchain()).await)
+}
+
+/// What a checkout would do, per repo. Read-only.
+///
+/// Its own command rather than part of `prepare_action` because the *policy* is
+/// chosen from this information — the user has to see which repos have local
+/// changes, and which do not have the branch at all, before deciding.
+///
+/// `branch` None means each repo's own default from origin/HEAD.
+#[tauri::command]
+pub async fn preview_checkout(
+    refs: Vec<RepoRef>,
+    branch: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Vec<CheckoutPreview>> {
+    let root = state.workspace_root();
+    let cfg = state.config();
+    let git = state.toolchain().require("git")?;
+
+    // Bounded concurrency, like the scan: this is 2-3 git processes per repo and a
+    // folder can hold dozens.
+    let sem = Arc::new(tokio::sync::Semaphore::new(cfg.scan_concurrency.max(1)));
+    let mut set = tokio::task::JoinSet::new();
+
+    // A name git would refuse is rejected once here rather than 60 times in the
+    // output pane.
+    let named = match branch.as_deref().map(str::trim).filter(|b| !b.is_empty()) {
+        Some(b) if !crate::git::valid_branch_name(b) => {
+            return Err(AppError::Invalid(format!("\"{b}\" is not a valid branch name")))
+        }
+        Some(b) => Some(b.to_string()),
+        None => None,
+    };
+
+    for r in refs {
+        let path = match crate::paths::resolve_repo(&root, &r) {
+            Ok(p) => p,
+            // A repo that has vanished since the scan is reported, not fatal.
+            Err(_) => continue,
+        };
+        let permit = sem.clone();
+        let git = git.clone();
+        let stale_days = cfg.stale_days;
+        let named = named.clone();
+        set.spawn(async move {
+            let _p = permit.acquire_owned().await;
+
+            let (target, exists) = match &named {
+                Some(b) => {
+                    let (local, remote) = crate::git::branch_exists(&git, &path, b).await;
+                    // Either is enough: `git checkout <b>` creates a tracking branch
+                    // when only the remote has it.
+                    (Some(b.clone()), local || remote)
+                }
+                // A repo's own default always exists by construction.
+                None => (crate::git::default_branch(&git, &path).await, true),
+            };
+
+            let status = crate::git::scan_one(git, r.clone(), path, stale_days, None).await;
+            let dirty = status.dirty_count + status.untracked_count;
+            let already = target.is_some()
+                && exists
+                && status.branch.as_deref() == target.as_deref()
+                && dirty == 0;
+            CheckoutPreview {
+                repo: r,
+                current: status.branch,
+                target: target.filter(|_| exists),
+                target_exists: exists,
+                dirty_count: dirty,
+                already_there: already,
+            }
+        });
+    }
+
+    let mut out = Vec::new();
+    while let Some(joined) = set.join_next().await {
+        if let Ok(p) = joined {
+            out.push(p);
+        }
+    }
+    // Stable order, and the ones needing attention are easiest to find sorted.
+    out.sort_by(|a, b| a.repo.key().cmp(&b.repo.key()));
+    Ok(out)
+}
+
+/// Versions that can be installed for one tool, newest first.
+///
+/// Read-only and best-effort: an empty list means "this manager cannot enumerate
+/// versions", and the UI then offers the current one only. Never an error, because
+/// a registry being unreachable must not make the row look broken.
+#[tauri::command]
+pub async fn list_package_versions(
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Vec<PackageVersion>> {
+    Ok(crate::packages::versions(&state.toolchain(), &id).await)
 }
 
 // ------------------------------------------------------------- repo detail ---
@@ -1772,6 +2379,164 @@ pub async fn repo_commits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn plan(name: &str, branch: &str, dirty: u32) -> (RepoRef, PathBuf, String, u32) {
+        (
+            RepoRef {
+                category: "fe".into(),
+                name: name.into(),
+            },
+            PathBuf::from(format!("/w/fe/{name}")),
+            branch.to_string(),
+            dirty,
+        )
+    }
+
+    #[test]
+    fn checkout_uses_each_repos_own_default_branch() {
+        // The whole point: origin/HEAD differs per repo, so "main" must never be
+        // assumed.
+        let plans = vec![plan("web", "main", 0), plan("api", "develop", 0)];
+        let argv = checkout_default_argv(
+            std::path::Path::new("/usr/bin/git"),
+            &plans,
+            crate::model::DirtyPolicy::Skip,
+        );
+        let script = argv.last().unwrap();
+        assert!(script.contains("checkout 'main'"));
+        assert!(script.contains("checkout 'develop'"));
+    }
+
+    #[test]
+    fn skip_leaves_a_dirty_repo_completely_untouched() {
+        let plans = vec![plan("web", "main", 3)];
+        let script = checkout_default_argv(
+            std::path::Path::new("/usr/bin/git"),
+            &plans,
+            crate::model::DirtyPolicy::Skip,
+        )
+        .last()
+        .unwrap()
+        .clone();
+        assert!(script.contains("[SKIP] fe/web"));
+        // Not merely "no reset" — no checkout either. Switching branches with
+        // uncommitted work can still fail or carry changes across. Matched on
+        // `checkout '` so the script's own closing echo does not count.
+        assert!(!script.contains("checkout '"), "must not touch it at all: {script}");
+        assert!(!script.contains("reset"));
+        assert!(!script.contains("stash"));
+    }
+
+    #[test]
+    fn stash_includes_untracked_files_and_never_resets() {
+        let plans = vec![plan("web", "main", 3)];
+        let script = checkout_default_argv(
+            std::path::Path::new("/usr/bin/git"),
+            &plans,
+            crate::model::DirtyPolicy::Stash,
+        )
+        .last()
+        .unwrap()
+        .clone();
+        // -u, or "3 changes" on the card would not match what gets stashed.
+        assert!(script.contains("stash push -u"));
+        assert!(!script.contains("reset --hard"), "stash must not destroy anything");
+        assert!(!script.contains("clean -fd"));
+        assert!(script.contains("checkout 'main'"));
+    }
+
+    #[test]
+    fn discard_resets_and_cleans_because_either_alone_is_not_enough() {
+        let plans = vec![plan("web", "main", 3)];
+        let script = checkout_default_argv(
+            std::path::Path::new("/usr/bin/git"),
+            &plans,
+            crate::model::DirtyPolicy::Discard,
+        )
+        .last()
+        .unwrap()
+        .clone();
+        // reset drops tracked edits, clean drops untracked files; without both the
+        // checkout can still fail on an untracked file in the way.
+        assert!(script.contains("reset --hard"));
+        assert!(script.contains("clean -fdq"));
+        assert!(script.contains("checkout 'main'"));
+    }
+
+    #[test]
+    fn a_clean_repo_is_never_reset_whatever_the_policy() {
+        // The policy applies only to repos with local changes. A clean repo must be
+        // a plain checkout even when "discard" is selected.
+        let plans = vec![plan("web", "main", 0)];
+        for policy in [
+            crate::model::DirtyPolicy::Skip,
+            crate::model::DirtyPolicy::Stash,
+            crate::model::DirtyPolicy::Discard,
+        ] {
+            let script = checkout_default_argv(std::path::Path::new("/usr/bin/git"), &plans, policy)
+                .last()
+                .unwrap()
+                .clone();
+            assert!(!script.contains("reset"), "{policy:?}: {script}");
+            assert!(!script.contains("stash"), "{policy:?}: {script}");
+            assert!(!script.contains("[SKIP]"), "{policy:?}: {script}");
+            assert!(script.contains("checkout 'main'"), "{policy:?}");
+        }
+    }
+
+    #[test]
+    fn one_repos_failure_cannot_abandon_the_rest() {
+        // Regression: the generated script used `continue` inside a one-iteration
+        // `for` loop to skip a repo whose stash failed. That ends the loop, so a
+        // single failure silently skipped every remaining repo while still printing
+        // "finished".
+        let plans = vec![plan("web", "main", 3), plan("api", "main", 3), plan("docs", "main", 0)];
+        let script = checkout_default_argv(
+            std::path::Path::new("/usr/bin/git"),
+            &plans,
+            crate::model::DirtyPolicy::Stash,
+        )
+        .last()
+        .unwrap()
+        .clone();
+
+        assert!(
+            !script.contains("continue"),
+            "a per-repo skip must not use loop control: {script}"
+        );
+        // Every repo still has its own checkout, whatever happens to the others.
+        for name in ["fe/web", "fe/api", "fe/docs"] {
+            assert!(script.contains(name), "{name} missing from: {script}");
+        }
+        assert_eq!(script.matches("checkout 'main'").count(), 3);
+        // And a failed stash is reported per repo rather than aborting.
+        assert_eq!(script.matches("stash failed").count(), 2);
+    }
+
+    #[test]
+    fn paths_and_branches_are_quoted() {
+        // A workspace under "~/My Projects" or a branch like release/2026.1 must not
+        // split the generated command.
+        let plans = vec![(
+            RepoRef {
+                category: "fe".into(),
+                name: "web".into(),
+            },
+            PathBuf::from("/w/My Projects/web"),
+            "release/2026.1".to_string(),
+            0,
+        )];
+        let script = checkout_default_argv(
+            std::path::Path::new("/usr/bin/git"),
+            &plans,
+            crate::model::DirtyPolicy::Skip,
+        )
+        .last()
+        .unwrap()
+        .clone();
+        assert!(script.contains("'/w/My Projects/web'"));
+        assert!(script.contains("'release/2026.1'"));
+    }
 
     #[test]
     fn parses_gh_pr_json() {

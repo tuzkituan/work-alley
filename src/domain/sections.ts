@@ -3,7 +3,6 @@ import { repoId } from './types'
 
 export type SectionKey =
   | 'running'
-  | 'hostapp'
   | 'frontend'
   | 'backend'
   | 'library'
@@ -19,7 +18,6 @@ export interface Section {
 
 const LABELS: Record<SectionKey, string> = {
   running: 'Running',
-  hostapp: 'Host apps',
   frontend: 'Frontend',
   backend: 'Backend',
   library: 'Libraries',
@@ -31,7 +29,6 @@ const LABELS: Record<SectionKey, string> = {
 /** Order sections appear in. Running first because it is what you act on now. */
 const ORDER: SectionKey[] = [
   'running',
-  'hostapp',
   'frontend',
   'backend',
   'library',
@@ -39,10 +36,6 @@ const ORDER: SectionKey[] = [
   'docs',
   'other',
 ]
-
-export function isHostapp(name: string): boolean {
-  return name === 'blazeup-hostapp' || name.startsWith('blazeup-hostapp-')
-}
 
 export function isRunning(status: RepoStatus | undefined): boolean {
   // Any task counts — a repo with only storybook up is still something you are
@@ -62,10 +55,10 @@ const KIND_SECTION: Record<RepoKind, SectionKey> = {
 /**
  * Groups a folder's repos into sections.
  *
- * Precedence is deliberate: Running beats everything (it is what you are working
- * on right now), then the host-app naming convention, then the *detected* kind.
- * Kind comes from the repo's files, so this works in a workspace with no naming
- * convention at all.
+ * Precedence is deliberate: Running beats everything — it is what you are
+ * working on right now — then the *detected* kind. Kind comes from the repo's
+ * own files, so this works in any workspace, with or without naming
+ * conventions.
  */
 export function buildSections(
   repos: RepoRef[],
@@ -81,7 +74,6 @@ export function buildSections(
   for (const r of repos) {
     const st = statuses.get(repoId(r))
     if (isRunning(st)) push('running', r)
-    else if (isHostapp(r.name)) push('hostapp', r)
     else push(KIND_SECTION[st?.shape.kind ?? 'unknown'], r)
   }
 

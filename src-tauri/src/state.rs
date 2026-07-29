@@ -30,7 +30,7 @@ pub struct PendingIntent {
     pub task: Option<String>,
 }
 
-/// `"ui/blazeup-lib-ui#storybook"`.
+/// `"libs/design-system#storybook"`.
 pub fn task_key(repo_key: &str, task: &str) -> String {
     format!("{repo_key}#{task}")
 }

@@ -7,31 +7,32 @@ import {
   CommandItem,
   CommandList,
 } from '@/components/ui/command'
-import { displayName } from '@/domain/severity'
+import { searchAlias } from '@/domain/severity'
 import { repoId, type Bootstrap } from '@/domain/types'
 import { useUiStore } from '@/stores/ui-store'
 import { useScanStore } from '@/stores/scan-store'
 import { useRunAction } from '@/hooks/use-action'
 import { useTheme } from '@/hooks/use-theme'
-import { shortenHome, useWorkspaceActions } from '@/features/workspace/WorkspacePicker'
+import { shortenHome, useHomeDir, useWorkspaceActions } from '@/features/workspace/WorkspacePicker'
 
 /**
- * A real palette, not the decorative pill the design shows.
- *
- * cmdk's default scorer is wrong for this corpus: 43 of 63 names share the prefix
- * `blazeup-subapp-`, and people type `fe/emp` or `subapp-task`. So filtering is
- * ours: match on category/name, the prefix-stripped display name and the branch,
- * with a prefix-match boost.
+ * cmdk's default scorer is wrong for repo names: in a workspace where most names
+ * share a prefix, every result scores the same, and people type `fe/emp` or
+ * `subapp-task` rather than the full name. So filtering is ours: match on
+ * category/name, the prefix-stripped display name and the branch, with a
+ * prefix-match boost.
  */
 export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
   const open = useUiStore((s) => s.paletteOpen)
   const setOpen = useUiStore((s) => s.setPaletteOpen)
   const setActiveRepo = useUiStore((s) => s.setActiveRepo)
   const setFilterText = useUiStore((s) => s.setFilterText)
+  const setPage = useUiStore((s) => s.setPage)
   const statuses = useScanStore((s) => s.repos)
   const run = useRunAction()
   const { toggleTheme } = useTheme()
   const workspace = useWorkspaceActions()
+  const home = useHomeDir()
   const [query, setQuery] = useState('')
 
   useEffect(() => {
@@ -54,9 +55,9 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
     const q = query.trim().toLowerCase()
     const scored = repos.map((r) => {
       const id = repoId(r)
-      const { short } = displayName(r.name)
+      const alias = searchAlias(r.name)
       const branch = statuses.get(id)?.branch ?? ''
-      const haystacks = [id, short, r.name, branch].map((h) => h.toLowerCase())
+      const haystacks = [id, alias, r.name, branch].map((h) => h.toLowerCase())
       let score = -1
       for (const h of haystacks) {
         if (!q) {
@@ -67,7 +68,7 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
         if (idx === 0) score = Math.max(score, 3)
         else if (idx > 0) score = Math.max(score, 1)
       }
-      return { repo: r, id, short, branch, score }
+      return { repo: r, id, branch, score }
     })
     return scored
       .filter((s) => s.score >= 0)
@@ -90,7 +91,7 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
 
           {repoMatches.length > 0 && (
             <CommandGroup heading={`Repos (${repoMatches.length})`}>
-              {repoMatches.map(({ repo, id, short, branch }) => (
+              {repoMatches.map(({ repo, id, branch }) => (
                 <CommandItem
                   key={id}
                   value={id}
@@ -103,7 +104,7 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
                   <span className="w-5 font-mono text-[11px] text-adaptive-400">
                     {repo.category}
                   </span>
-                  <span className="flex-1 truncate">{short}</span>
+                  <span className="flex-1 truncate">{repo.name}</span>
                   {branch && (
                     <span className="font-mono text-[11px] text-adaptive-400">{branch}</span>
                   )}
@@ -145,6 +146,15 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
               Open a different folder…
               <span className="ml-auto font-mono text-[10px] text-adaptive-400">⌘O</span>
             </CommandItem>
+            <CommandItem
+              value="workspace:close"
+              onSelect={() => {
+                setOpen(false)
+                workspace.close.mutate()
+              }}
+            >
+              Close this folder
+            </CommandItem>
             {(boot?.recentRoots ?? [])
               .filter((r) => r !== boot?.workspaceRoot)
               .map((r) => (
@@ -156,7 +166,7 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
                     workspace.set.mutate(r)
                   }}
                 >
-                  <span className="truncate font-mono text-xs">{shortenHome(r)}</span>
+                  <span className="truncate font-mono text-xs">{shortenHome(r, home)}</span>
                 </CommandItem>
               ))}
           </CommandGroup>
@@ -188,6 +198,24 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
               }}
             >
               Toggle theme
+            </CommandItem>
+            <CommandItem
+              value="action:toolbox"
+              onSelect={() => {
+                setOpen(false)
+                setPage('toolbox')
+              }}
+            >
+              Open the Toolbox
+            </CommandItem>
+            <CommandItem
+              value="action:terminal"
+              onSelect={() => {
+                setOpen(false)
+                run({ kind: 'openShell', ref: null })
+              }}
+            >
+              Open a terminal here
             </CommandItem>
           </CommandGroup>
         </CommandList>

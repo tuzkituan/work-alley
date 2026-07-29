@@ -22,7 +22,7 @@ pub struct RepoRef {
 }
 
 impl RepoRef {
-    /// `"fe/blazeup-hostapp"`, or just `"my-repo"` for an ungrouped repo.
+    /// `"frontend/web"`, or just `"my-repo"` for an ungrouped repo.
     pub fn key(&self) -> String {
         if self.category.is_empty() {
             self.name.clone()
@@ -67,7 +67,7 @@ pub enum StaleState {
 
 #[derive(Debug, Clone, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct UiDep {
+pub struct TrackedDep {
     pub declared: Option<String>,
     pub resolved: Option<String>,
     pub field: Option<String>,
@@ -98,7 +98,7 @@ pub struct RepoStatus {
     pub sync: SyncState,
     pub stale: StaleState,
     pub last_commit: Option<LastCommit>,
-    pub ui_dep: UiDep,
+    pub tracked_dep: TrackedDep,
     /// The port this repo's dev server would use, resolved from .env /
     /// vite.config. Present whether or not a server is running, so the UI can
     /// offer to free a port held by a stale process.
@@ -129,7 +129,7 @@ impl RepoStatus {
             sync: SyncState::NoUpstream,
             stale: StaleState::Unknown,
             last_commit: None,
-            ui_dep: UiDep::default(),
+            tracked_dep: TrackedDep::default(),
             dev_port: None,
             shape: RepoShape::default(),
             available_tasks: Vec::new(),
@@ -160,8 +160,8 @@ pub struct WorkspaceSnapshot {
     pub finished_unix: Option<i64>,
     pub repos: Vec<RepoStatus>,
     pub commits: Vec<CommitEntry>,
-    pub ui_latest: Option<String>,
-    pub ui_latest_source: Option<String>,
+    pub tracked_latest: Option<String>,
+    pub tracked_latest_source: Option<String>,
     pub ok_count: u32,
     pub error_count: u32,
     pub duration_ms: u64,
@@ -197,7 +197,7 @@ pub struct LogLine {
     pub severity: Severity,
     pub text: String,
     pub unix: i64,
-    /// Set on bulk runs so 63 interleaved repos can be rendered grouped.
+    /// Set on bulk runs so interleaved repos can be rendered grouped.
     pub repo: Option<String>,
 }
 
@@ -444,6 +444,48 @@ pub enum PackageOp {
     Remove,
 }
 
+/// What a checkout would do to one repo.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CheckoutPreview {
+    #[serde(rename = "ref")]
+    pub repo: RepoRef,
+    pub current: Option<String>,
+    /// The branch this repo would end up on. None means it cannot be determined
+    /// (no origin/HEAD) or does not exist here, so the repo is left alone rather
+    /// than guessed at.
+    pub target: Option<String>,
+    /// False when a named branch exists in neither refs/heads nor origin/.
+    pub target_exists: bool,
+    /// Modified + untracked. Non-zero is what the policy applies to.
+    pub dirty_count: u32,
+    /// True when it is already on the target and clean.
+    pub already_there: bool,
+}
+
+/// What to do about a repo with local changes when switching branches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DirtyPolicy {
+    /// Leave it on its current branch, untouched.
+    Skip,
+    /// `git stash push -u`, so the work is recoverable with `git stash pop`.
+    Stash,
+    /// `git reset --hard` + `git clean -fd`. Unrecoverable.
+    Discard,
+}
+
+/// One installable version, for the Install button's version menu.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageVersion {
+    /// Passed back verbatim as `ActionSpec::Package { version }`.
+    pub value: String,
+    pub label: String,
+    /// "LTS", "current", … — shown next to the label.
+    pub note: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ToolPackage {
@@ -470,6 +512,15 @@ pub struct PackageStatus {
 }
 
 // --- bootstrap --------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderPick {
+    pub path: String,
+    /// Non-hidden entries already in the folder, so the UI can warn before
+    /// cloning into somewhere that is not empty.
+    pub entry_count: u32,
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -559,6 +610,13 @@ pub struct Bootstrap {
     /// Editors found on this machine, for the "open in…" action.
     pub editors: Vec<EditorInfo>,
     pub scripts: Vec<ScriptDescriptor>,
+    /// The shared package whose version drift is tracked, when this workspace has
+    /// one. None hides the column entirely rather than showing an empty one.
+    pub tracked_package: Option<String>,
+    /// The user's home directory, so paths can be abbreviated to `~/…`. Sent
+    /// rather than assumed: it is `/home/x` on Linux and `/Users/x` on macOS, and
+    /// neither is guaranteed.
+    pub home_dir: Option<PathBuf>,
     pub warnings: Vec<String>,
 }
 
@@ -604,9 +662,25 @@ pub enum ActionSpec {
         #[serde(rename = "ref")]
         repo: Option<RepoRef>,
     },
+    /// Switch repos to a branch, applying `dirty` where needed.
+    Checkout {
+        refs: Vec<RepoRef>,
+        /// None => each repo's own default branch, from origin/HEAD.
+        #[serde(default)]
+        branch: Option<String>,
+        dirty: DirtyPolicy,
+    },
+    /// Opens the system terminal emulator in a repo, or at the workspace root.
+    OpenShell {
+        #[serde(rename = "ref")]
+        repo: Option<RepoRef>,
+    },
     Package {
         id: String,
         op: PackageOp,
+        /// None means "whatever the manager considers current".
+        #[serde(default)]
+        version: Option<String>,
     },
     OpenInEditor {
         #[serde(rename = "ref")]
@@ -615,6 +689,14 @@ pub enum ActionSpec {
         editor: String,
     },
     DockerPs,
+    /// Clone a list of remotes into a folder, setting up a new workspace.
+    ///
+    /// `root` is caller-supplied — the folder does not exist as a workspace yet, so
+    /// it cannot come from state. Every clone target is `root/<validated name>`.
+    CloneUrls {
+        root: String,
+        urls: Vec<String>,
+    },
     KillPort {
         port: u16,
         #[serde(rename = "ref")]

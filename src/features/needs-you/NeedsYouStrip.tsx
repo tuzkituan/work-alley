@@ -10,17 +10,17 @@ const ORDER: NeedsYouKind[] = [
   'behind',
   'stale',
   'error',
-  'uiMismatch',
+  'packageDrift',
   'detached',
 ]
 
 /**
- * In the design this strip is decorative. With 63 repos it becomes the primary
- * filter: "41 uncommitted" is only useful if clicking it shows you those repos.
+ * The counts are filters, not decoration. At any real repo count "41
+ * uncommitted" is only useful if clicking it shows you those 41.
  */
 export function NeedsYouStrip() {
   const repos = useScanStore((s) => s.repos)
-  const uiLatest = useScanStore((s) => s.uiLatest)
+  const trackedLatest = useScanStore((s) => s.trackedLatest)
   const scanning = useScanStore((s) => s.scanning)
   const expanded = useUiStore((s) => s.expandedCategory)
   const isScanned = useScanStore((s) => (expanded ? s.scanned.has(expanded) : false))
@@ -34,10 +34,10 @@ export function NeedsYouStrip() {
     if (!expanded) return c
     for (const r of repos.values()) {
       if (r.ref.category !== expanded) continue
-      for (const k of derive(r, uiLatest).kinds) c.set(k, (c.get(k) ?? 0) + 1)
+      for (const k of derive(r, trackedLatest).kinds) c.set(k, (c.get(k) ?? 0) + 1)
     }
     return c
-  }, [repos, uiLatest, expanded])
+  }, [repos, trackedLatest, expanded])
 
   // Partial counts during a scan would be misinformation — "12 uncommitted"
   // climbing to 41 reads as a change in the workspace, not in our knowledge of it.

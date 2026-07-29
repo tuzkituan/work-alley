@@ -1,7 +1,7 @@
 /**
  * Coalesces a burst of events into one commit per animation frame.
  *
- * `scan:repo` fires 63 times in a burst and `run:output` delivers batched arrays
+ * `scan:repo` fires once per repo in a burst and `run:output` delivers arrays
  * hundreds of times during an install. Committing each one separately means a
  * store write and a render per event; this collapses that to ~1 per frame.
  */

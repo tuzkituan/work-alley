@@ -4,11 +4,12 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { KindTag, MonoChip, StatePill, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
-import { derive, displayName, taskOf, TONE_TEXT, type Tone } from '@/domain/severity'
+import { derive, taskOf, TONE_TEXT, type Tone } from '@/domain/severity'
 import { repoId, type RepoRef } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
+import { shortPackageName, useTrackedPackage } from '@/hooks/use-tracked-package'
 import { RepoMenu } from './RepoMenu'
 
 /**
@@ -26,7 +27,8 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
   const id = repoId(repo)
   // Subscribes to exactly this row, so card N re-renders only when repo N changes.
   const status = useScanStore((s) => s.repos.get(id))
-  const uiLatest = useScanStore((s) => s.uiLatest)
+  const trackedLatest = useScanStore((s) => s.trackedLatest)
+  const trackedPackage = useTrackedPackage()
   const active = useUiStore((s) => s.activeRepoId === id)
   const setActiveRepo = useUiStore((s) => s.setActiveRepo)
   const openDetail = useUiStore((s) => s.openDetail)
@@ -34,8 +36,7 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
 
   if (!status) return <RepoCardSkeleton repo={repo} />
 
-  const d = derive(status, uiLatest)
-  const { short, prefix } = displayName(repo.name)
+  const d = derive(status, trackedLatest)
   const dev = taskOf(status, 'dev')
   const sb = taskOf(status, 'storybook')
   const devUp = dev?.state === 'up' || dev?.state === 'starting'
@@ -66,7 +67,7 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
                     openDetail(id)
                   }}
                 >
-                  {short}
+                  {repo.name}
                 </button>
               </TooltipTrigger>
               <TooltipContent className="font-mono text-[11px]">
@@ -75,9 +76,6 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
             </Tooltip>
             <KindTag kind={status.shape.kind} stack={status.shape.stack} />
             <MonoChip>{repo.category}</MonoChip>
-            {prefix && (
-              <span className="truncate font-mono text-[10px] text-adaptive-400">{prefix}</span>
-            )}
           </div>
 
           {/* One line only. Long branch names (fix/lewis.nguyen/breadcrumb-sync)
@@ -101,24 +99,32 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
         <StatePill tone={d.tone} label={d.stateLabel} />
       </div>
 
-      <div className="grid grid-cols-4 gap-2 border-y border-adaptive-200 py-[9px]">
+      {/* Three stats, or four when this workspace has a shared package to track. */}
+      <div
+        className={cn(
+          'grid gap-2 border-y border-adaptive-200 py-[9px]',
+          trackedPackage ? 'grid-cols-4' : 'grid-cols-3'
+        )}
+      >
         <Stat label="Changes" value={d.dirtyLabel} tone={d.dirtyTone} />
         <Stat
           label="Conflicts"
           value={status.conflictCount > 0 ? String(status.conflictCount) : 'none'}
           tone={status.conflictCount > 0 ? 'err' : 'ok'}
         />
-        <Stat
-          label="blazeup-ui"
-          value={status.uiDep.resolved ?? (status.uiDep.declared ? 'n/a' : '—')}
-          tone={
-            status.uiDep.resolved && uiLatest && status.uiDep.resolved !== uiLatest
-              ? 'warn'
-              : status.uiDep.resolved
-                ? 'idle'
+        {trackedPackage && (
+          <Stat
+            label={shortPackageName(trackedPackage)}
+            value={status.trackedDep.resolved ?? (status.trackedDep.declared ? 'n/a' : '—')}
+            tone={
+              status.trackedDep.resolved &&
+              trackedLatest &&
+              status.trackedDep.resolved !== trackedLatest
+                ? 'warn'
                 : 'idle'
-          }
-        />
+            }
+          />
+        )}
         <Stat
           label={sb ? 'Dev · SB' : 'Dev'}
           value={
@@ -206,7 +212,7 @@ function Stat({ label, value, tone }: { label: string; value: string; tone: Tone
 
 /** Shares the real card's minimum height, so the scroll height starts correct. */
 export function RepoCardSkeleton({ repo }: { repo: RepoRef }) {
-  const { short } = displayName(repo.name)
+  const statCount = useTrackedPackage() ? 4 : 3
   return (
     <div
       style={{ minHeight: CARD_HEIGHT }}
@@ -216,15 +222,22 @@ export function RepoCardSkeleton({ repo }: { repo: RepoRef }) {
         <span className="mt-[5px] size-2 flex-none rounded-full bg-adaptive-300" />
         <div className="flex min-w-0 flex-1 flex-col gap-1">
           <div className="flex items-center gap-[7px]">
-            <span className="truncate text-sm font-semibold text-adaptive-500">{short}</span>
+            <span className="truncate text-sm font-semibold text-adaptive-500">{repo.name}</span>
             <MonoChip>{repo.category}</MonoChip>
           </div>
           <Skeleton className="h-3 w-40" />
         </div>
         <Skeleton className="h-4 w-14 rounded-full" />
       </div>
-      <div className="grid grid-cols-4 gap-2 border-y border-adaptive-200 py-[9px]">
-        {[0, 1, 2, 3].map((i) => (
+      {/* Must match the real card's column count so the height is right from
+          the first frame and the list never jumps as results stream in. */}
+      <div
+        className={cn(
+          'grid gap-2 border-y border-adaptive-200 py-[9px]',
+          statCount === 4 ? 'grid-cols-4' : 'grid-cols-3'
+        )}
+      >
+        {Array.from({ length: statCount }, (_, i) => (
           <div key={i} className="flex flex-col gap-1">
             <Skeleton className="h-2 w-12" />
             <Skeleton className="h-3 w-16" />

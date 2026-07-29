@@ -5,12 +5,30 @@
 @import '@fontsource-variable/inter';
 @import '@fontsource-variable/jetbrains-mono';
 
-@import './tokens.css';
+@import './shadcn-theme.css';
 @import './wa-bridge.css';
 
 /* `.dark` lives on <html>, not the app root — Radix portals mount to document.body,
  * outside the root div, and would otherwise resolve the whole adaptive ramp to light. */
 @custom-variant dark (&:where(.dark, .dark *));
+
+/* Tailwind v4 changed the default border colour from gray-200 to `currentColor`,
+ * so any element with a bare `border` inherits the *text* colour — which is why
+ * every stock shadcn surface (dialog, popover, dropdown, command) drew a
+ * near-black 1px frame in light mode. shadcn's own globals.css ships this base
+ * layer; it was the one piece missing from hand-writing the theme.
+ *
+ * `base` loses to `utilities`, so an explicit `border-adaptive-200` still wins.
+ */
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  body {
+    background-color: var(--background);
+    color: var(--foreground);
+  }
+}
 
 /* MUST be `@theme inline`. Plain `@theme` copies the *resolved* value into :root,
  * which freezes light mode and silently breaks the `.dark` cascade. */
@@ -38,8 +56,13 @@
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-ring: var(--sidebar-ring);
 
-  /* --- adaptive ramp: the design's main painting surface --- */
+  /* --- adaptive ramp: the app's main painting surface --- */
   --color-adaptive-50: var(--adaptive-50);
   --color-adaptive-100: var(--adaptive-100);
   --color-adaptive-200: var(--adaptive-200);
@@ -52,7 +75,7 @@
   --color-adaptive-900: var(--adaptive-900);
   --color-adaptive-950: var(--adaptive-950);
 
-  /* --- brand ramp --- */
+  /* --- accent aliases; all resolve to shadcn's single --primary --- */
   --color-primary-50: var(--primary-50);
   --color-primary-100: var(--primary-100);
   --color-primary-200: var(--primary-200);
@@ -65,8 +88,8 @@
   --color-primary-900: var(--primary-900);
   --color-primary-950: var(--primary-950);
 
-  /* --- status colors. The /[0.12] and /[0.38] opacity modifiers on these
-         reproduce the design's hardcoded rgba() tints exactly. --- */
+  /* --- status colors. The /[0.12] and /[0.38] opacity modifiers produce the
+         pill fills and borders; v4 resolves those via color-mix. --- */
   --color-amber-500: var(--amber-500);
   --color-red-500: var(--red-500);
   --color-blue-500: var(--blue-500);
@@ -90,6 +113,6 @@
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);
 
-  /* Exposes the design's exact hover ring as `shadow-focus-ring`. */
+  /* Exposes the hover/focus ring as a single `shadow-focus-ring` class. */
   --shadow-focus-ring: var(--shadow-focus-ring);
 }

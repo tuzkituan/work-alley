@@ -16,7 +16,7 @@ use tokio::sync::mpsc;
 /// Output is coalesced and flushed on whichever comes first.
 ///
 /// This is a requirement, not an optimization: one emit per line freezes the
-/// WebKit main thread during a cold vite start or a 63-repo pull.
+/// WebKit main thread during a cold vite start or a whole-workspace pull.
 const FLUSH_INTERVAL: Duration = Duration::from_millis(60);
 const FLUSH_BATCH: usize = 200;
 
@@ -25,7 +25,7 @@ const KILL_GRACE: Duration = Duration::from_secs(5);
 
 pub struct SpawnSpec {
     pub argv: Vec<String>,
-    /// Task key for devStart runs ("ui/blazeup-lib-ui#storybook"), so the port
+    /// Task key for devStart runs ("libs/design-system#storybook"), so the port
     /// sniffer patches the right entry when a repo runs dev and storybook at once.
     pub dev_key: Option<String>,
     pub cwd: PathBuf,
@@ -33,7 +33,7 @@ pub struct SpawnSpec {
     pub kind: String,
     pub title: String,
     pub repo: Option<RepoRef>,
-    /// Tags every line, so a bulk run over 63 repos can be rendered grouped
+    /// Tags every line, so a bulk run over many repos can be rendered grouped
     /// instead of as one unreadable interleaved stream.
     pub line_repo: Option<String>,
 }
@@ -584,6 +584,42 @@ pub fn spawn_detached(
 }
 
 /// Launches a detached terminal. Not tracked as a run — it has its own window.
+/// Opens the user's terminal emulator at `cwd`, with no command.
+///
+/// Deliberately not `open_terminal` with an empty argv: that wraps the command in
+/// `bash -lc '…; read -n1'`, which is right for "run this script and let me read
+/// the output" and wrong for "give me a shell" — you would get a shell inside a
+/// wrapper that waits for a keypress when you exit.
+pub fn open_shell(tc: &crate::toolchain::Toolchain, cwd: &Path) -> AppResult<()> {
+    let Some((term, _pre)) = find_terminal(tc) else {
+        return Err(AppError::NoTerminal(format!("cd {}", cwd.display())));
+    };
+
+    // No `-e`/`--` argument at all: every emulator's default with no command is to
+    // start the user's login shell, which is exactly what is wanted.
+    let mut cmd = std::process::Command::new(term);
+    cmd.current_dir(cwd)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt as _;
+        unsafe {
+            // Its own session, so the terminal outlives this app rather than dying
+            // with it — the same reasoning as for a GUI editor.
+            cmd.pre_exec(|| {
+                libc::setsid();
+                Ok(())
+            });
+        }
+    }
+
+    cmd.spawn().map_err(|e| AppError::Spawn(e.to_string()))?;
+    Ok(())
+}
+
 pub fn open_terminal(
     tc: &crate::toolchain::Toolchain,
     cwd: &Path,
@@ -622,7 +658,7 @@ pub fn open_terminal(
 
 /// Who is listening on a TCP port.
 ///
-/// Uses `ss` (always present on Fedora), falling back to `lsof`. Returns pids with
+/// Uses `ss` where available, falling back to `lsof`. Returns pids with
 /// the process name where known, so the confirmation dialog can say *what* it is
 /// about to signal rather than just a number.
 pub async fn port_holders(

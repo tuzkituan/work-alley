@@ -104,18 +104,35 @@ fn classify(
         return RepoKind::Mobile;
     }
 
-    // Explicit backend frameworks.
-    if has("@nestjs/core") || has("express") || has("fastify") || has("koa") || has("@hapi/hapi") {
-        return RepoKind::Backend;
+    // An app shell is the strongest single signal of a frontend: it is the file a
+    // browser loads. Checked before any backend framework, because a frontend can
+    // legitimately depend on express or nest — a mock API, a preview server, or a
+    // monorepo that holds the backend alongside the app.
+    let app_shell = has_app_shell(repo);
+
+    let js_backend =
+        has("@nestjs/core") || has("express") || has("fastify") || has("koa") || has("@hapi/hapi");
+
+    // Non-JS ecosystems are conclusive on their own, unless the repo also ships a
+    // web app shell — then it is a service *and* a UI, and the UI is the part you
+    // run a dev server for.
+    if !app_shell {
+        if in_stack("go") || in_stack("java") || in_stack("php") {
+            return RepoKind::Backend;
+        }
+        if in_stack("rust") && !in_stack("vite") {
+            // A Rust repo with no web frontend: a service or a CLI, not a UI.
+            return RepoKind::Backend;
+        }
+        if in_stack("python") {
+            return RepoKind::Backend;
+        }
     }
-    if in_stack("go") || in_stack("java") || in_stack("php") {
-        return RepoKind::Backend;
+
+    if app_shell && js_backend {
+        return RepoKind::Frontend;
     }
-    if in_stack("rust") && !in_stack("vite") {
-        // A Rust repo with no web frontend: a service or a CLI, not a UI.
-        return RepoKind::Backend;
-    }
-    if in_stack("python") && !file("index.html") {
+    if js_backend {
         return RepoKind::Backend;
     }
 
@@ -133,12 +150,12 @@ fn classify(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    if publishes_entry && !file("index.html") && !is_private {
+    if publishes_entry && !app_shell && !is_private {
         return RepoKind::Library;
     }
 
     // An app shell, or a frontend framework.
-    if file("index.html")
+    if app_shell
         || in_stack("next")
         || in_stack("vite")
         || in_stack("react")
@@ -164,6 +181,29 @@ fn classify(
     }
 
     RepoKind::Unknown
+}
+
+/// Whether this repo builds something a browser loads.
+///
+/// Looks one level into the conventional workspace directories as well as the
+/// root: in a monorepo the app shell lives in `apps/<name>/index.html`, and only
+/// checking the root makes the whole repo look like whatever its root manifest
+/// happens to depend on.
+fn has_app_shell(repo: &Path) -> bool {
+    if repo.join("index.html").exists() {
+        return true;
+    }
+    for workspace_dir in ["apps", "packages", "libs"] {
+        let Ok(entries) = std::fs::read_dir(repo.join(workspace_dir)) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            if entry.path().join("index.html").exists() {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 fn read_package_json(repo: &Path) -> Option<serde_json::Value> {
@@ -213,6 +253,60 @@ mod tests {
         assert_eq!(s.kind, RepoKind::Frontend);
         assert!(s.stack.contains(&"react".to_string()));
         assert!(s.stack.contains(&"vite".to_string()));
+    }
+
+    #[test]
+    fn an_app_shell_outranks_an_express_dependency() {
+        // A real frontend that also ships a mock API server. Seen in the wild, and
+        // it used to be filed under Backend on the strength of one dev dependency.
+        let d = scratch("shell-vs-express");
+        write(&d, "index.html", "<html></html>");
+        write(&d, "vite.config.ts", "export default {}");
+        write(
+            &d,
+            "package.json",
+            r#"{"private":true,"dependencies":{"react":"18","vite":"5","express":"4"}}"#,
+        );
+        assert_eq!(detect(&d).kind, RepoKind::Frontend);
+    }
+
+    #[test]
+    fn a_monorepo_app_shell_is_found_one_level_down() {
+        // Nx/turbo layout: the root manifest mentions nest and react, and the shell
+        // lives in apps/<name>/. Only looking at the root called this a backend.
+        let d = scratch("monorepo-shell");
+        write(&d, "nx.json", "{}");
+        write(&d, "apps/web/index.html", "<html></html>");
+        write(
+            &d,
+            "package.json",
+            r#"{"private":true,"dependencies":{"@nestjs/core":"10","react":"18","vite":"5"}}"#,
+        );
+        assert_eq!(detect(&d).kind, RepoKind::Frontend);
+    }
+
+    #[test]
+    fn a_backend_monorepo_with_no_shell_is_still_a_backend() {
+        // The mirror case: nothing a browser loads, so the fix must not drag every
+        // monorepo into Frontend.
+        let d = scratch("monorepo-be");
+        write(&d, "nx.json", "{}");
+        write(&d, "apps/api/main.ts", "");
+        write(
+            &d,
+            "package.json",
+            r#"{"private":true,"dependencies":{"@nestjs/core":"10"}}"#,
+        );
+        assert_eq!(detect(&d).kind, RepoKind::Backend);
+    }
+
+    #[test]
+    fn a_python_service_that_also_serves_a_web_app_is_a_frontend() {
+        let d = scratch("py-shell");
+        write(&d, "requirements.txt", "flask");
+        write(&d, "index.html", "<html></html>");
+        write(&d, "package.json", r#"{"private":true,"dependencies":{"vite":"5"}}"#);
+        assert_eq!(detect(&d).kind, RepoKind::Frontend);
     }
 
     #[test]

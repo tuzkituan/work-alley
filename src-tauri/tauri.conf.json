@@ -2,7 +2,7 @@
   "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
   "productName": "Work Alley",
   "version": "0.1.0",
-  "identifier": "ai.blazeup.workalley",
+  "identifier": "com.workalley.desktop",
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:1420",

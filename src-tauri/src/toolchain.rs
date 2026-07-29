@@ -38,8 +38,19 @@ impl Toolchain {
         self.paths.contains_key(tool)
     }
 
-    /// Prefer docker, fall back to podman. On this machine only podman exists, so
-    /// the fallback is the primary path — not an edge case.
+    /// The Node package manager to use when a repo states no preference.
+    ///
+    /// Order is "fastest that is actually installed". Only consulted when a repo
+    /// has neither a `packageManager` field nor a lockfile, so it never overrides
+    /// what a repo asked for.
+    pub fn preferred_package_manager(&self) -> Option<&'static str> {
+        ["bun", "pnpm", "yarn", "npm"]
+            .into_iter()
+            .find(|m| self.has(m))
+    }
+
+    /// Prefer docker, fall back to podman. Either may be the only one present, so
+    /// neither is treated as the special case.
     pub fn container_runtime(&self) -> Option<ContainerRuntime> {
         if self.has("docker") {
             Some(ContainerRuntime::Docker)

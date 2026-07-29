@@ -59,7 +59,10 @@ export const useRunStore = create<RunState>()((set) => ({
       const key = summary.ref ? repoId(summary.ref) : ''
       return {
         runs,
-        order: [...s.order, summary.runId],
+        // Idempotent: a run must never appear twice, whether from a duplicated
+        // listener or from replay overlapping a live event. Duplicate ids also
+        // produce duplicate React keys, which renders two chips for one run.
+        order: s.order.includes(summary.runId) ? s.order : [...s.order, summary.runId],
         activeRunId: summary.runId,
         runningByScope: {
           ...s.runningByScope,

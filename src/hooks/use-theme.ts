@@ -1,59 +1,6 @@
-import { useEffect, useState } from 'react'
-import { getCurrentWindow } from '@tauri-apps/api/window'
+import { useEffect } from 'react'
 import { useUiStore } from '@/stores/ui-store'
 import type { ThemeMode } from '@/stores/ui-store'
-
-/**
- * Tracks the OS theme preference.
- *
- * Deliberately NOT `matchMedia('(prefers-color-scheme: dark)')`: WebKitGTK does
- * not reflect the desktop setting there, so on GNOME with `color-scheme:
- * prefer-dark` the media query still reports light. Tauri reads the real platform
- * value, and `onThemeChanged` fires when it is switched live.
- */
-function useSystemDark(): boolean {
-  const [dark, setDark] = useState(false)
-
-  useEffect(() => {
-    const win = getCurrentWindow()
-    let unlisten: (() => void) | undefined
-    let cancelled = false
-
-    void win
-      .theme()
-      .then((t) => {
-        if (!cancelled) setDark(t === 'dark')
-      })
-      .catch(() => {
-        // Fall back to the media query if the platform cannot tell us.
-        if (!cancelled) {
-          setDark(window.matchMedia?.('(prefers-color-scheme: dark)').matches === true)
-        }
-      })
-
-    void win
-      .onThemeChanged(({ payload }) => setDark(payload === 'dark'))
-      .then((fn) => {
-        unlisten = fn
-      })
-      .catch(() => {})
-
-    return () => {
-      cancelled = true
-      unlisten?.()
-    }
-  }, [])
-
-  return dark
-}
-
-/** The mode setting resolved to an actual appearance. */
-export function useResolvedTheme(): { mode: ThemeMode; resolved: 'light' | 'dark' } {
-  const mode = useUiStore((s) => s.theme)
-  const systemDark = useSystemDark()
-  const resolved = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
-  return { mode, resolved }
-}
 
 /**
  * Applies the theme to <html>, NOT to the app root div.
@@ -64,35 +11,41 @@ export function useResolvedTheme(): { mode: ThemeMode; resolved: 'light' | 'dark
  * to its light values, producing white dialogs floating over a dark app.
  */
 export function useApplyTheme() {
-  const { resolved } = useResolvedTheme()
+  const theme = useUiStore((s) => s.theme)
 
   useEffect(() => {
     const root = document.documentElement
-    root.classList.toggle('dark', resolved === 'dark')
+    root.classList.toggle('dark', theme === 'dark')
     // Keeps native scrollbars, form controls and the webview backdrop in step.
-    root.style.colorScheme = resolved
-  }, [resolved])
+    root.style.colorScheme = theme
+  }, [theme])
 }
 
-const NEXT_LABEL: Record<ThemeMode, string> = {
+const LABEL: Record<ThemeMode, string> = {
   light: 'Light',
   dark: 'Dark',
-  system: 'Auto',
 }
 
+/**
+ * The theme is an explicit choice: light or dark. It does not follow the OS.
+ *
+ * A third "follow the system" mode was removed. It made the current appearance a
+ * function of two inputs, so what the toggle did next depended on state the user
+ * could not see — and the platform theme signal is unreliable under WebKitGTK in
+ * the first place.
+ */
 export function useTheme() {
-  const { mode, resolved } = useResolvedTheme()
+  const theme = useUiStore((s) => s.theme)
   const toggleTheme = useUiStore((s) => s.toggleTheme)
   const setTheme = useUiStore((s) => s.setTheme)
 
   return {
-    mode,
-    resolved,
+    theme,
+    /** Kept as an alias: consumers that want a concrete appearance. */
+    resolved: theme,
+    mode: theme,
     toggleTheme,
     setTheme,
-    /** The *current* mode, since the control now cycles through three. */
-    label: NEXT_LABEL[mode],
-    /** Sonner needs a concrete appearance, never "system". */
-    theme: resolved,
+    label: LABEL[theme],
   }
 }

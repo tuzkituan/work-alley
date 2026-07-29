@@ -10,7 +10,12 @@ pub fn guess_workspace_root() -> Option<PathBuf> {
     discover_workspace_root().ok()
 }
 
-/// Finds a workspace root by walking up from the cwd, then `$HOME/work-alley`.
+/// Finds a workspace root: an explicit env var, else the nearest ancestor of the
+/// working directory that contains repos.
+///
+/// There is deliberately no "well-known folder" fallback. Guessing a directory
+/// name would only ever be right for whoever chose the name, and the first-run
+/// picker already covers the case where nothing is saved yet.
 pub fn discover_workspace_root() -> AppResult<PathBuf> {
     if let Ok(explicit) = std::env::var("WORK_ALLEY_ROOT") {
         let p = PathBuf::from(explicit);
@@ -29,15 +34,8 @@ pub fn discover_workspace_root() -> AppResult<PathBuf> {
         }
     }
 
-    if let Some(home) = std::env::var_os("HOME") {
-        let p = PathBuf::from(home).join("work-alley");
-        if is_workspace(&p) {
-            return Ok(p);
-        }
-    }
-
     Err(AppError::WorkspaceNotFound(
-        "no ancestor directory contains repos.json and a be/fe/sa/ui dir".into(),
+        "no folder with git repos in it was found above the working directory".into(),
     ))
 }
 
@@ -133,7 +131,7 @@ pub fn discover_all(root: &Path) -> Vec<(RepoRef, PathBuf)> {
     //
     // This must come *after* the search, not before it. A workspace can perfectly
     // well be a git repo in its own right — one that tracks a repos.json and some
-    // scripts, say — and short-circuiting on that collapsed a 63-repo workspace
+    // scripts, say — and short-circuiting on that collapsed a whole workspace
     // into one entry.
     if out.is_empty() && has_git(root) {
         let name = root
@@ -312,9 +310,9 @@ mod tests {
 
     #[test]
     fn a_workspace_that_is_also_a_repo_still_lists_its_contents() {
-        // ~/work-alley is exactly this: a git repo tracking repos.json and scripts,
-        // which also holds 63 repos in subfolders. Treating it as a single repo
-        // hid all of them.
+        // A common shape: a git repo that tracks repos.json and scripts, and also
+        // holds every other repo in subfolders. Treating it as a single repo hid
+        // all of them.
         let d = scratch("both");
         repo(&d);
         repo(&d.join("fe/app"));
