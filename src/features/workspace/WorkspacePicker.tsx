@@ -1,7 +1,16 @@
 import { useEffect } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
-import { Check, ChevronDown, FolderOpen, FolderSearch, Plus, Wrench, X } from 'lucide-react'
+import {
+  Check,
+  ChevronDown,
+  FolderOpen,
+  FolderSearch,
+  ListChecks,
+  Plus,
+  Wrench,
+  X,
+} from 'lucide-react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -229,15 +238,26 @@ export function WorkspaceWelcome({
         )}
 
         {/* Reachable before any folder is open: a fresh machine usually needs git
-            and a package manager before it can clone anything at all. */}
-        <button
-          type="button"
-          onClick={() => setPage('toolbox')}
-          className="flex items-center gap-1.5 text-[11px] text-adaptive-500 hover:text-adaptive-800"
-        >
-          <Wrench className="size-3" />
-          Check your developer tools
-        </button>
+            and a package manager before it can clone anything at all. Setup leads,
+            because on a brand new machine that is the honest first move. */}
+        <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5">
+          <button
+            type="button"
+            onClick={() => setPage('setup')}
+            className="flex items-center gap-1.5 text-[11px] font-semibold text-adaptive-700 hover:text-adaptive-950"
+          >
+            <ListChecks className="size-3" />
+            New machine? Install everything you need
+          </button>
+          <button
+            type="button"
+            onClick={() => setPage('toolbox')}
+            className="flex items-center gap-1.5 text-[11px] text-adaptive-500 hover:text-adaptive-800"
+          >
+            <Wrench className="size-3" />
+            Check your developer tools
+          </button>
+        </div>
 
         <p className="text-center text-[11px] text-adaptive-400">
           You can also set <code className="font-mono">WORK_ALLEY_ROOT</code> to override this.

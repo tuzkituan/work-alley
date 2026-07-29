@@ -903,7 +903,108 @@ pub fn plan_with_version(
     })
 }
 
-fn shell_path() -> String {
+/// One command that installs several catalog entries through the system package
+/// manager.
+///
+/// A setup step means "make these five things exist". Doing that as five separate
+/// installs means five terminal windows and five password prompts, which is how a
+/// ten-minute setup becomes a chore. One command is one prompt.
+pub fn plan_system_group(tc: &Toolchain, ids: &[&str]) -> Result<Plan, String> {
+    plan_system_group_with(detect_system_pm(tc), ids)
+}
+
+/// The real implementation, with the system manager passed in so it can be tested
+/// against every distribution rather than only the one running the tests.
+pub fn plan_system_group_with(sys: Option<SystemPm>, ids: &[&str]) -> Result<Plan, String> {
+    let sys = sys.ok_or_else(|| {
+        "no system package manager found (looked for dnf, apt-get, pacman, zypper, \
+         apk and brew)"
+            .to_string()
+    })?;
+
+    let mut names: Vec<String> = Vec::new();
+    let mut skipped: Vec<&str> = Vec::new();
+    for id in ids {
+        let e = find(id).ok_or_else(|| format!("unknown package '{id}'"))?;
+        match package_name(e, sys) {
+            Some(name) => {
+                // The same package can back two catalog ids (gcc for a compiler and
+                // for make on some distributions); installing it twice in one
+                // command is a manager error on pacman.
+                if !names.iter().any(|n| n == name) {
+                    names.push(name.to_string());
+                }
+            }
+            None => skipped.push(e.label),
+        }
+    }
+
+    if names.is_empty() {
+        return Err(format!(
+            "{} does not package any of these — install them another way",
+            sys.id()
+        ));
+    }
+
+    let mut warnings = Vec::new();
+    let mut argv: Vec<String> = Vec::new();
+    if sys.needs_root() {
+        argv.push("sudo".to_string());
+        warnings.push("Runs in a terminal so you can enter your password.".into());
+    }
+    argv.push(sys.id().to_string());
+    argv.extend(sys.verb(PackageOp::Install).iter().map(|a| a.to_string()));
+    argv.extend(names.iter().cloned());
+
+    if !skipped.is_empty() {
+        // Named rather than silently dropped: "why is delta still missing" is a
+        // question the page should already have answered.
+        warnings.push(format!(
+            "{} does not package {} — that one is skipped.",
+            sys.id(),
+            skipped.join(", ")
+        ));
+    }
+
+    Ok(Plan {
+        argv,
+        in_terminal: sys.needs_root(),
+        danger: Danger::Medium,
+        warnings,
+        typed_confirm: None,
+        description: format!("System packages via {}: {}", sys.id(), names.join(" ")),
+    })
+}
+
+/// One `npm install -g` for several catalog entries.
+pub fn plan_npm_group(tc: &Toolchain, ids: &[&str]) -> Result<Plan, String> {
+    let npm = tc
+        .path("npm")
+        .ok_or_else(|| "npm is not installed — install Node first".to_string())?;
+
+    let mut specs: Vec<String> = Vec::new();
+    for id in ids {
+        let e = find(id).ok_or_else(|| format!("unknown package '{id}'"))?;
+        specs.push(format!("{}@latest", e.package));
+    }
+    if specs.is_empty() {
+        return Err("nothing to install".to_string());
+    }
+
+    let mut argv = vec![npm.display().to_string(), "install".to_string(), "-g".to_string()];
+    argv.extend(specs.iter().cloned());
+
+    Ok(Plan {
+        argv,
+        in_terminal: false,
+        danger: Danger::Low,
+        warnings: vec![],
+        typed_confirm: None,
+        description: format!("Global npm packages: {}", specs.join(" ")),
+    })
+}
+
+pub fn shell_path() -> String {
     std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
 }
 
@@ -1084,6 +1185,64 @@ mod tests {
         let apt = "  ripgrep | 14.1.0-1 | http://deb.debian.org/debian trixie/main amd64 Packages\n  ripgrep | 13.0.0-4 | http://deb.debian.org/debian bookworm/main amd64 Packages";
         let av = parse_apt_madison(apt);
         assert_eq!(av.iter().map(|v| v.value.as_str()).collect::<Vec<_>>(), ["14.1.0-1", "13.0.0-4"]);
+    }
+
+    #[test]
+    fn a_group_becomes_one_command_per_manager() {
+        // The whole point of the setup page: five tools, one password prompt.
+        let p = plan_system_group_with(Some(SystemPm::Dnf), &["git", "curl", "make", "jq"]).unwrap();
+        assert_eq!(p.argv[..3], ["sudo", "dnf", "install"]);
+        assert!(p.in_terminal);
+        for name in ["git", "curl", "make", "jq"] {
+            assert!(p.argv.contains(&name.to_string()), "missing {name}: {:?}", p.argv);
+        }
+
+        // Per-manager names still apply inside a group.
+        let apt = plan_system_group_with(Some(SystemPm::Apt), &["cc", "fd"]).unwrap();
+        assert!(apt.argv.contains(&"build-essential".to_string()));
+        assert!(apt.argv.contains(&"fd-find".to_string()));
+    }
+
+    #[test]
+    fn a_group_skips_what_the_manager_lacks_and_says_so() {
+        // apt has no lazygit. Dropping it silently would leave the page claiming a
+        // step succeeded while one tool is still missing.
+        let p = plan_system_group_with(Some(SystemPm::Apt), &["git", "lazygit"]).unwrap();
+        assert!(!p.argv.contains(&"lazygit".to_string()));
+        assert!(
+            p.warnings.iter().any(|w| w.contains("lazygit")),
+            "the skip must be reported: {:?}",
+            p.warnings
+        );
+    }
+
+    #[test]
+    fn a_group_of_only_unavailable_packages_is_refused() {
+        let err = plan_system_group_with(Some(SystemPm::Apt), &["lazygit"]).unwrap_err();
+        assert!(err.contains("apt-get"), "got: {err}");
+    }
+
+    #[test]
+    fn a_group_never_repeats_a_package_name() {
+        // pacman errors on a duplicated target, and two catalog ids can resolve to
+        // the same package on some distributions.
+        let p = plan_system_group_with(Some(SystemPm::Pacman), &["go", "go"]).unwrap();
+        assert_eq!(p.argv.iter().filter(|a| *a == "go").count(), 1);
+    }
+
+    #[test]
+    fn an_npm_group_installs_every_spec_at_latest() {
+        let p = plan_npm_group(&tc(), &["pnpm", "yarn", "typescript"]).unwrap();
+        assert!(!p.in_terminal);
+        assert_eq!(p.argv[1..3], ["install", "-g"]);
+        assert!(p.argv.contains(&"pnpm@latest".to_string()));
+        assert!(p.argv.contains(&"typescript@latest".to_string()));
+    }
+
+    #[test]
+    fn an_npm_group_without_npm_names_the_real_problem() {
+        let err = plan_npm_group(&Toolchain::default(), &["pnpm"]).unwrap_err();
+        assert!(err.contains("Node"), "got: {err}");
     }
 
     #[test]

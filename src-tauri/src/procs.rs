@@ -115,6 +115,24 @@ async fn supervise(
         return;
     };
 
+    // Checked here rather than left to the spawn: a missing cwd and a missing
+    // program both come back as a bare ENOENT, and "failed to spawn: No such file or
+    // directory" sends you looking for the wrong missing thing.
+    if !spec.cwd.is_dir() {
+        finish(
+            &app,
+            &state,
+            &handle,
+            &run_id,
+            RunStatus::Failed {
+                message: format!("that folder no longer exists: {}", spec.cwd.display()),
+            },
+            began,
+        )
+        .await;
+        return;
+    }
+
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .current_dir(&spec.cwd)
@@ -505,37 +523,75 @@ pub async fn port_in_use(port: u16) -> bool {
     .unwrap_or(false)
 }
 
+/// A terminal emulator, and how it wants the command handed over.
+pub struct TerminalCmd {
+    pub program: String,
+    /// Flags that come before the command.
+    pub pre: Vec<String>,
+    /// True when the command must arrive as one argument rather than as an argv.
+    ///
+    /// ptyxis is the reason this exists: its `--tab` only combines with `-x`, which
+    /// takes the whole command line as a single string. Given a real argv after `--`
+    /// it ignores `--tab` and opens a *window* instead, which is what it was doing.
+    pub single_string: bool,
+}
+
 /// Finds a terminal emulator to hand an interactive script to.
 ///
 /// Degrades to an error carrying the exact command, so the UI can offer "copy" —
 /// which is far better than piping canned menu answers into a script that pushes
 /// commits and publishes packages.
-pub fn find_terminal(tc: &crate::toolchain::Toolchain) -> Option<(String, Vec<String>)> {
+pub fn find_terminal(tc: &crate::toolchain::Toolchain) -> Option<TerminalCmd> {
     let _ = tc;
     if let Ok(t) = std::env::var("TERMINAL") {
         if !t.trim().is_empty() {
-            return Some((t, vec!["-e".into()]));
+            // An unknown emulator: `-e cmd args` is the one convention nearly all of
+            // them share, and a tab flag would be a guess.
+            return Some(TerminalCmd {
+                program: t,
+                pre: vec!["-e".into()],
+                single_string: false,
+            });
         }
     }
-    let candidates: [(&str, &[&str]); 8] = [
-        ("ptyxis", &["-x"]),
-        ("gnome-terminal", &["--"]),
-        ("konsole", &["-e"]),
-        ("kitty", &[]),
-        ("alacritty", &["-e"]),
-        ("wezterm", &["start", "--"]),
-        ("x-terminal-emulator", &["-e"]),
-        ("xterm", &["-e"]),
+    // A tab in the terminal you already have open, wherever the emulator can do it:
+    // an install is something you watch and then leave, and a whole new window per
+    // step means five windows to close by the end of a setup. The three that support
+    // it fall back to opening a window themselves when none is open yet.
+    //
+    // `--`, not ptyxis's `-x`: `-x` takes the whole command as a single string, so
+    // `-x bash -lc '…'` consumed "bash", choked on the unknown `-lc` and exited — a
+    // click that opened nothing and said nothing. Fedora 42+ ships ptyxis as the
+    // default terminal, so it is the branch most users land on.
+    // (binary, flags, command-as-one-string)
+    let candidates: [(&str, &[&str], bool); 8] = [
+        ("ptyxis", &["--tab", "-x"], true),
+        ("gnome-terminal", &["--tab", "--"], false),
+        ("konsole", &["--new-tab", "-e"], false),
+        // The rest have no usable tab flag: kitty and wezterm need a running instance
+        // with remote control enabled, and alacritty and xterm have no tabs at all.
+        ("kitty", &[], false),
+        ("alacritty", &["-e"], false),
+        ("wezterm", &["start", "--"], false),
+        ("x-terminal-emulator", &["-e"], false),
+        ("xterm", &["-e"], false),
     ];
-    for (bin, pre) in candidates {
+    for (bin, pre, single_string) in candidates {
         if let Some(p) = which_path(bin) {
-            return Some((
-                p.display().to_string(),
-                pre.iter().map(|s| s.to_string()).collect(),
-            ));
+            return Some(TerminalCmd {
+                program: p.display().to_string(),
+                pre: pre.iter().map(|s| s.to_string()).collect(),
+                single_string,
+            });
         }
     }
     None
+}
+
+/// POSIX single-quoting, so a path or a command can be embedded in a shell string
+/// without the shell finding anything in it to interpret.
+pub fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', r"'\''"))
 }
 
 fn which_path(tool: &str) -> Option<PathBuf> {
@@ -583,25 +639,27 @@ pub fn spawn_detached(
     Ok(())
 }
 
-/// Launches a detached terminal. Not tracked as a run — it has its own window.
-/// Opens the user's terminal emulator at `cwd`, with no command.
+/// Builds the emulator invocation for a shell script.
 ///
-/// Deliberately not `open_terminal` with an empty argv: that wraps the command in
-/// `bash -lc '…; read -n1'`, which is right for "run this script and let me read
-/// the output" and wrong for "give me a shell" — you would get a shell inside a
-/// wrapper that waits for a keypress when you exit.
-pub fn open_shell(tc: &crate::toolchain::Toolchain, cwd: &Path) -> AppResult<()> {
-    let Some((term, _pre)) = find_terminal(tc) else {
-        return Err(AppError::NoTerminal(format!("cd {}", cwd.display())));
-    };
+/// Shared by both terminal entry points so the tab handling, the quoting and the
+/// detachment are decided once. Not tracked as a run: the terminal has its own
+/// window and outlives this app.
+fn terminal_command(term: &TerminalCmd, script: &str, cwd: &Path) -> std::process::Command {
+    let mut cmd = std::process::Command::new(&term.program);
+    cmd.args(&term.pre);
+    if term.single_string {
+        // One argument, so the emulator's own parser sees a single command line.
+        cmd.arg(format!("bash -lc {}", sh_quote(script)));
+    } else {
+        cmd.arg("bash").arg("-lc").arg(script);
+    }
 
-    // No `-e`/`--` argument at all: every emulator's default with no command is to
-    // start the user's login shell, which is exactly what is wanted.
-    let mut cmd = std::process::Command::new(term);
     cmd.current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
-        .stderr(Stdio::null());
+        // Kept, not discarded: this is the only channel an emulator has to say it did
+        // not like our arguments. See `watch_terminal`.
+        .stderr(Stdio::piped());
 
     #[cfg(unix)]
     {
@@ -616,43 +674,122 @@ pub fn open_shell(tc: &crate::toolchain::Toolchain, cwd: &Path) -> AppResult<()>
         }
     }
 
-    cmd.spawn().map_err(|e| AppError::Spawn(e.to_string()))?;
+    cmd
+}
+
+/// Opens the user's terminal at `cwd`, with a shell and no command.
+///
+/// The shell is started explicitly rather than left to the emulator's default,
+/// because `exec` is what makes that equivalent: you get your login shell, not a
+/// shell nested inside a wrapper. It is also the only way to be sure of the
+/// directory — see the note in `open_terminal` about tabs.
+pub fn open_shell(app: &AppHandle, tc: &crate::toolchain::Toolchain, cwd: &Path) -> AppResult<()> {
+    let pretty = format!("cd {}", cwd.display());
+    let Some(term) = find_terminal(tc) else {
+        return Err(AppError::NoTerminal(pretty));
+    };
+    if !cwd.is_dir() {
+        return Err(AppError::Invalid(format!(
+            "that folder no longer exists: {}",
+            cwd.display()
+        )));
+    }
+
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
+    let script = format!(
+        "cd {} || exit 1; exec {} -l",
+        sh_quote(&cwd.display().to_string()),
+        sh_quote(&shell)
+    );
+
+    let child = terminal_command(&term, &script, cwd)
+        .spawn()
+        .map_err(|e| AppError::Spawn(e.to_string()))?;
+    watch_terminal(app, child, pretty);
     Ok(())
 }
 
+/// Reports a terminal emulator that refused to start.
+///
+/// Handing a command to a terminal is fire-and-forget: there is no run to attach to
+/// and nothing waits on the child, so an emulator that rejects our arguments used to
+/// print to a discarded stderr, exit, and leave the user looking at a screen where
+/// pressing Install did nothing whatsoever. (It happened: ptyxis's `-x` wants the
+/// command as one string and answered `Unknown option -lc`.)
+///
+/// A brief watch rather than a wait: emulators legitimately exit straight away after
+/// handing the window to a D-Bus service, so success is "still running, or exited
+/// zero", and only a non-zero exit is worth a word.
+fn watch_terminal(app: &AppHandle, mut child: std::process::Child, pretty: String) {
+    let app = app.clone();
+    std::thread::spawn(move || {
+        for _ in 0..20 {
+            std::thread::sleep(Duration::from_millis(100));
+            match child.try_wait() {
+                Ok(Some(status)) if !status.success() => {
+                    let mut err = String::new();
+                    if let Some(mut pipe) = child.stderr.take() {
+                        use std::io::Read as _;
+                        let _ = pipe.read_to_string(&mut err);
+                    }
+                    let detail = err.lines().next().unwrap_or("").trim().to_string();
+                    log::warn!("terminal emulator exited {status}: {err}");
+                    let _ = app.emit(
+                        events::APP_TOAST,
+                        events::Toast {
+                            level: "err".into(),
+                            message: if detail.is_empty() {
+                                format!("The terminal did not open. Run it yourself: {pretty}")
+                            } else {
+                                format!("The terminal did not open ({detail}). Run it yourself: {pretty}")
+                            },
+                            run_id: None,
+                        },
+                    );
+                    return
+                }
+                // Exited cleanly, or still running: both are the normal case.
+                Ok(Some(_)) => return,
+                Ok(None) => continue,
+                Err(_) => return,
+            }
+        }
+    });
+}
+
 pub fn open_terminal(
+    app: &AppHandle,
     tc: &crate::toolchain::Toolchain,
     cwd: &Path,
     argv: &[String],
 ) -> AppResult<()> {
     let pretty = shell_join(argv);
-    let Some((term, pre)) = find_terminal(tc) else {
+    let Some(term) = find_terminal(tc) else {
         return Err(AppError::NoTerminal(pretty));
     };
-
-    let mut cmd = std::process::Command::new(term);
-    cmd.args(pre)
-        .arg("bash")
-        .arg("-lc")
-        // `exec bash` keeps the window open afterwards so output stays readable.
-        .arg(format!("{pretty}; echo; read -n1 -r -p 'Press any key to close…'"))
-        .current_dir(cwd)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null());
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
+    // Same trap as in `supervise`: a cwd that is not there fails the spawn with the
+    // same ENOENT as a missing terminal emulator, sending you after the wrong one.
+    if !cwd.is_dir() {
+        return Err(AppError::Invalid(format!(
+            "that folder no longer exists: {}",
+            cwd.display()
+        )));
     }
 
-    cmd.spawn().map_err(|e| AppError::Spawn(e.to_string()))?;
+    // The `cd` is not redundant with `current_dir`. When this opens a *tab*, the
+    // process we spawn only forwards the request to the emulator's primary instance
+    // and exits — the tab is created by that instance and inherits *its* directory,
+    // not ours. A script that must run inside a repo would silently run somewhere
+    // else. Saying it in the command works whichever way the emulator goes.
+    let script = format!(
+        "cd {} || exit 1; {pretty}; echo; read -n1 -r -p 'Press any key to close…'",
+        sh_quote(&cwd.display().to_string())
+    );
+
+    let child = terminal_command(&term, &script, cwd)
+        .spawn()
+        .map_err(|e| AppError::Spawn(e.to_string()))?;
+    watch_terminal(app, child, pretty);
     Ok(())
 }
 
@@ -735,6 +872,52 @@ pub fn parse_ss_holders(stdout: &str) -> Vec<(u32, String)> {
 mod tests {
     use super::*;
 
+    /// The command a terminal receives, as it would be spawned.
+    fn built(term: &TerminalCmd, script: &str) -> Vec<String> {
+        let cmd = terminal_command(term, script, Path::new("/"));
+        cmd.get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect()
+    }
+
+    #[test]
+    fn an_emulator_that_wants_one_string_gets_one_argument() {
+        // ptyxis: `--tab` only combines with `-x`, which takes the whole command line
+        // as a single argument. Handed a real argv after `--` it ignored `--tab` and
+        // opened a window, and handed `-x bash -lc '…'` it replied "Unknown option
+        // -lc" to a discarded stderr and opened nothing at all.
+        let term = TerminalCmd {
+            program: "/usr/bin/ptyxis".into(),
+            pre: vec!["--tab".into(), "-x".into()],
+            single_string: true,
+        };
+        let args = built(&term, "echo hi");
+        assert_eq!(args, ["--tab", "-x", "bash -lc 'echo hi'"]);
+    }
+
+    #[test]
+    fn a_quote_in_the_script_survives_being_wrapped() {
+        // The wrapper's own `read -n1 -r -p '…'` puts quotes in every script, so this
+        // is the normal case rather than an edge one.
+        let term = TerminalCmd {
+            program: "/usr/bin/ptyxis".into(),
+            pre: vec!["-x".into()],
+            single_string: true,
+        };
+        let args = built(&term, "read -p 'go on'");
+        assert_eq!(args.last().unwrap(), r"bash -lc 'read -p '\''go on'\'''");
+    }
+
+    #[test]
+    fn an_emulator_that_takes_an_argv_is_not_double_quoted() {
+        let term = TerminalCmd {
+            program: "/usr/bin/gnome-terminal".into(),
+            pre: vec!["--tab".into(), "--".into()],
+            single_string: false,
+        };
+        assert_eq!(built(&term, "echo hi"), ["--tab", "--", "bash", "-lc", "echo hi"]);
+    }
+
     #[test]
     fn parses_ss_single_holder() {
         let out = r#"LISTEN 0 511 *:8100 *:* users:(("node",pid=12345,fd=20))"#;
@@ -757,3 +940,4 @@ mod tests {
         assert!(parse_ss_holders("LISTEN 0 511 *:8100 *:*").is_empty());
     }
 }
+

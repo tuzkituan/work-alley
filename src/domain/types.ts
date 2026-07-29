@@ -341,6 +341,53 @@ export interface PackageStatus {
   managerAvailable: boolean
 }
 
+// --- first-run setup --------------------------------------------------------
+
+/** One thing a setup step is responsible for: a package, or half of the identity. */
+export interface SetupItem {
+  id: string
+  label: string
+  installed: boolean
+  /** False when this machine's package manager does not carry it at all. */
+  available: boolean
+  version: string | null
+}
+
+/**
+ * How the step runs. `gitIdentity` is the only one rendered as a form; the rest
+ * are one button.
+ */
+export type SetupStepKind = 'system' | 'npmGlobal' | 'script' | 'node' | 'gitIdentity'
+
+export interface SetupStepStatus {
+  id: string
+  title: string
+  summary: string
+  /** Why this step is here, and here rather than later. */
+  why: string
+  kind: SetupStepKind
+  /** The manager it will use — dnf, apt-get, npm, nvm, curl, git. */
+  manager: string
+  needsRoot: boolean
+  optional: boolean
+  items: SetupItem[]
+  done: boolean
+  /** What has to happen first. Null when the step can run now. */
+  blocked: string | null
+  /** The command it would run. Empty when it cannot be planned yet. */
+  commandPreview: string[]
+  /** Something the command cannot do for you. */
+  note: string | null
+}
+
+export interface SetupPlan {
+  osLabel: string
+  packageManager: string | null
+  steps: SetupStepStatus[]
+  gitName: string | null
+  gitEmail: string | null
+}
+
 export type Danger = 'low' | 'medium' | 'high'
 
 export interface FolderPick {
@@ -408,6 +455,9 @@ export type ActionSpec =
   | { kind: 'checkout'; refs: RepoRef[]; branch?: string; dirty: DirtyPolicy }
   | { kind: 'openInEditor'; ref: RepoRef; editor: string }
   | { kind: 'package'; id: string; op: PackageOp; version?: string }
+  /** One step of the first-run setup. The id is resolved against the step table. */
+  | { kind: 'setupStep'; id: string }
+  | { kind: 'gitIdentity'; name: string; email: string }
   | { kind: 'dockerPs' }
   | { kind: 'cloneUrls'; root: string; urls: string[] }
   | { kind: 'killPort'; port: number; ref: RepoRef | null }

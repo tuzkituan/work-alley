@@ -620,6 +620,60 @@ pub struct Bootstrap {
     pub warnings: Vec<String>,
 }
 
+// --- first-run setup --------------------------------------------------------
+
+/// One thing a setup step is responsible for. A package, or one half of the git
+/// identity.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupItem {
+    pub id: String,
+    pub label: String,
+    pub installed: bool,
+    /// False when this machine's package manager does not carry it, which is a
+    /// permanent state no install can change.
+    pub available: bool,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupStepStatus {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+    /// Why this step is here, and here rather than later.
+    pub why: String,
+    /// "system" | "npmGlobal" | "script" | "node" | "gitIdentity" — the frontend
+    /// renders the identity step as a form and the rest as one button.
+    pub kind: String,
+    /// The manager this step will use, named so the user can see it is dnf rather
+    /// than apt before anything runs.
+    pub manager: String,
+    pub needs_root: bool,
+    pub optional: bool,
+    pub items: Vec<SetupItem>,
+    pub done: bool,
+    /// What must happen first. None when the step can run now.
+    pub blocked: Option<String>,
+    /// The command this step would run. Empty when it cannot be planned yet.
+    pub command_preview: Vec<String>,
+    /// Something the command cannot do for you.
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetupPlan {
+    /// PRETTY_NAME from os-release — the name the user recognises.
+    pub os_label: String,
+    /// None when no system package manager was found at all.
+    pub package_manager: Option<String>,
+    pub steps: Vec<SetupStepStatus>,
+    pub git_name: Option<String>,
+    pub git_email: Option<String>,
+}
+
 // --- actions ----------------------------------------------------------------
 
 #[derive(Debug, Clone, Deserialize)]
@@ -674,6 +728,17 @@ pub enum ActionSpec {
     OpenShell {
         #[serde(rename = "ref")]
         repo: Option<RepoRef>,
+    },
+    /// One step of the first-run setup. The id is opaque and resolved against the
+    /// step table, so the command is never caller-supplied.
+    SetupStep {
+        id: String,
+    },
+    /// `git config --global user.name/user.email`. The only setup step that takes
+    /// values from the user; both are validated and quoted before they run.
+    GitIdentity {
+        name: String,
+        email: String,
     },
     Package {
         id: String,

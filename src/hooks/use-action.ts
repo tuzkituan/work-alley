@@ -19,6 +19,16 @@ interface ActionState {
   submitting: boolean
   /** Guards against a double-click firing run_action twice. */
   consumed: Set<string>
+  /**
+   * The last spec that actually started, so a page can react to "this one is under
+   * way" rather than to "the button was pressed".
+   *
+   * The two are not the same thing: pressing a button only opens the confirmation
+   * dialog, and the user can still cancel it or the run can fail to start. The setup
+   * page announced "a terminal window opened" from the click, which it said while
+   * the dialog was still sitting there unanswered.
+   */
+  lastRan: ActionSpec | null
 
   request(spec: ActionSpec): Promise<void>
   recheck(): Promise<void>
@@ -32,6 +42,7 @@ export const useActionStore = create<ActionState>()((set, get) => ({
   pending: false,
   submitting: false,
   consumed: new Set(),
+  lastRan: null,
 
   request: async (spec) => {
     set({ pending: true })
@@ -41,7 +52,7 @@ export const useActionStore = create<ActionState>()((set, get) => ({
       if (intent.readOnly) {
         // Nothing is mutated, so there is nothing to confirm.
         await api.runAction(intent.id)
-        set({ pending: false })
+        set({ pending: false, lastRan: spec })
         return
       }
 
@@ -68,14 +79,14 @@ export const useActionStore = create<ActionState>()((set, get) => ({
   },
 
   confirm: async (typedConfirm) => {
-    const { intent, consumed } = get()
+    const { intent, spec, consumed } = get()
     if (!intent || consumed.has(intent.id) || get().submitting) return
 
     set({ submitting: true })
     try {
       await api.runAction(intent.id, typedConfirm)
       consumed.add(intent.id)
-      set({ intent: null, spec: null, submitting: false })
+      set({ intent: null, spec: null, submitting: false, lastRan: spec })
     } catch (e) {
       set({ submitting: false })
       if (e instanceof IpcError && e.code === 'INTENT_EXPIRED') {

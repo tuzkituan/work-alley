@@ -787,16 +787,16 @@ pub async fn run_action(
             Ok(run_id)
         }
         "openShell" => {
-            procs::open_shell(&state.toolchain(), &pending.cwd)?;
+            procs::open_shell(&app, &state.toolchain(), &pending.cwd)?;
             Ok(String::new())
         }
         "openInTerminal" => {
-            procs::open_terminal(&state.toolchain(), &pending.cwd, &pending.argv)?;
+            procs::open_terminal(&app, &state.toolchain(), &pending.cwd, &pending.argv)?;
             Ok(String::new())
         }
         "packageInTerminal" => {
             // dnf needs root, and a GUI cannot ask for a password. The terminal can.
-            procs::open_terminal(&state.toolchain(), &pending.cwd, &pending.argv)?;
+            procs::open_terminal(&app, &state.toolchain(), &pending.cwd, &pending.argv)?;
             Ok(String::new())
         }
         "openInEditor" => {
@@ -1050,6 +1050,61 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
+        ActionSpec::SetupStep { id } => {
+            let step = crate::setup::plan(&tc, &id)
+                .await
+                .map_err(AppError::Invalid)?;
+            let plan = step.plan;
+
+            Ok(Built {
+                // Same dispatch as the Toolbox: a root install cannot happen inside
+                // a GUI, so it is handed to a terminal.
+                kind: if plan.in_terminal {
+                    "packageInTerminal".into()
+                } else {
+                    "package".into()
+                },
+                title: format!("Set up — {}", step.title),
+                description: plan.description,
+                argv: plan.argv,
+                preview: None,
+                // Machine-scoped: this must work with no workspace open, which is
+                // exactly when the workspace root is the empty path.
+                cwd: crate::paths::neutral_cwd(&root),
+                env: vec![],
+                danger: plan.danger,
+                warnings: plan.warnings,
+                typed_confirm: plan.typed_confirm,
+                repo: None,
+                targets: vec![],
+                task: None,
+                read_only: false,
+            })
+        }
+
+        ActionSpec::GitIdentity { name, email } => {
+            let git = tc.require("git")?;
+            let name = crate::setup::clean_identity("name", &name).map_err(AppError::Invalid)?;
+            let email = crate::setup::clean_identity("email", &email).map_err(AppError::Invalid)?;
+
+            Ok(Built {
+                kind: "gitIdentity".into(),
+                title: "Set your git identity".into(),
+                description: format!("Every commit you make will record {name} <{email}>."),
+                argv: crate::setup::git_identity_argv(&git, &name, &email),
+                preview: None,
+                cwd: crate::paths::neutral_cwd(&root),
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: None,
+                targets: vec![],
+                task: None,
+                read_only: false,
+            })
+        }
+
         ActionSpec::Package { id, op, version } => {
             let plan = crate::packages::plan(&tc, &id, op, version.as_deref())
                 .map_err(AppError::Invalid)?;
@@ -1075,8 +1130,9 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 description: plan.description,
                 argv: plan.argv,
                 preview: None,
-                // The workspace is a safe cwd; none of these touch it.
-                cwd: root.clone(),
+                // Any existing directory will do — none of these touch their cwd,
+                // and the Toolbox is reachable before a workspace is chosen.
+                cwd: crate::paths::neutral_cwd(&root),
                 env: vec![],
                 danger: plan.danger,
                 warnings: plan.warnings,
@@ -1131,7 +1187,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                     "ps".into(),
                     "--all".into(),
                 ],
-                cwd: root.clone(),
+                cwd: crate::paths::neutral_cwd(&root),
                 env: vec![],
                 danger: Danger::Low,
                 warnings: vec![],
@@ -2057,6 +2113,16 @@ fn bulk_fetch_argv(git: &std::path::Path, root: &std::path::Path, refs: &[RepoRe
 #[tauri::command]
 pub async fn list_packages(state: State<'_, Arc<AppState>>) -> AppResult<Vec<PackageStatus>> {
     Ok(crate::packages::list(&state.toolchain()).await)
+}
+
+/// The first-run setup path: every step, in order, with what is already done.
+///
+/// Never returns Err — a machine with no package manager, no git and no Node is
+/// exactly when this page is needed, so every one of those is a state it renders
+/// rather than a failure.
+#[tauri::command]
+pub async fn list_setup_plan(state: State<'_, Arc<AppState>>) -> AppResult<SetupPlan> {
+    Ok(crate::setup::status(&state.toolchain()).await)
 }
 
 /// What a checkout would do, per repo. Read-only.

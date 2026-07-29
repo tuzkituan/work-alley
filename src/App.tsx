@@ -9,6 +9,7 @@ import { Toaster } from '@/components/ui/sonner'
 import { TooltipProvider } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { TopBar } from '@/features/topbar/TopBar'
+import { ChromeBar } from '@/features/topbar/ChromeBar'
 import { LeftRail } from '@/features/rail/LeftRail'
 import { NeedsYouStrip } from '@/features/needs-you/NeedsYouStrip'
 import { RepoGrid } from '@/features/repos/RepoGrid'
@@ -17,6 +18,7 @@ import { ConfirmActionDialog } from '@/features/actions/ConfirmActionDialog'
 import { CommandPalette } from '@/features/command/CommandPalette'
 import { WorkspaceWelcome } from '@/features/workspace/WorkspacePicker'
 import { Toolbox } from '@/features/toolbox/Toolbox'
+import { SetupPage } from '@/features/setup/SetupPage'
 import { useUiStore } from '@/stores/ui-store'
 import { cn } from '@/lib/utils'
 import { api } from '@/ipc/commands'
@@ -113,15 +115,19 @@ function Dashboard() {
 
   if (error && !boot) return <FatalError message={error.message} />
 
-  // The Toolbox describes this machine, not the open folder, so it takes the whole
-  // window and works with no workspace at all — which is exactly when someone needs
-  // to install their tools.
-  if (page === 'toolbox') {
+  // The Toolbox and the setup page describe this machine, not the open folder, so
+  // they take the whole window and work with no workspace at all — which is exactly
+  // when someone needs to install their tools.
+  if (page === 'toolbox' || page === 'setup') {
     return (
       <TooltipProvider delayDuration={400}>
         <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
           <TopBar boot={boot} />
-          <Toolbox toolsReady={boot?.toolsReady ?? false} />
+          {page === 'setup' ? (
+            <SetupPage toolsReady={boot?.toolsReady ?? false} />
+          ) : (
+            <Toolbox toolsReady={boot?.toolsReady ?? false} />
+          )}
         </div>
         <ConfirmActionDialog />
         <Toaster theme={theme} position="bottom-right" />
@@ -134,20 +140,27 @@ function Dashboard() {
   if (boot && !boot.hasWorkspace) {
     return (
       <TooltipProvider>
-        {setupMode ? (
-          <InitWorkspace
-            boot={boot}
-            onCancel={() => setSetupMode(false)}
-            onDone={(path) => {
-              setSetupMode(false)
-              // The folder only becomes a workspace once something is cloned into
-              // it, so switching is the last step, not the first.
-              void api.setWorkspace(path).then((b) => qc.setQueryData(keys.bootstrap, b))
-            }}
-          />
-        ) : (
-          <WorkspaceWelcome boot={boot} onSetUp={() => setSetupMode(true)} />
-        )}
+        {/* Same frame as every other screen, and a title bar: with the OS
+            decorations off, a screen without one cannot be moved or closed. */}
+        <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
+          <ChromeBar />
+          <div className="min-h-0 flex-1">
+            {setupMode ? (
+              <InitWorkspace
+                boot={boot}
+                onCancel={() => setSetupMode(false)}
+                onDone={(path) => {
+                  setSetupMode(false)
+                  // The folder only becomes a workspace once something is cloned
+                  // into it, so switching is the last step, not the first.
+                  void api.setWorkspace(path).then((b) => qc.setQueryData(keys.bootstrap, b))
+                }}
+              />
+            ) : (
+              <WorkspaceWelcome boot={boot} onSetUp={() => setSetupMode(true)} />
+            )}
+          </div>
+        </div>
         {/* The clone goes through the same confirmation gate as everything else,
             so the dialog has to be mounted on this screen too. */}
         <ConfirmActionDialog />
@@ -298,18 +311,23 @@ function MainTabs() {
 
 function FatalError({ message }: { message: string }) {
   return (
-    <div className="flex h-full items-center justify-center bg-background p-10">
-      <div className="flex max-w-lg flex-col gap-3 rounded-lg border border-error-500 bg-card p-6">
-        <h1 className="text-base font-semibold text-error-500">Could not start</h1>
-        <p className="text-sm text-adaptive-700">{message}</p>
-        <p className="text-xs text-adaptive-500">
-          Work Alley opens the folder you last chose, or the nearest one above the
-          working directory that contains git repos. Set{' '}
-          <code className="font-mono">WORK_ALLEY_ROOT</code> to override.
-        </p>
-        <Button variant="waPrimary" size="wa" onClick={() => window.location.reload()}>
-          Retry
-        </Button>
+    // The window buttons matter most here: this screen has no other way out, and
+    // without them the only way to close a failed launch was to kill the process.
+    <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
+      <ChromeBar />
+      <div className="flex min-h-0 flex-1 items-center justify-center p-10">
+        <div className="flex max-w-lg flex-col gap-3 rounded-lg border border-error-500 bg-card p-6">
+          <h1 className="text-base font-semibold text-error-500">Could not start</h1>
+          <p className="text-sm text-adaptive-700">{message}</p>
+          <p className="text-xs text-adaptive-500">
+            Work Alley opens the folder you last chose, or the nearest one above the
+            working directory that contains git repos. Set{' '}
+            <code className="font-mono">WORK_ALLEY_ROOT</code> to override.
+          </p>
+          <Button variant="waPrimary" size="wa" onClick={() => window.location.reload()}>
+            Retry
+          </Button>
+        </div>
       </div>
     </div>
   )

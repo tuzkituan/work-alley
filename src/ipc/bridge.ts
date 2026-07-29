@@ -116,6 +116,15 @@ async function wire(qc: QueryClient) {
       toast.info(`${title} stopped`)
     }
 
+    // An install changed what is on this machine, so both machine-scoped pages are
+    // now stale. Invalidated rather than patched: the answer comes from probing the
+    // filesystem, and there is nothing to patch it with from here.
+    const kind = run?.summary.kind
+    if (kind === 'package' || kind === 'gitIdentity') {
+      void qc.invalidateQueries({ queryKey: keys.packages })
+      void qc.invalidateQueries({ queryKey: keys.setupPlan })
+    }
+
     // Rescan only the repo this run touched, not the whole folder.
     const ref = run?.summary.ref
     if (ref && status.kind !== 'cancelled') {
@@ -142,6 +151,7 @@ async function wire(qc: QueryClient) {
     void qc.invalidateQueries({ queryKey: keys.bootstrap })
     // Package detection resolves paths through the toolchain too.
     void qc.invalidateQueries({ queryKey: keys.packages })
+    void qc.invalidateQueries({ queryKey: keys.setupPlan })
   })
 
   // A different folder means every cached repo, commit and scan belongs to a

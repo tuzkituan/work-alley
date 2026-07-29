@@ -20,6 +20,7 @@ import type {
   RunLogPage,
   RunSummary,
   ScanOptions,
+  SetupPlan,
   WorkspaceSnapshot,
 } from '@/domain/types'
 
@@ -56,6 +57,8 @@ export const api = {
   listDevServers: () => call<DevServer[]>('list_dev_servers'),
   listBranches: (repo: RepoRef) => call<string[]>('list_branches', { repo }),
   listPackages: () => call<PackageStatus[]>('list_packages'),
+  /** The first-run setup path: every step, in order, with what is already done. */
+  listSetupPlan: () => call<SetupPlan>('list_setup_plan'),
   /** Read-only: what a checkout would do, per repo. `branch` null = each default. */
   previewCheckout: (refs: RepoRef[], branch: string | null) =>
     call<CheckoutPreview[]>('preview_checkout', { refs, branch }),

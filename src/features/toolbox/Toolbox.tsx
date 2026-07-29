@@ -1,6 +1,15 @@
 import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ArrowLeft, Check, ChevronDown, Download, RefreshCw, Terminal, Trash2 } from 'lucide-react'
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  Download,
+  ListChecks,
+  RefreshCw,
+  Terminal,
+  Trash2,
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -76,6 +85,17 @@ export function Toolbox({ toolsReady }: { toolsReady: boolean }) {
             </span>
           )}
           <div className="flex-1" />
+          {/* A list of 50 rows is the wrong first screen on a machine with nothing
+              on it — that needs an order, which the setup page is. */}
+          <Button
+            variant="waOutline"
+            size="waXs"
+            onClick={() => setPage('setup')}
+            title="The ordered path for a machine with nothing on it"
+          >
+            <ListChecks className="size-3" />
+            Guided setup
+          </Button>
           <Button
             variant="waOutline"
             size="waXs"

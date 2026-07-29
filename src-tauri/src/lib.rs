@@ -14,6 +14,7 @@ mod paths;
 mod pkg;
 mod procs;
 mod scripts;
+mod setup;
 mod state;
 mod toolchain;
 
@@ -209,6 +210,7 @@ pub fn run() {
             commands::list_branches,
             commands::list_packages,
             commands::list_package_versions,
+            commands::list_setup_plan,
             commands::preview_checkout,
             commands::list_pull_requests,
             commands::list_changed_files,

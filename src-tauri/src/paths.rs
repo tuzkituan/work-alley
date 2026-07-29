@@ -2,6 +2,27 @@ use crate::error::{AppError, AppResult};
 use crate::model::{Category, RepoRef};
 use std::path::{Path, PathBuf};
 
+/// A directory that certainly exists, for commands that do not care where they run.
+///
+/// Installing a package, writing a global git config or asking docker what is
+/// running are all about the machine, not about a folder — but they were all given
+/// the workspace root as their cwd, and with no workspace open that root is the
+/// empty path. `Command::current_dir("")` fails with ENOENT, so the Toolbox and the
+/// setup page — the two screens whose whole point is to work *before* you have a
+/// workspace — died with "failed to spawn: No such file or directory".
+pub fn neutral_cwd(root: &Path) -> PathBuf {
+    if root.is_dir() {
+        return root.to_path_buf();
+    }
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        if home.is_dir() {
+            return home;
+        }
+    }
+    // Guaranteed to exist, and nothing here writes to its cwd.
+    PathBuf::from("/")
+}
+
 /// Best-effort guess at a workspace, used only when nothing is saved yet.
 ///
 /// Returns None rather than an error: with a user-chosen folder, "no workspace
@@ -244,6 +265,17 @@ pub fn discover_repos(root: &Path, categories: &[Category]) -> Vec<(RepoRef, Pat
 mod tests {
     use super::*;
     use std::fs;
+
+    #[test]
+    fn a_machine_scoped_command_always_gets_a_cwd_that_exists() {
+        // The empty path is what config falls back to when no workspace could be
+        // found, and it is what made every install fail with ENOENT.
+        assert!(neutral_cwd(Path::new("")).is_dir());
+        assert!(neutral_cwd(Path::new("/definitely/not/a/real/directory")).is_dir());
+        // A real folder is still used as given.
+        let tmp = std::env::temp_dir();
+        assert_eq!(neutral_cwd(&tmp), tmp);
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("wa-paths-{name}-{}", std::process::id()));

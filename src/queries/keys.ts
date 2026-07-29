@@ -5,6 +5,7 @@ export const keys = {
   devServers: ['devServers'] as const,
   runs: ['runs'] as const,
   packages: ['packages'] as const,
+  setupPlan: ['setupPlan'] as const,
   checkoutPreview: (scope: string, branch: string) =>
     ['checkoutPreview', scope, branch] as const,
   packageVersions: (id: string) => ['packageVersions', id] as const,

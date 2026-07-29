@@ -7,6 +7,12 @@ export type ViewMode = 'cards' | 'list'
 
 export type ThemeMode = 'light' | 'dark'
 
+/**
+ * Top-level views. `toolbox` and `setup` describe the machine rather than the open
+ * folder, so both take the whole window and work with no workspace at all.
+ */
+export type Page = 'repos' | 'activity' | 'toolbox' | 'setup'
+
 interface UiState {
   /** An explicit choice. The app does not follow the OS theme. */
   theme: ThemeMode
@@ -27,7 +33,7 @@ interface UiState {
   filterChip: NeedsYouKind | null
   view: ViewMode
   /** Which top-level page the centre panel shows. */
-  page: 'repos' | 'activity' | 'toolbox'
+  page: Page
   paletteOpen: boolean
 
   toggleTheme(): void
@@ -41,7 +47,7 @@ interface UiState {
   toggleFilterChip(kind: NeedsYouKind): void
   clearFilters(): void
   setView(view: ViewMode): void
-  setPage(page: 'repos' | 'activity' | 'toolbox'): void
+  setPage(page: Page): void
   setPaletteOpen(open: boolean): void
 }
 

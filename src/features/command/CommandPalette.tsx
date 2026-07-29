@@ -209,6 +209,15 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
               Open the Toolbox
             </CommandItem>
             <CommandItem
+              value="action:setup"
+              onSelect={() => {
+                setOpen(false)
+                setPage('setup')
+              }}
+            >
+              Set up this machine
+            </CommandItem>
+            <CommandItem
               value="action:terminal"
               onSelect={() => {
                 setOpen(false)
