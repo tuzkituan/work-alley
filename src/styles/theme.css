@@ -1,0 +1,95 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+/* Self-hosted variable fonts — no CDN, so `font-src 'self'` in the CSP suffices. */
+@import '@fontsource-variable/inter';
+@import '@fontsource-variable/jetbrains-mono';
+
+@import './tokens.css';
+@import './wa-bridge.css';
+
+/* `.dark` lives on <html>, not the app root — Radix portals mount to document.body,
+ * outside the root div, and would otherwise resolve the whole adaptive ramp to light. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* MUST be `@theme inline`. Plain `@theme` copies the *resolved* value into :root,
+ * which freezes light mode and silently breaks the `.dark` cascade. */
+@theme inline {
+  /* --- shadcn semantic surfaces --- */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+
+  /* --- adaptive ramp: the design's main painting surface --- */
+  --color-adaptive-50: var(--adaptive-50);
+  --color-adaptive-100: var(--adaptive-100);
+  --color-adaptive-200: var(--adaptive-200);
+  --color-adaptive-300: var(--adaptive-300);
+  --color-adaptive-400: var(--adaptive-400);
+  --color-adaptive-500: var(--adaptive-500);
+  --color-adaptive-600: var(--adaptive-600);
+  --color-adaptive-700: var(--adaptive-700);
+  --color-adaptive-800: var(--adaptive-800);
+  --color-adaptive-900: var(--adaptive-900);
+  --color-adaptive-950: var(--adaptive-950);
+
+  /* --- brand ramp --- */
+  --color-primary-50: var(--primary-50);
+  --color-primary-100: var(--primary-100);
+  --color-primary-200: var(--primary-200);
+  --color-primary-300: var(--primary-300);
+  --color-primary-400: var(--primary-400);
+  --color-primary-500: var(--primary-500);
+  --color-primary-600: var(--primary-600);
+  --color-primary-700: var(--primary-700);
+  --color-primary-800: var(--primary-800);
+  --color-primary-900: var(--primary-900);
+  --color-primary-950: var(--primary-950);
+
+  /* --- status colors. The /[0.12] and /[0.38] opacity modifiers on these
+         reproduce the design's hardcoded rgba() tints exactly. --- */
+  --color-amber-500: var(--amber-500);
+  --color-red-500: var(--red-500);
+  --color-blue-500: var(--blue-500);
+  --color-green-500: var(--green-500);
+  --color-success-500: var(--success-500);
+  --color-error-500: var(--error-500);
+  --color-info-500: var(--info-500);
+  --color-warning-500: var(--warning-500);
+
+  /* --- severity roles --- */
+  --color-sev-ok: var(--sev-ok);
+  --color-sev-warn: var(--sev-warn);
+  --color-sev-err: var(--sev-err);
+  --color-sev-info: var(--sev-info);
+  --color-sev-idle: var(--sev-idle);
+
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+
+  /* Exposes the design's exact hover ring as `shadow-focus-ring`. */
+  --shadow-focus-ring: var(--shadow-focus-ring);
+}

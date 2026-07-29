@@ -1,0 +1,295 @@
+import { useMemo, useRef } from 'react'
+import { useVirtualizer } from '@tanstack/react-virtual'
+import { FolderOpen, LayoutGrid, Rows3 } from 'lucide-react'
+import { CARD_HEIGHT, RepoCard } from './RepoCard'
+import { RepoListHeader, RepoListRow, ROW_HEIGHT } from './RepoListRow'
+import { RecentCommitsPanel } from '@/features/commits/RecentCommitsPanel'
+import { LocalServicesPanel } from '@/features/services/LocalServicesPanel'
+import { Button } from '@/components/ui/button'
+import { derive, displayName } from '@/domain/severity'
+import { CATEGORIES, repoId, type Bootstrap } from '@/domain/types'
+import { useScanStore } from '@/stores/scan-store'
+import { useUiStore } from '@/stores/ui-store'
+import { useRescanCategory } from '@/hooks/use-category-scan'
+import { RepoDetail } from '@/features/detail/RepoDetail'
+import { buildSections, flattenSections } from '@/domain/sections'
+
+const GAP = 12
+const CARD_ROW_HEIGHT = CARD_HEIGHT + GAP
+const HEADER_HEIGHT = 34
+
+export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
+  const scrollRef = useRef<HTMLDivElement>(null)
+
+  const detailRepoId = useUiStore((s) => s.detailRepoId)
+  const expanded = useUiStore((s) => s.expandedCategory)
+  const filterText = useUiStore((s) => s.filterText)
+  const filterChip = useUiStore((s) => s.filterChip)
+  const clearFilters = useUiStore((s) => s.clearFilters)
+  const view = useUiStore((s) => s.view)
+  const setView = useUiStore((s) => s.setView)
+
+  const statuses = useScanStore((s) => s.repos)
+  const uiLatest = useScanStore((s) => s.uiLatest)
+  const scanning = useScanStore((s) => s.scanning)
+  const durationMs = useScanStore((s) => s.durationMs)
+  const isScanned = useScanStore((s) => (expanded ? s.scanned.has(expanded) : false))
+  const rescan = useRescanCategory()
+
+  // Cards come from the open folder only.
+  const inFolder = useMemo(
+    () => (expanded ? (boot?.repos ?? []).filter((r) => r.category === expanded) : []),
+    [boot?.repos, expanded]
+  )
+
+  const visible = useMemo(() => {
+    const needle = filterText.trim().toLowerCase()
+    return inFolder.filter((r) => {
+      if (needle) {
+        const { short } = displayName(r.name)
+        const hay = `${r.category}/${r.name} ${short}`.toLowerCase()
+        if (!hay.includes(needle)) return false
+      }
+      if (filterChip) {
+        const st = statuses.get(repoId(r))
+        // Not yet scanned — cannot claim it matches.
+        if (!st) return false
+        if (!derive(st, uiLatest).kinds.includes(filterChip)) return false
+      }
+      return true
+    })
+    // Order is stable (name, as discovered) and deliberately NOT re-sorted while a
+    // scan streams in — reordering a virtualized list under the cursor makes it
+    // jump.
+  }, [inFolder, statuses, uiLatest, filterText, filterChip])
+
+  const perRow = view === 'cards' ? 2 : 1
+  const items = useMemo(
+    () => flattenSections(buildSections(visible, statuses), perRow),
+    [visible, statuses, perRow]
+  )
+
+  const cardsView = view === 'cards'
+
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (i) =>
+      items[i]?.kind === 'header' ? HEADER_HEIGHT : cardsView ? CARD_ROW_HEIGHT : ROW_HEIGHT,
+    overscan: cardsView ? 2 : 6,
+    // Cards are measured because their content can grow (a hard-coded height once
+    // clipped the action row out of the card). List rows are a known fixed height,
+    // so measuring them would mean a ResizeObserver per visible row and a forced
+    // layout per render, for a number we already know.
+    ...(cardsView ? { measureElement: (el: Element) => el.getBoundingClientRect().height } : {}),
+  })
+
+  const filtered = Boolean(filterText || filterChip)
+
+  // The detail page takes over the centre panel; rail and output stay put, which
+  // matters because the output pane is already scoped to this repo.
+  if (detailRepoId) return <RepoDetail repoId={detailRepoId} />
+
+  return (
+    // The scroll container the virtualizer measures must be this plain div. Radix
+    // ScrollArea nests the real scrollport two levels deep, so getScrollElement
+    // would return the wrong node.
+    <div ref={scrollRef} className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
+      <div className="flex flex-col gap-3.5">
+        {!expanded ? (
+          <NoFolderOpen boot={boot} />
+        ) : (
+          <>
+            <div className="flex items-center gap-2 text-xs text-adaptive-500">
+              <span className="font-mono text-[11px] font-semibold text-primary-600">
+                {expanded}/
+              </span>
+              <span className="wa-num">
+                {filtered ? `${visible.length} of ${inFolder.length}` : `${inFolder.length}`} repos
+              </span>
+              {scanning === expanded && <span className="text-adaptive-400">scanning…</span>}
+              {isScanned && (
+                <span className="wa-num font-mono text-[11px] text-adaptive-400">
+                  {durationMs}ms
+                </span>
+              )}
+              <div className="flex-1" />
+              {filtered && (
+                <Button variant="waGhost" size="waXs" onClick={clearFilters}>
+                  Clear filters
+                </Button>
+              )}
+              <div className="flex items-center gap-0.5 rounded-md border border-adaptive-200 p-0.5">
+                <Button
+                  variant={view === 'list' ? 'waPrimary' : 'waGhost'}
+                  size="waIcon"
+                  title="List view — dense rows"
+                  onClick={() => setView('list')}
+                >
+                  <Rows3 className="size-3.5" />
+                </Button>
+                <Button
+                  variant={view === 'cards' ? 'waPrimary' : 'waGhost'}
+                  size="waIcon"
+                  title="Card view"
+                  onClick={() => setView('cards')}
+                >
+                  <LayoutGrid className="size-3.5" />
+                </Button>
+              </div>
+              <Button
+                variant="waOutline"
+                size="waXs"
+                disabled={scanning === expanded}
+                onClick={() => rescan(expanded)}
+              >
+                Rescan
+              </Button>
+            </div>
+
+            {items.length === 0 ? (
+              <div className="rounded-lg border border-adaptive-200 bg-card p-6 text-center text-sm text-adaptive-500">
+                {inFolder.length === 0
+                  ? `Nothing is cloned in ${expanded}/ yet.`
+                  : 'No repositories match the current filters.'}
+              </div>
+            ) : view === 'list' ? (
+              <div className="wa-table overflow-hidden rounded-lg border border-adaptive-200 bg-card">
+                <RepoListHeader />
+                <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+                  {virtualizer.getVirtualItems().map((vi) => {
+                    const item = items[vi.index]!
+                    return (
+                      <div
+                        key={vi.key}
+                        className="absolute inset-x-0"
+                        style={{ top: vi.start, height: vi.size }}
+                      >
+                        {item.kind === 'header' ? (
+                          <SectionHeader label={item.label} count={item.count} />
+                        ) : (
+                          <RepoListRow repo={item.repos[0]!} />
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            ) : (
+              <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
+                {virtualizer.getVirtualItems().map((vi) => {
+                  const item = items[vi.index]!
+                  return (
+                    <div
+                      key={vi.key}
+                      data-index={vi.index}
+                      ref={virtualizer.measureElement}
+                      className="absolute inset-x-0"
+                      style={{ top: vi.start }}
+                    >
+                      {item.kind === 'header' ? (
+                        <SectionHeader label={item.label} count={item.count} boxed />
+                      ) : (
+                        // items-stretch keeps both cards in a row the same height
+                        // as the taller of the two; paddingBottom carries the grid
+                        // gap into the measurement.
+                        <div
+                          className="grid grid-cols-2 items-stretch gap-3"
+                          style={{ paddingBottom: GAP }}
+                        >
+                          {item.repos.map((r) => (
+                            <RepoCard key={repoId(r)} repo={r} />
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </>
+        )}
+
+        <div className="grid grid-cols-[1.15fr_1fr] gap-3">
+          <RecentCommitsPanel repoCount={inFolder.length} scope={expanded} />
+          <LocalServicesPanel />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** Section divider. Rendered only when a folder has more than one section. */
+function SectionHeader({
+  label,
+  count,
+  boxed = false,
+}: {
+  label: string
+  count: number
+  boxed?: boolean
+}) {
+  return (
+    <div
+      className={
+        boxed
+          ? 'flex items-center gap-2 pt-1 pb-2'
+          : 'flex items-center gap-2 border-b border-adaptive-200 bg-adaptive-50 px-3'
+      }
+      style={{ height: boxed ? undefined : 34 }}
+    >
+      <span className="text-[10px] font-bold tracking-[0.06em] text-adaptive-500 uppercase">
+        {label}
+      </span>
+      <span className="wa-num font-mono text-[10px] text-adaptive-400">{count}</span>
+      <span className="h-px flex-1 bg-adaptive-200" />
+    </div>
+  )
+}
+
+/**
+ * The launch state. Nothing has been scanned, so rather than an empty grid this
+ * offers the folders as the thing to pick.
+ */
+function NoFolderOpen({ boot }: { boot: Bootstrap | undefined }) {
+  const setCategory = useUiStore((s) => s.setCategory)
+  const scanned = useScanStore((s) => s.scanned)
+
+  return (
+    <div className="flex flex-col items-center gap-4 rounded-lg border border-adaptive-200 bg-card p-8">
+      <FolderOpen className="size-6 text-adaptive-400" />
+      <div className="text-center">
+        <p className="text-sm font-semibold">Pick a folder</p>
+        <p className="mt-0.5 text-xs text-adaptive-500">
+          Only the folder you open is scanned, so nothing runs against your repos
+          until you ask.
+        </p>
+      </div>
+
+      <div className="grid w-full max-w-lg grid-cols-2 gap-2">
+        {CATEGORIES.map((c) => {
+          const info = boot?.categories.find((x) => x.category === c)
+          const count = info?.repoCount ?? 0
+          return (
+            <button
+              key={c}
+              type="button"
+              onClick={() => setCategory(c)}
+              className="flex items-center gap-2.5 rounded-md border border-adaptive-200 bg-background px-3 py-2.5 text-left transition-shadow hover:border-adaptive-950 hover:shadow-focus-ring"
+            >
+              <span className="font-mono text-xs font-semibold text-primary-600">{c}/</span>
+              <span className="wa-num flex-1 text-xs text-adaptive-600">
+                {count === 0 && (info?.declaredCount ?? 0) > 0
+                  ? `0 of ${info?.declaredCount} cloned`
+                  : `${count} repo${count === 1 ? '' : 's'}`}
+              </span>
+              {scanned.has(c) && (
+                <span className="font-mono text-[10px] text-adaptive-400">scanned</span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </div>
+  )
+}

@@ -1,0 +1,612 @@
+//! Wire types. Mirrored in src/domain/types.ts — keep the two in lockstep.
+
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Category {
+    Be,
+    Fe,
+    Sa,
+    Ui,
+}
+
+impl Category {
+    pub const ALL: [Category; 4] = [Category::Fe, Category::Sa, Category::Ui, Category::Be];
+
+    pub fn dir(&self) -> &'static str {
+        match self {
+            Category::Be => "be",
+            Category::Fe => "fe",
+            Category::Sa => "sa",
+            Category::Ui => "ui",
+        }
+    }
+
+    pub fn from_dir(s: &str) -> Option<Category> {
+        match s {
+            "be" => Some(Category::Be),
+            "fe" => Some(Category::Fe),
+            "sa" => Some(Category::Sa),
+            "ui" => Some(Category::Ui),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoRef {
+    pub category: Category,
+    pub name: String,
+}
+
+impl RepoRef {
+    /// `"fe/blazeup-hostapp"` — the stable map key.
+    pub fn key(&self) -> String {
+        format!("{}/{}", self.category.dir(), self.name)
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum SyncState {
+    NoUpstream,
+    InSync,
+    #[serde(rename_all = "camelCase")]
+    Diverged { ahead: u32, behind: u32 },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum StaleState {
+    Unknown,
+    #[serde(rename_all = "camelCase")]
+    Fresh { last_fetch_unix: i64 },
+    #[serde(rename_all = "camelCase")]
+    Stale { last_fetch_unix: i64, days: i64 },
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UiDep {
+    pub declared: Option<String>,
+    pub resolved: Option<String>,
+    pub field: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastCommit {
+    pub sha: String,
+    pub subject: String,
+    pub author: String,
+    pub unix: i64,
+    pub relative: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoStatus {
+    #[serde(rename = "ref")]
+    pub repo: RepoRef,
+    pub path: PathBuf,
+    pub branch: Option<String>,
+    pub head_sha: Option<String>,
+    pub detached: bool,
+    pub dirty_count: u32,
+    pub untracked_count: u32,
+    pub conflict_count: u32,
+    pub sync: SyncState,
+    pub stale: StaleState,
+    pub last_commit: Option<LastCommit>,
+    pub ui_dep: UiDep,
+    /// The port this repo's dev server would use, resolved from .env /
+    /// vite.config. Present whether or not a server is running, so the UI can
+    /// offer to free a port held by a stale process.
+    pub dev_port: Option<u16>,
+    /// Tasks this repo declares in package.json — "dev", "storybook".
+    pub available_tasks: Vec<String>,
+    /// Tasks currently running for this repo. Not a single `dev_server`, because a
+    /// UI library commonly has dev and storybook up at the same time.
+    pub tasks: Vec<DevServer>,
+    /// Set => the rest is best-effort. A scan never fails wholesale.
+    pub error: Option<String>,
+    pub scan_ms: u64,
+}
+
+impl RepoStatus {
+    pub fn errored(repo: RepoRef, path: PathBuf, msg: impl Into<String>) -> Self {
+        RepoStatus {
+            repo,
+            path,
+            branch: None,
+            head_sha: None,
+            detached: false,
+            dirty_count: 0,
+            untracked_count: 0,
+            conflict_count: 0,
+            sync: SyncState::NoUpstream,
+            stale: StaleState::Unknown,
+            last_commit: None,
+            ui_dep: UiDep::default(),
+            dev_port: None,
+            available_tasks: Vec::new(),
+            tasks: Vec::new(),
+            error: Some(msg.into()),
+            scan_ms: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitEntry {
+    #[serde(rename = "ref")]
+    pub repo: RepoRef,
+    pub sha: String,
+    pub subject: String,
+    pub author: String,
+    pub unix: i64,
+    pub relative: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkspaceSnapshot {
+    pub scan_id: String,
+    pub started_unix: i64,
+    pub finished_unix: Option<i64>,
+    pub repos: Vec<RepoStatus>,
+    pub commits: Vec<CommitEntry>,
+    pub ui_latest: Option<String>,
+    pub ui_latest_source: Option<String>,
+    pub ok_count: u32,
+    pub error_count: u32,
+    pub duration_ms: u64,
+}
+
+// --- runs -------------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Stream {
+    Stdout,
+    Stderr,
+    Meta,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Severity {
+    Cmd,
+    Out,
+    Ok,
+    Warn,
+    Err,
+    Info,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LogLine {
+    /// Monotonic per run — makes replay gap-free and dedupable.
+    pub seq: u64,
+    pub stream: Stream,
+    pub severity: Severity,
+    pub text: String,
+    pub unix: i64,
+    /// Set on bulk runs so 63 interleaved repos can be rendered grouped.
+    pub repo: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum RunStatus {
+    Running,
+    Exited { code: i32 },
+    Signaled { signal: i32 },
+    Cancelled,
+    Failed { message: String },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunSummary {
+    pub run_id: String,
+    pub kind: String,
+    pub title: String,
+    #[serde(rename = "ref")]
+    pub repo: Option<RepoRef>,
+    pub argv: Vec<String>,
+    pub cwd: PathBuf,
+    pub started_unix: i64,
+    pub ended_unix: Option<i64>,
+    pub status: RunStatus,
+    pub line_count: u64,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunLogPage {
+    pub lines: Vec<LogLine>,
+    pub next_seq: u64,
+    pub truncated: bool,
+    pub status: RunStatus,
+}
+
+// --- dev servers ------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DevState {
+    Starting,
+    Up,
+    Stopping,
+    Crashed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PortSource {
+    Env,
+    ViteConfigDefault,
+    ConfigOverride,
+    DetectedFromOutput,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DevServer {
+    #[serde(rename = "ref")]
+    pub repo: RepoRef,
+    /// "dev" or "storybook". A repo can run both at once, so this is part of the
+    /// process registry key rather than an attribute of the repo.
+    pub task: String,
+    pub run_id: String,
+    pub pid: u32,
+    pub command: Vec<String>,
+    pub port: Option<u16>,
+    pub port_source: Option<PortSource>,
+    pub state: DevState,
+    pub url: Option<String>,
+    pub started_unix: i64,
+}
+
+// --- containers -------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ContainerPort {
+    pub host: Option<u16>,
+    pub container: u16,
+    pub proto: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DockerService {
+    pub id: String,
+    pub name: String,
+    pub image: String,
+    pub state: String,
+    pub status: String,
+    pub uptime_seconds: Option<i64>,
+    pub ports: Vec<ContainerPort>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ContainerRuntime {
+    Docker,
+    Podman,
+}
+
+impl ContainerRuntime {
+    pub fn tool(&self) -> &'static str {
+        match self {
+            ContainerRuntime::Docker => "docker",
+            ContainerRuntime::Podman => "podman",
+        }
+    }
+}
+
+/// Absence is a state to render, never an error to throw.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DockerStatus {
+    NotInstalled,
+    #[serde(rename_all = "camelCase")]
+    DaemonDown {
+        runtime: ContainerRuntime,
+        message: String,
+    },
+    #[serde(rename_all = "camelCase")]
+    TimedOut { runtime: ContainerRuntime },
+    #[serde(rename_all = "camelCase")]
+    Ok {
+        runtime: ContainerRuntime,
+        services: Vec<DockerService>,
+        fetched_unix: i64,
+    },
+}
+
+// --- repo detail ------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PullRequest {
+    pub number: u64,
+    pub title: String,
+    pub author: String,
+    pub head_ref: String,
+    pub base_ref: String,
+    pub is_draft: bool,
+    /// gh's reviewDecision: APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED / "".
+    pub review_decision: String,
+    pub url: String,
+    pub additions: u64,
+    pub deletions: u64,
+    pub changed_files: u64,
+    pub updated_unix: i64,
+    pub updated_relative: String,
+    pub is_mine: bool,
+}
+
+/// `gh` is optional and often unauthenticated, so absence is modelled as data.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum PullRequestsResult {
+    GhMissing,
+    #[serde(rename_all = "camelCase")]
+    NotAuthenticated { message: String },
+    #[serde(rename_all = "camelCase")]
+    NoRemote,
+    #[serde(rename_all = "camelCase")]
+    Failed { message: String },
+    #[serde(rename_all = "camelCase")]
+    Ok {
+        slug: String,
+        prs: Vec<PullRequest>,
+        fetched_unix: i64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedFile {
+    pub path: String,
+    /// Two-letter porcelain code, e.g. " M", "??", "UU".
+    pub code: String,
+    pub staged: bool,
+    pub untracked: bool,
+    pub conflicted: bool,
+}
+
+// --- packages ---------------------------------------------------------------
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PackageOp {
+    Install,
+    Upgrade,
+    Remove,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolPackage {
+    pub id: String,
+    pub label: String,
+    pub description: String,
+    pub group: String,
+    /// dnf / nvm / bun / npm / rustup / cargo
+    pub manager: String,
+    /// True when the operation must run in a terminal for a password prompt.
+    pub needs_root: bool,
+    pub removable: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageStatus {
+    pub package: ToolPackage,
+    pub installed: bool,
+    pub path: Option<String>,
+    pub version: Option<String>,
+    /// False when the managing tool itself is missing, so actions are impossible.
+    pub manager_available: bool,
+}
+
+// --- bootstrap --------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EditorInfo {
+    /// Binary name, used as the action's editor id.
+    pub id: String,
+    pub label: String,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ToolInfo {
+    pub name: String,
+    pub path: Option<String>,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ScriptMode {
+    Headless,
+    TerminalOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Danger {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptArg {
+    pub name: String,
+    pub kind: String,
+    pub options: Option<Vec<String>>,
+    pub default: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptDescriptor {
+    pub id: String,
+    pub file: String,
+    pub title: String,
+    pub description: String,
+    pub mode: ScriptMode,
+    pub danger: Danger,
+    pub required_tools: Vec<String>,
+    pub arg_schema: Vec<ScriptArg>,
+    pub non_zero_exit_meaning: Option<String>,
+    pub hint: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryInfo {
+    pub category: Category,
+    pub present: bool,
+    pub repo_count: u32,
+    pub declared_count: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Bootstrap {
+    pub app_version: String,
+    /// False while the toolchain probe is still running.
+    pub tools_ready: bool,
+    /// False when no workspace folder has been chosen yet, or the saved one is gone.
+    pub has_workspace: bool,
+    /// Recently opened workspaces, newest first.
+    pub recent_roots: Vec<String>,
+    pub workspace_root: PathBuf,
+    pub categories: Vec<CategoryInfo>,
+    pub repos: Vec<RepoRef>,
+    pub config: crate::config::Config,
+    pub tools: Vec<ToolInfo>,
+    /// Editors found on this machine, for the "open in…" action.
+    pub editors: Vec<EditorInfo>,
+    pub scripts: Vec<ScriptDescriptor>,
+    pub warnings: Vec<String>,
+}
+
+// --- actions ----------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ActionSpec {
+    Pull {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+    },
+    PullMany {
+        refs: Vec<RepoRef>,
+    },
+    FetchAll {
+        #[serde(rename = "ref")]
+        repo: Option<RepoRef>,
+    },
+    FetchMany {
+        refs: Vec<RepoRef>,
+    },
+    DevStart {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        /// Defaults to "dev".
+        #[serde(default)]
+        task: Option<String>,
+    },
+    DevStop {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        #[serde(default)]
+        task: Option<String>,
+    },
+    Script {
+        script: String,
+        #[serde(default)]
+        args: Vec<String>,
+    },
+    OpenInTerminal {
+        script: String,
+        #[serde(rename = "ref")]
+        repo: Option<RepoRef>,
+    },
+    Package {
+        id: String,
+        op: PackageOp,
+    },
+    OpenInEditor {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        /// Binary name from Bootstrap.editors.
+        editor: String,
+    },
+    DockerPs,
+    KillPort {
+        port: u16,
+        #[serde(rename = "ref")]
+        repo: Option<RepoRef>,
+    },
+    Status {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+    },
+    BranchList {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+    },
+    PrList,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionIntent {
+    pub id: String,
+    pub kind: String,
+    pub title: String,
+    pub description: String,
+    /// What will run. For a bulk action this is the per-repo command rather than
+    /// the whole generated script — a 60-line script rendered raw is unreadable,
+    /// and the honest summary is "this command, in each of these repos".
+    pub argv_preview: Vec<String>,
+    /// True when `argv_preview` runs once per target rather than once in total.
+    pub per_target: bool,
+    /// The literal script, for the dialog's "show full command" disclosure. Only
+    /// set when it differs from `argv_preview`.
+    pub full_argv: Option<Vec<String>>,
+    pub cwd: PathBuf,
+    pub danger: Danger,
+    pub warnings: Vec<String>,
+    pub requires_typed_confirm: Option<String>,
+    pub expires_unix: i64,
+    pub targets: Vec<RepoRef>,
+    pub read_only: bool,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanOptions {
+    pub categories: Option<Vec<Category>>,
+    pub include_commits: Option<bool>,
+    pub commit_limit: Option<u32>,
+    pub force: Option<bool>,
+}
