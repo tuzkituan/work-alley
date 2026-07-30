@@ -1,5 +1,6 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, Play, SquareTerminal } from 'lucide-react'
+import { ChevronDown, GitBranch, Play, SquareTerminal } from 'lucide-react'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Button } from '@/components/ui/button'
 import {
@@ -10,11 +11,13 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { keys } from '@/queries/keys'
 import { useRunAction } from '@/hooks/use-action'
+import { CheckoutAllDialog } from '@/features/actions/CheckoutAllDialog'
 import type { useDetailRepo } from './use-detail-repo'
 
 /** The always-visible actions. Everything rarer stays in the RepoMenu above. */
 export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }) {
   const run = useRunAction()
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
   const { repo, dev, sb, devUp, hasStorybook, scripts, ahead } = ctx
 
   // From the bootstrap cache, so this costs nothing — the same trick RepoMenu uses.
@@ -54,6 +57,18 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
           onClick={() => run({ kind: 'fetchAll', ref: repo })}
         >
           Fetch
+        </Button>
+        {/* The same dialog the folder header uses, with this repo as the only
+            target: it is the one path that takes a branch *name*, so the detail page
+            no longer needs the Branches tab just to switch to something typed. */}
+        <Button
+          variant="waOutline"
+          size="waSm"
+          title="Check out a branch in this repo"
+          onClick={() => setCheckoutOpen(true)}
+        >
+          <GitBranch className="size-3" />
+          Checkout
         </Button>
         <Button
           variant={devUp ? 'waDanger' : 'waOutline'}
@@ -143,6 +158,13 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
           ))}
         </div>
       )}
+
+      <CheckoutAllDialog
+        open={checkoutOpen}
+        onOpenChange={setCheckoutOpen}
+        repos={[repo]}
+        scopeLabel={repo.name}
+      />
     </div>
   )
 }

@@ -1,5 +1,4 @@
-import { useState } from 'react'
-import { GitBranch, Moon, Search, SquareTerminal, Sun } from 'lucide-react'
+import { Moon, Search, SquareTerminal, Sun } from 'lucide-react'
 import { WindowControls } from './WindowControls'
 import { WorkspaceSwitcher } from '@/features/workspace/WorkspacePicker'
 import { Button } from '@/components/ui/button'
@@ -16,7 +15,6 @@ import { Progress } from '@/components/ui/progress'
 import { KeyCap, Sep } from '@/components/wa/primitives'
 import { useSkin, useTheme } from '@/hooks/use-theme'
 import { useAppIdentity } from '@/hooks/use-bootstrap'
-import { CheckoutAllDialog } from '@/features/actions/CheckoutAllDialog'
 import { useRunAction } from '@/hooks/use-action'
 import { useUiStore } from '@/stores/ui-store'
 import { useScanStore } from '@/stores/scan-store'
@@ -29,25 +27,16 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
   const { name } = useAppIdentity()
   const run = useRunAction()
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen)
-  const expanded = useUiStore((s) => s.expandedCategory)
   const phase = useScanStore((s) => s.phase)
   const total = useScanStore((s) => s.total)
   const received = useScanStore((s) => s.received)
 
-  const [checkoutOpen, setCheckoutOpen] = useState(false)
-
   const repoCount = boot?.repos.length ?? 0
   const scriptCount = boot?.scripts.length ?? 0
   // The bar is shown on the machine pages too, where there may be no workspace at
-  // all. Everything scoped to one is hidden rather than shown empty or disabled:
-  // "0 repos · 0 scripts" says nothing, and greyed-out Pull All / Checkout buttons
-  // are three controls to read and dismiss before finding the one that works.
+  // all. Everything scoped to one is hidden rather than shown empty: "0 repos ·
+  // 0 scripts" says nothing.
   const hasWorkspace = boot?.hasWorkspace ?? false
-
-  // Bulk actions follow the open folder. "Pull All" across every repo when
-  // is looking at one folder would act well outside what they can see.
-  const targets = (boot?.repos ?? []).filter((r) => !expanded || r.category === expanded)
-  const scopeLabel = expanded ? `${expanded}/` : 'All'
 
   return (
     <div className="relative flex-none">
@@ -147,59 +136,13 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
             </DropdownMenuRadioGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-        {/* The bulk actions, all three of which need repos to act on. */}
-        {hasWorkspace && (
-          <>
-            <Button
-              variant="waOutline"
-              size="wa"
-              className="border-adaptive-300"
-              disabled={targets.length === 0}
-              // Scoped to the open folder. This previously said "Fetch sa/" but sent
-              // ref: null, which fetches every repo in the workspace — the label and
-              // the action disagreed.
-              onClick={() =>
-                run(
-                  expanded
-                    ? { kind: 'fetchMany', refs: targets }
-                    : { kind: 'fetchAll', ref: null }
-                )
-              }
-            >
-              Fetch {scopeLabel}
-            </Button>
-            <Button
-              variant="waPrimary"
-              size="wa"
-              disabled={targets.length === 0}
-              onClick={() => run({ kind: 'pullMany', refs: targets })}
-            >
-              Pull {scopeLabel}
-            </Button>
-            <Button
-              variant="waOutline"
-              size="wa"
-              className="border-adaptive-300"
-              disabled={targets.length === 0}
-              title={`Check out a branch across every repo in ${scopeLabel}`}
-              onClick={() => setCheckoutOpen(true)}
-            >
-              <GitBranch className="size-3.5" />
-              Checkout
-            </Button>
-          </>
-        )}
+        {/* Fetch / Pull / Checkout used to sit here. They are scoped to the open
+            folder, so they now live in that folder's own header in RepoGrid, beside
+            the name they act on. */}
 
         <span className="mx-1 h-5 w-px bg-adaptive-200" />
         <WindowControls />
       </div>
-
-      <CheckoutAllDialog
-        open={checkoutOpen}
-        onOpenChange={setCheckoutOpen}
-        repos={targets}
-        scopeLabel={scopeLabel}
-      />
 
       {/* Determinate scan progress. The chrome is already painted; this only
           reports how much real git state has landed. */}

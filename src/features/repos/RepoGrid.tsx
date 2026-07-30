@@ -1,6 +1,6 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { FolderOpen, LayoutGrid, RefreshCw, Rows3 } from 'lucide-react'
+import { FolderOpen, GitBranch, LayoutGrid, RefreshCw, Rows3 } from 'lucide-react'
 import { CARD_HEIGHT, RepoCard } from './RepoCard'
 import { RepoListHeader, RepoListRow, ROW_HEIGHT } from './RepoListRow'
 import { Button } from '@/components/ui/button'
@@ -10,6 +10,8 @@ import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRescanCategory } from '@/hooks/use-category-scan'
 import { RepoDetail } from '@/features/detail/RepoDetail'
+import { CheckoutAllDialog } from '@/features/actions/CheckoutAllDialog'
+import { useRunAction } from '@/hooks/use-action'
 import { buildSections, flattenSections } from '@/domain/sections'
 import { cn } from '@/lib/utils'
 
@@ -34,6 +36,8 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
   const durationMs = useScanStore((s) => s.durationMs)
   const isScanned = useScanStore((s) => (expanded ? s.scanned.has(expanded) : false))
   const rescan = useRescanCategory()
+  const run = useRunAction()
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
 
   // Cards come from the open folder only.
   const inFolder = useMemo(
@@ -153,7 +157,47 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                 <RefreshCw className={cn('size-3', scanning === expanded && 'animate-spin')} />
                 Rescan
               </Button>
+
+              {/* The bulk actions live here rather than in the title bar: all three
+                  act on exactly the folder this header names, and the label was the
+                  only thing that said so from up there. */}
+              <span className="mx-0.5 h-4 w-px bg-adaptive-200" />
+              <Button
+                variant="waOutline"
+                size="waXs"
+                disabled={inFolder.length === 0}
+                title={`Fetch every repo in ${expanded}/`}
+                onClick={() => run({ kind: 'fetchMany', refs: inFolder })}
+              >
+                Fetch {expanded}/
+              </Button>
+              <Button
+                variant="waPrimary"
+                size="waXs"
+                disabled={inFolder.length === 0}
+                title={`Pull every repo in ${expanded}/`}
+                onClick={() => run({ kind: 'pullMany', refs: inFolder })}
+              >
+                Pull {expanded}/
+              </Button>
+              <Button
+                variant="waOutline"
+                size="waXs"
+                disabled={inFolder.length === 0}
+                title={`Check out a branch across every repo in ${expanded}/`}
+                onClick={() => setCheckoutOpen(true)}
+              >
+                <GitBranch className="size-3" />
+                Checkout
+              </Button>
             </div>
+
+            <CheckoutAllDialog
+              open={checkoutOpen}
+              onOpenChange={setCheckoutOpen}
+              repos={inFolder}
+              scopeLabel={`${expanded}/`}
+            />
 
             {items.length === 0 ? (
               <div className="rounded-lg border border-adaptive-200 bg-card p-6 text-center text-sm text-adaptive-500">
