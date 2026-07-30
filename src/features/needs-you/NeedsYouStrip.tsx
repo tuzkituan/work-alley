@@ -4,6 +4,8 @@ import { NEEDS_YOU_META, derive } from '@/domain/severity'
 import type { NeedsYouKind } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
+import { useReposInView } from '@/hooks/use-repos-in-view'
+import type { Bootstrap } from '@/domain/types'
 
 const ORDER: NeedsYouKind[] = [
   'uncommitted',
@@ -18,30 +20,36 @@ const ORDER: NeedsYouKind[] = [
  * The counts are filters, not decoration. At any real repo count "41
  * uncommitted" is only useful if clicking it shows you those 41.
  */
-export function NeedsYouStrip() {
+export function NeedsYouStrip({ boot }: { boot: Bootstrap | undefined }) {
   const repos = useScanStore((s) => s.repos)
   const trackedLatest = useScanStore((s) => s.trackedLatest)
-  const scanning = useScanStore((s) => s.scanning)
-  const expanded = useUiStore((s) => s.expandedCategory)
-  const isScanned = useScanStore((s) => (expanded ? s.scanned.has(expanded) : false))
   const filterChip = useUiStore((s) => s.filterChip)
   const toggleFilterChip = useUiStore((s) => s.toggleFilterChip)
 
-  // Counts cover the open folder only, because that is the only folder that has
-  // been scanned. Summing across folders would mix real numbers with unknowns.
+  // The same set the grid below is showing — one folder, or the whole workspace.
+  // Shared so the counts can never describe a different set than the rows do.
+  const inView = useReposInView(boot)
+  const scope = inView.scope
+  const inViewIds = useMemo(
+    () => new Set(inView.repos.map((r) => `${r.category}/${r.name}`)),
+    [inView.repos]
+  )
+
+  // Counts cover only what has actually been scanned. Summing across folders that
+  // have not been would mix real numbers with unknowns.
   const counts = useMemo(() => {
     const c = new Map<NeedsYouKind, number>()
-    if (!expanded) return c
+    if (!scope) return c
     for (const r of repos.values()) {
-      if (r.ref.category !== expanded) continue
+      if (!inViewIds.has(`${r.ref.category}/${r.ref.name}`)) continue
       for (const k of derive(r, trackedLatest).kinds) c.set(k, (c.get(k) ?? 0) + 1)
     }
     return c
-  }, [repos, trackedLatest, expanded])
+  }, [repos, trackedLatest, scope, inViewIds])
 
   // Partial counts during a scan would be misinformation — "12 uncommitted"
   // climbing to 41 reads as a change in the workspace, not in our knowledge of it.
-  const settled = isScanned && scanning !== expanded
+  const settled = inView.scanned && !inView.scanning
 
   // So instead of live counts, a rescan keeps showing the last ones we were sure
   // about.
@@ -52,33 +60,34 @@ export function NeedsYouStrip() {
   // then removed four of them a moment later. Holding the settled counts keeps the
   // strip the same width and the same shape across a rescan; the numbers are a
   // second stale, which is invisible next to six chips appearing and vanishing.
-  const held = useRef<{ folder: string; counts: Map<NeedsYouKind, number> } | null>(null)
-  if (settled && expanded) held.current = { folder: expanded, counts }
-  // Another folder's counts are not a stand-in for this one's, so a folder switch
-  // falls back to the scanning note rather than to numbers from somewhere else.
+  const held = useRef<{ scope: string; counts: Map<NeedsYouKind, number> } | null>(null)
+  if (settled && scope) held.current = { scope, counts }
+  // Another view's counts are not a stand-in for this one's, so switching folders —
+  // or into all-repos mode — falls back to the scanning note rather than to numbers
+  // from somewhere else.
   const shown = settled
     ? counts
-    : held.current?.folder === expanded
+    : held.current?.scope === scope
       ? held.current.counts
       : null
 
   return (
     <div className="flex flex-none flex-wrap items-center gap-[7px] border-b border-adaptive-200 px-4 py-2.5">
       <SectionLabel className="flex-none">
-        Needs you {expanded ? `in ${expanded}/` : ''}
+        Needs you {scope ? `in ${inView.label}` : ''}
       </SectionLabel>
 
-      {!expanded && (
+      {!scope && (
         <span className="text-xs text-adaptive-400">open a folder to scan it</span>
       )}
 
       {/* Nothing known about this folder yet — a first scan, or one just switched
           to. One word beats six placeholder chips. */}
-      {expanded && !shown && (
+      {scope && !shown && (
         <span className="text-xs text-adaptive-400">scanning…</span>
       )}
 
-      {expanded &&
+      {scope &&
         shown &&
         ORDER.map((kind) => {
           const meta = NEEDS_YOU_META[kind]
@@ -99,7 +108,7 @@ export function NeedsYouStrip() {
           )
         })}
 
-      {expanded && shown && shown.size === 0 && (
+      {scope && shown && shown.size === 0 && (
         <Pill tone="ok" label="everything is clean and in sync" dot count={undefined} />
       )}
     </div>

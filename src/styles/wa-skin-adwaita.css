@@ -1,0 +1,542 @@
+/* The `adwaita` skin: GNOME's Adwaita, as libadwaita ships it (GNOME 42+).
+ *
+ * ── What Adwaita actually is ────────────────────────────────────────────────
+ * Where Metro says "content, not chrome", Adwaita says "soft, quiet, layered":
+ *
+ *   · Generous radii, and *two* of them. 12px on containers — windows, cards,
+ *     boxed lists, popovers — and 6px on the controls inside them. Getting this
+ *     wrong in either direction is what makes an Adwaita imitation look off.
+ *   · Layered surfaces, not borders. A card is a lighter fill on a darker window
+ *     with a hairline and a very soft shadow. Adwaita does use elevation — unlike
+ *     Metro — but only barely, and never as a gradient.
+ *   · The sidebar and the header bar are *darker* than the content view in light
+ *     mode. This is the opposite of most web chrome and it is the single most
+ *     recognisable thing about a GNOME window.
+ *   · One accent, used as a solid fill for suggested actions and as the focus ring.
+ *     GNOME orange here — see the note on `--primary`, which records that
+ *     libadwaita's own default is blue and orange is a palette accent.
+ *     Destructive actions are the red from the same palette.
+ *   · Status colour comes from the GNOME palette, not Tailwind's — those are the
+ *     named colours a GNOME user reads as "the green one".
+ *   · Text is near-black at 80% opacity rather than true black, which is what
+ *     gives Adwaita its slightly soft feel.
+ *
+ * ── How this file works ─────────────────────────────────────────────────────
+ * Same mechanism as wa-skin.css, and the same trade: unlayered CSS beats every
+ * Tailwind `@layer`, so `data-slot` + `data-variant` attributes let the whole of
+ * src/components/ui/ reskin from here with no component edits — at the cost of
+ * outranking any utility a caller writes on the properties set below. See the long
+ * comment at the top of wa-skin.css; it applies verbatim.
+ *
+ * `:not(.dark)` / `.dark` rather than a bare attribute selector, for the exact
+ * specificity reason documented there.
+ */
+
+/* ══════════════════════════════════════════════════════════ tokens: light ══ */
+html[data-skin='adwaita']:not(.dark) {
+  /* libadwaita's named colours, light. These are the real values — window at
+     #fafafa, view at #ffffff, headerbar and sidebar a step darker at #ebebeb —
+     which is what produces the recessed-chrome look described above.
+     Hex rather than oklch because --wa-surface is handed to xterm, whose colour
+     parser does not understand oklch. */
+  --wa-window: #fafafa; /* the page behind everything */
+  --wa-surface: #ffffff; /* views, cards, boxed lists */
+  --wa-chrome: #ebebeb; /* header bar, sidebar, docks — *darker* than the view */
+  --wa-line: #dcdcdc;
+  --wa-line-strong: #c0bfbc; /* palette: light-4 */
+
+  --background: var(--wa-window);
+  --card: var(--wa-surface);
+  --popover: var(--wa-surface);
+  --muted: var(--wa-chrome);
+  --secondary: var(--wa-chrome);
+  /* Adwaita hover is a wash of the foreground at ~5%, not a grey of its own, so it
+     works over both the window and the view. */
+  --accent: rgba(0, 0, 0, 0.05);
+  --border: var(--wa-line);
+  --input: var(--wa-line-strong);
+
+  /* GNOME orange, from the same palette libadwaita's accent options come from.
+     (For the record: libadwaita's *default* accent is blue #3584e4 — orange is one
+     of the selectable palette accents, and Ubuntu's Yaru default.)
+     orange-5 #c64600 rather than the vivid orange-3 #ff7800, because this is a
+     *fill* carrying white text: #ff7800 gives white 2.9:1 and #e66100 only 3.5:1,
+     while #c64600 clears 4.56:1. The vivid one is used for the focus ring, where
+     it is a 2px outline rather than a text background. */
+  --primary: #c64600;
+  --primary-foreground: #ffffff;
+  --ring: #ff7800;
+
+  /* The container radius. Controls get 6px further down — see the two-radii note
+     at the top; wa-bridge derives sm/md from this, so `--radius` is the *large*
+     one and the control sizes are pinned explicitly. */
+  --radius: 12px;
+
+  /* Foreground at 80% black, which is libadwaita's `--window-fg-color`. The ramp
+     stays opaque below 700 because these are used as *fills* as well as text. */
+  --adaptive-50: #f6f5f4; /* palette light-2 */
+  --adaptive-100: #ebebeb;
+  --adaptive-200: var(--wa-line);
+  --adaptive-300: var(--wa-line-strong);
+  --adaptive-400: #9a9996; /* palette light-5, 3.2:1 — dim text only */
+  --adaptive-500: #77767b; /* palette dark-1 */
+  --adaptive-600: #5e5c64; /* palette dark-2 */
+  --adaptive-700: #3d3846; /* palette dark-3 */
+  --adaptive-800: #241f31; /* palette dark-4 */
+  --adaptive-900: rgba(0, 0, 0, 0.8);
+  --adaptive-950: #000000;
+
+  /* The GNOME palette's mid shades, which is what a GNOME user reads as "the green
+     one". Tailwind's 500s are close but not these. */
+  --green-500: #2ec27e; /* green-4 */
+  --amber-500: #e5a50a; /* yellow-5 — the darkest, for legibility as text */
+  --red-500: #c01c28; /* red-4 */
+  --blue-500: #1c71d8; /* blue-4, a step darker than the accent for text use */
+
+  /* Adwaita's elevation: present, but only just. */
+  --shadow-focus-ring: 0 0 0 3px rgba(255, 120, 0, 0.35);
+  --wa-elevation: 0 1px 2px rgba(0, 0, 0, 0.06), 0 0 0 1px rgba(0, 0, 0, 0.03);
+  --wa-elevation-high: 0 1px 3px rgba(0, 0, 0, 0.12), 0 4px 12px rgba(0, 0, 0, 0.1);
+
+  /* GNOME's overlay scrollbar: a dark translucent thumb, fully rounded, no track. */
+  --wa-scroll-thumb: rgba(0, 0, 0, 0.28);
+  --wa-scroll-thumb-hover: rgba(0, 0, 0, 0.45);
+
+  /* GNOME Console (kgx), light. */
+  --wa-term-bg: #ffffff;
+  --wa-term-fg: #241f31; /* palette dark-4 */
+  --wa-term-cursor: #241f31;
+  --wa-term-cursor-accent: #ffffff;
+  --wa-term-selection: rgba(255, 120, 0, 0.3);
+  /* The 16 ANSI slots become the GNOME palette, so a program asking for "red" gets
+     GNOME red rather than Tango red — the same argument the Metro skin makes. */
+  --wa-term-black: #241f31;
+  --wa-term-red: #c01c28;
+  --wa-term-green: #2ec27e;
+  --wa-term-yellow: #e5a50a;
+  --wa-term-blue: #1c71d8;
+  --wa-term-magenta: #813d9c;
+  --wa-term-cyan: #0084c8;
+  --wa-term-white: #c0bfbc;
+  --wa-term-bright-black: #5e5c64;
+  --wa-term-bright-red: #ed333b;
+  --wa-term-bright-green: #57e389;
+  --wa-term-bright-yellow: #f6d32d;
+  --wa-term-bright-blue: #62a0ea;
+  --wa-term-bright-magenta: #c061cb;
+  --wa-term-bright-cyan: #33c7de;
+  --wa-term-bright-white: #f6f5f4;
+}
+
+/* ═══════════════════════════════════════════════════════════ tokens: dark ══ */
+html[data-skin='adwaita'].dark {
+  /* libadwaita dark, again the real values. Note the ordering *inverts*: the view
+     (#1e1e1e) is now darker than the window (#242424), and chrome (#303030) is
+     lighter than both. Adwaita dark keeps chrome distinct by going up rather than
+     down, which is why this cannot be expressed as one ramp shared with light. */
+  --wa-window: #242424;
+  --wa-surface: #1e1e1e;
+  --wa-chrome: #303030;
+  --wa-line: #3a3a3a;
+  --wa-line-strong: #4d4d4d;
+
+  --background: var(--wa-window);
+  --card: var(--wa-surface);
+  /* Dialogs and popovers sit at #383838 in libadwaita — a step above chrome, so a
+     menu over the header bar still separates from it. */
+  --popover: #383838;
+  --muted: var(--wa-chrome);
+  --secondary: var(--wa-chrome);
+  --accent: rgba(255, 255, 255, 0.07);
+  --border: var(--wa-line);
+  --input: var(--wa-line-strong);
+
+  /* Dark mode lightens the accent rather than darkening it, the same way
+     libadwaita does: orange-2 #ffa348 reads 7.7:1 against the #242424 window,
+     where the light-mode orange-5 would be 1.3:1 and effectively invisible. The
+     foreground goes dark for the same reason — white on #ffa348 is 2.1:1. */
+  --primary: #ffa348;
+  --primary-foreground: #3d1e00;
+  --ring: #ffa348;
+
+  --radius: 12px;
+
+  --adaptive-50: #2a2a2a;
+  --adaptive-100: var(--wa-chrome);
+  --adaptive-200: var(--wa-line);
+  --adaptive-300: var(--wa-line-strong);
+  --adaptive-400: #8b8b8b;
+  --adaptive-500: #a8a8a8;
+  --adaptive-600: #c4c4c4;
+  --adaptive-700: #d8d8d8;
+  --adaptive-800: #ebebeb;
+  --adaptive-900: rgba(255, 255, 255, 0.9);
+  --adaptive-950: #ffffff;
+
+  /* The palette's *light* shades in dark mode, which is how GNOME keeps status
+     colour legible on #242424. */
+  --green-500: #8ff0a4; /* green-1 */
+  --amber-500: #f8e45c; /* yellow-2 */
+  --red-500: #ff7b63; /* between red-1 and red-2, for 4.5:1 on #242424 */
+  --blue-500: #99c1f1; /* blue-1 */
+
+  --shadow-focus-ring: 0 0 0 3px rgba(255, 163, 72, 0.4);
+  --wa-elevation: 0 1px 2px rgba(0, 0, 0, 0.3), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  --wa-elevation-high: 0 1px 3px rgba(0, 0, 0, 0.5), 0 4px 12px rgba(0, 0, 0, 0.4);
+
+  --wa-scroll-thumb: rgba(255, 255, 255, 0.28);
+  --wa-scroll-thumb-hover: rgba(255, 255, 255, 0.45);
+
+  /* GNOME Console, dark. */
+  --wa-term-bg: #1e1e1e;
+  --wa-term-fg: #f6f5f4;
+  --wa-term-cursor: #f6f5f4;
+  --wa-term-cursor-accent: #1e1e1e;
+  --wa-term-selection: rgba(255, 163, 72, 0.35);
+  --wa-term-black: #241f31;
+  --wa-term-red: #ed333b;
+  --wa-term-green: #57e389;
+  --wa-term-yellow: #f6d32d;
+  --wa-term-blue: #62a0ea;
+  --wa-term-magenta: #c061cb;
+  --wa-term-cyan: #33c7de;
+  --wa-term-white: #deddda;
+  --wa-term-bright-black: #77767b;
+  --wa-term-bright-red: #f66151;
+  --wa-term-bright-green: #8ff0a4;
+  --wa-term-bright-yellow: #f9f06b;
+  --wa-term-bright-blue: #99c1f1;
+  --wa-term-bright-magenta: #dc8add;
+  --wa-term-bright-cyan: #93ddf0;
+  --wa-term-bright-white: #ffffff;
+}
+
+/* ═════════════════════════════════════════════════════════ the two radii ══ */
+
+/* Containers keep `--radius` (12px). Controls are pinned to 6px, because Tailwind
+ * derives `rounded-sm/md` arithmetically from `--radius` and at 12px those become
+ * 8 and 10 — visibly too round for a button sitting in a table row.
+ *
+ * Targeted by slot rather than by a blanket rule, which is the opposite of what the
+ * Metro skin does: Metro squares off *everything*, so one rule is right there. Here
+ * the whole point is that the two groups differ.
+ */
+html[data-skin='adwaita']
+  :is(
+    [data-slot='button'],
+    [data-slot='input'],
+    [data-slot='badge'],
+    [data-slot='dropdown-menu-item'],
+    [data-slot='command-item'],
+    [data-slot='tabs-trigger'],
+    [data-slot='select-trigger']
+  ) {
+  border-radius: 6px;
+}
+
+/* Containers, at the full 12px. `overflow: hidden` is what keeps a boxed list's
+   first and last rows from squaring off its corners — GNOME's `.boxed-list` does
+   exactly this. */
+html[data-skin='adwaita']
+  :is([data-slot='panel'], .bg-card, .wa-table, [data-slot='dialog-content']) {
+  border-radius: 12px;
+  overflow: hidden;
+}
+
+/* ════════════════════════════════════════════════════════════ surfaces ══ */
+
+/* A card is a lighter fill *plus* a hairline *plus* a barely-there shadow. All
+   three: with any one missing this reads as flat-design rather than as Adwaita. */
+html[data-skin='adwaita'] :is([data-slot='panel'], .bg-card, .wa-table) {
+  background-color: var(--wa-surface);
+  border-color: var(--wa-line);
+  box-shadow: var(--wa-elevation);
+}
+
+/* The content view. Carries `bg-background` (the window colour) by default, which
+   in Adwaita is the *recessed* value — so the view has to be lifted back to
+   --wa-surface or the middle of the window reads as chrome. */
+html[data-skin='adwaita'] :is([data-slot='main-tabs'], [data-slot='panel-header']) {
+  background-color: var(--wa-surface);
+}
+
+/* Header bar, sidebar, output pane, docks — the recessed group.
+ *
+ * This is the signature: in light mode these are *darker* than the content beside
+ * them. They carry `bg-adaptive-100` / `bg-adaptive-50` in their components, which
+ * is also the row-hover grey, so painting them from --wa-chrome is what lets the
+ * two be different values. */
+html[data-skin='adwaita']
+  :is(
+    [data-slot='chrome-bar'],
+    [data-slot='top-bar'],
+    [data-slot='rail'],
+    [data-slot='output-pane'],
+    [data-slot='terminal-dock']
+  ) {
+  background-color: var(--wa-chrome);
+}
+
+/* Popovers and menus get the high shadow — GNOME's menus are genuinely floating,
+   unlike its cards. */
+html[data-skin='adwaita']
+  :is(
+    [data-slot='popover-content'],
+    [data-slot='dropdown-menu-content'],
+    [data-slot='dropdown-menu-sub-content'],
+    [data-slot='command-dialog'],
+    [data-slot='dialog-content'],
+    [data-slot='tooltip-content']
+  ) {
+  box-shadow: var(--wa-elevation-high);
+  border-color: var(--wa-line);
+}
+
+/* GNOME dims the parent window behind a modal rather than tinting it. */
+html[data-skin='adwaita']
+  :is([data-slot='dialog-overlay'], [data-slot='alert-dialog-overlay']) {
+  background-color: rgba(0, 0, 0, 0.35);
+}
+
+/* ═════════════════════════════════════════════════════════════ buttons ══ */
+
+/* GNOME's default button: no border, a 10% foreground wash, and a hover that
+ * deepens the wash rather than changing hue. The washes are foreground-relative so
+ * one pair of values works on both the view and the recessed chrome — which is why
+ * this is `rgba` and not a grey.
+ */
+html[data-skin='adwaita'] [data-slot='button'][data-variant='waOutline'] {
+  background-color: var(--wa-btn);
+  border-color: transparent;
+  color: var(--adaptive-800);
+  box-shadow: none;
+  font-weight: 500;
+}
+html[data-skin='adwaita'] [data-slot='button'][data-variant='waOutline']:hover:not(:disabled) {
+  background-color: var(--wa-btn-hover);
+  border-color: transparent;
+  color: var(--adaptive-900);
+}
+html[data-skin='adwaita']:not(.dark) {
+  --wa-btn: rgba(0, 0, 0, 0.08);
+  --wa-btn-hover: rgba(0, 0, 0, 0.13);
+}
+html[data-skin='adwaita'].dark {
+  --wa-btn: rgba(255, 255, 255, 0.1);
+  --wa-btn-hover: rgba(255, 255, 255, 0.16);
+}
+
+/* `.suggested-action`. A solid accent fill; hover darkens rather than lightens,
+   matching GNOME. */
+html[data-skin='adwaita'] [data-slot='button'][data-variant='waPrimary'] {
+  background-color: var(--primary);
+  border-color: transparent;
+  color: var(--primary-foreground);
+  box-shadow: none;
+  font-weight: 500;
+}
+html[data-skin='adwaita']:not(.dark)
+  [data-slot='button'][data-variant='waPrimary']:hover:not(:disabled) {
+  background-color: #a33a00; /* a step past orange-5 */
+}
+html[data-skin='adwaita'].dark
+  [data-slot='button'][data-variant='waPrimary']:hover:not(:disabled) {
+  background-color: #ffbe6f; /* orange-1 — dark hover goes *lighter* */
+}
+
+/* `.destructive-action`, from the same palette. */
+html[data-skin='adwaita'] [data-slot='button'][data-variant='waDanger'] {
+  background-color: #e01b24; /* red-3 */
+  border-color: transparent;
+  color: #ffffff;
+  box-shadow: none;
+  font-weight: 500;
+}
+html[data-skin='adwaita'] [data-slot='button'][data-variant='waDanger']:hover:not(:disabled) {
+  background-color: #c01c28; /* red-4 */
+}
+
+/* `.flat`: nothing at rest, the standard wash on hover. */
+html[data-skin='adwaita'] [data-slot='button'][data-variant='waGhost'] {
+  background-color: transparent;
+  border-color: transparent;
+}
+html[data-skin='adwaita'] [data-slot='button'][data-variant='waGhost']:hover:not(:disabled) {
+  background-color: var(--wa-btn);
+}
+
+/* The one place a border is right: a dashed control is *asking* to look empty. */
+html[data-skin='adwaita'] [data-slot='button'][data-variant='waDashed'] {
+  background-color: transparent;
+  border-color: var(--wa-line-strong);
+}
+html[data-skin='adwaita'] [data-slot='button'][data-variant='waDashed']:hover:not(:disabled) {
+  background-color: var(--wa-btn);
+  border-color: var(--primary);
+}
+
+/* A pressed toggle is the accent fill, same as a suggested action — GNOME does not
+   distinguish the two. Both attributes, because `aria-pressed` is what the view
+   toggles set and `aria-current` what the rail sets. */
+html[data-skin='adwaita'] :is([data-slot='button'], button)[aria-pressed='true'],
+html[data-skin='adwaita'] [aria-current='true'] {
+  background-color: var(--primary);
+  color: var(--primary-foreground);
+  border-color: transparent;
+}
+
+/* Everything inside a filled state has to invert with it.
+ *
+ * Without this the rail's selected folder — and the All repos row — rendered with
+ * an *invisible* icon: those components paint the icon `text-primary` when
+ * selected, which is correct for the classic skin (a blue glyph on a white
+ * selected row) and is accent-on-accent here. The same applies to the dim count on
+ * the right. Metro carries the identical rule for the identical reason.
+ */
+html[data-skin='adwaita']
+  :is([aria-pressed='true'], [aria-current='true'])
+  :is(svg, span, .text-adaptive-400, .text-adaptive-500, .text-primary) {
+  color: inherit;
+}
+
+/* ════════════════════════════════════════════════════════════════ tabs ══ */
+
+/* GNOME's view switcher: no underline, a rounded pill for the selected tab. This
+   is the clearest single difference from the Metro skin, which uses a bottom rule
+   and no fill at all. */
+html[data-skin='adwaita'] [data-slot='tabs-list'] {
+  background-color: var(--wa-btn);
+  border-radius: 9px;
+  border-bottom: none;
+  padding: 3px;
+  gap: 2px;
+}
+html[data-skin='adwaita'] [data-slot='tabs-trigger'] {
+  border: none;
+  border-radius: 6px;
+  color: var(--adaptive-600);
+  font-weight: 500;
+}
+html[data-skin='adwaita'] [data-slot='tabs-trigger'][data-state='active'] {
+  background-color: var(--wa-surface);
+  color: var(--adaptive-900);
+  box-shadow: var(--wa-elevation);
+}
+
+/* The output pane's scope tabs are a different mechanism — a segmented strip along
+   an edge — so they keep their inset marker rather than becoming pills. Only the
+   marker colour needs saying; the geometry is already right. */
+html[data-skin='adwaita'] [data-slot='scope-tab'][aria-selected='true'] {
+  background-color: var(--wa-surface);
+}
+
+/* ═════════════════════════════════════════════════════════════ gutters ══ */
+
+html[data-skin='adwaita'] [data-slot='resizable-handle'] {
+  background-color: var(--wa-line);
+  box-shadow: none;
+}
+
+/* GNOME's overlay scrollbar: fully rounded, no track, and narrower than the
+   default. The thumb colours come from the token blocks above. */
+html[data-skin='adwaita'] .wa-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+html[data-skin='adwaita'] .wa-scroll::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  border: 2px solid transparent;
+}
+
+/* ════════════════════════════════════════════════════════════════ pills ══ */
+
+/* Unlike Metro, Adwaita status *is* a tint — GNOME badges are a wash of the
+ * colour, not a solid tile. So the base utilities are almost right already and
+ * only the shape and weight need correcting: fully rounded, medium weight.
+ *
+ * `data-tone` is left alone deliberately. The tones resolve to the GNOME palette
+ * through the --green-500/--amber-500/... overrides above, so the existing
+ * `/[0.12]` fills already produce GNOME's badge colours.
+ */
+html[data-skin='adwaita'] :is([data-slot='pill'], [data-slot='state-pill']) {
+  border-radius: 999px;
+  font-weight: 500;
+}
+
+/* The kind/language tag: a rounded chip, and a real fill for `library`, whose
+   KIND_STYLE row references `--color-assist-500` — a variable defined nowhere, so
+   that tag otherwise renders with no fill or border at all. */
+html[data-skin='adwaita'] [data-slot='kind-tag'] {
+  border-radius: 6px;
+  font-weight: 600;
+}
+html[data-skin='adwaita'] [data-kind='library'] {
+  background-color: rgba(129, 61, 156, 0.14); /* purple-4 at a badge tint */
+  border-color: rgba(129, 61, 156, 0.35);
+  color: #813d9c;
+}
+html[data-skin='adwaita'].dark [data-kind='library'] {
+  background-color: rgba(220, 138, 221, 0.16);
+  border-color: rgba(220, 138, 221, 0.35);
+  color: #dc8add;
+}
+
+/* ═══════════════════════════════════════════════════════════ typography ══ */
+
+/* GNOME uses weight, not tracking, for hierarchy — the opposite of the Metro
+   skin's wide-tracked uppercase. Titles are bold and tight; the app's uppercase
+   section labels lose their letter-spacing, which is what makes them read as GNOME
+   dim-labels rather than as Metro headings. */
+html[data-skin='adwaita'] h1,
+html[data-skin='adwaita'] [data-slot='app-name'] {
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+html[data-skin='adwaita'] [data-slot='section-label'] {
+  letter-spacing: 0.02em;
+  font-weight: 700;
+  text-transform: none;
+}
+
+/* Keycaps and mono chips: GNOME draws these as a filled rounded chip rather than
+   an outlined one with a shadow. */
+html[data-skin='adwaita'] :is([data-slot='keycap'], [data-slot='mono-chip']) {
+  background-color: var(--wa-btn);
+  border-color: transparent;
+  border-radius: 6px;
+  box-shadow: none;
+}
+
+html[data-skin='adwaita'] [data-slot='skeleton'] {
+  background-color: var(--wa-btn);
+  border-radius: 6px;
+}
+html[data-skin='adwaita'] [data-slot='progress'] {
+  background-color: var(--wa-btn);
+  border-radius: 999px;
+}
+html[data-skin='adwaita']
+  :is([data-slot='separator'], [data-slot='dropdown-menu-separator']) {
+  background-color: var(--wa-line);
+}
+
+/* Toasts get GNOME's floating elevation and the container radius. */
+html[data-skin='adwaita'] [data-sonner-toast] {
+  border: 1px solid var(--wa-line);
+  border-radius: 12px;
+  box-shadow: var(--wa-elevation-high);
+}
+
+/* ═══════════════════════════════════════════════════════════════ focus ══ */
+
+/* GNOME's focus ring is a 2px accent outline with a 1px gap. An outline rather
+ * than a box-shadow for the reasons spelled out in wa-skin.css: it survives the
+ * `overflow: hidden` that PanelShell and the container rule above both set, and no
+ * declaration here can clobber it.
+ *
+ * Unlayered, so it outranks Tailwind's `.outline-none` without `!important`.
+ */
+html[data-skin='adwaita'] :focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 1px;
+}

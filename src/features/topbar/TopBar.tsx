@@ -13,7 +13,7 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Progress } from '@/components/ui/progress'
 import { KeyCap, Sep } from '@/components/wa/primitives'
-import { useSkin, useTheme } from '@/hooks/use-theme'
+import { SKIN_OPTIONS, useSkin, useTheme } from '@/hooks/use-theme'
 import { useAppIdentity } from '@/hooks/use-bootstrap'
 import { useRunAction } from '@/hooks/use-action'
 import { useUiStore } from '@/stores/ui-store'
@@ -127,15 +127,16 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
             <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
               Skin
             </DropdownMenuLabel>
+            {/* Mapped over SKIN_OPTIONS, not written out: two hardcoded entries are
+                why the third skin was invisible here even though the store, the
+                stylesheet and the command palette all knew about it. */}
             <DropdownMenuRadioGroup value={skin} onValueChange={(v) => setSkin(v as Skin)}>
-              <DropdownMenuRadioItem value="classic">
-                Classic
-                <span className="ml-auto text-[10px] text-adaptive-400">rounded</span>
-              </DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="metro">
-                Metro
-                <span className="ml-auto text-[10px] text-adaptive-400">flat tiles</span>
-              </DropdownMenuRadioItem>
+              {SKIN_OPTIONS.map((o) => (
+                <DropdownMenuRadioItem key={o.id} value={o.id}>
+                  {o.label}
+                  <span className="ml-auto text-[10px] text-adaptive-400">{o.hint}</span>
+                </DropdownMenuRadioItem>
+              ))}
             </DropdownMenuRadioGroup>
           </DropdownMenuContent>
         </DropdownMenu>

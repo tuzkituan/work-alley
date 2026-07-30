@@ -5,15 +5,24 @@ import {
   OctagonXIcon,
   TriangleAlertIcon,
 } from "lucide-react"
-import { useTheme } from "next-themes"
 import { Toaster as Sonner, type ToasterProps } from "sonner"
 
+import { useUiStore } from "@/stores/ui-store"
+
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
+  // The app's own theme, not next-themes'.
+  //
+  // No ThemeProvider is mounted, so `useTheme()` resolved to "system" every time
+  // and the toast followed the *OS* preference — while the rest of the app follows
+  // an explicit light/dark choice that deliberately does not (see use-theme.ts). On
+  // any machine whose OS and app themes differ, that put a dark toast over a light
+  // app. Reading the store is also what makes the toast flip the instant the
+  // in-app toggle does.
+  const theme = useUiStore((s) => s.theme)
 
   return (
     <Sonner
-      theme={theme as ToasterProps["theme"]}
+      theme={theme}
       className="toaster group"
       icons={{
         success: <CircleCheckIcon className="size-4" />,

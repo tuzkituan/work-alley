@@ -33,6 +33,16 @@ interface ScanState {
   beginCategory(category: Category): void
   markScanned(category: Category): void
   /**
+   * Every dev server in the workspace, whether or not its repo has been scanned.
+   *
+   * Kept alongside the per-row patching below because that patching can only reach
+   * rows that already exist — i.e. folders that have been scanned. A server in a
+   * folder nobody has opened was simply dropped, which made "what is running
+   * anywhere?" unanswerable without opening every folder in turn.
+   */
+  devServers: DevServer[]
+
+  /**
    * Patches the dev-server field on every affected row.
    *
    * RepoStatus.devServer is otherwise only filled in during a scan, so without
@@ -61,6 +71,7 @@ export const useScanStore = create<ScanState>()((set) => ({
   repos: new Map(),
   scanned: new Set(),
   scanning: null,
+  devServers: [],
   commits: [],
   trackedLatest: null,
   trackedLatestSource: null,
@@ -105,7 +116,10 @@ export const useScanStore = create<ScanState>()((set) => ({
         changed = true
       }
 
-      return changed ? { repos } : s
+      // `devServers` is always replaced, even when no row changed: it is the whole
+      // point of holding the raw list, and a workspace-wide view of what is running
+      // must not go stale because every affected row happened to be unscanned.
+      return changed ? { repos, devServers: servers } : { devServers: servers }
     }),
 
   begin: (scanId, total) =>
@@ -142,6 +156,11 @@ export const useScanStore = create<ScanState>()((set) => ({
       repos: new Map(),
       scanned: new Set(),
       scanning: null,
+      // Cleared with the rest: reset runs on `workspace:changed`, and a server in
+      // the folder that is no longer open would otherwise sit in the Running list
+      // pointing at a repo this workspace cannot address. The bridge re-seeds from
+      // `list_dev_servers` right after, so anything still up reappears at once.
+      devServers: [],
       commits: [],
       errorCount: 0,
       message: null,

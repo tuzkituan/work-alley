@@ -1,8 +1,9 @@
 import { memo } from 'react'
-import { Folder, FolderOpen, ListChecks, Play, Wrench } from 'lucide-react'
-import { KvRow, SectionLabel } from '@/components/wa/primitives'
+import { openUrl } from '@tauri-apps/plugin-opener'
+import { ExternalLink, Folder, FolderOpen, Layers, ListChecks, Play, Square, Wrench } from 'lucide-react'
+import { KvRow, SectionLabel, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
-import type { Bootstrap, Category } from '@/domain/types'
+import { repoId, type Bootstrap, type Category, type DevServer } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
@@ -41,6 +42,15 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
               {boot?.repos.length ?? 0}
             </span>
           </div>
+
+          {/* Above the folders, because it is the answer to a question none of them
+              can answer on its own: "what is running / dirty / behind, anywhere?"
+              Reaching that used to mean opening each folder in turn and remembering
+              what you saw. Scans the whole workspace, on the same scan-once-then-
+              cache terms as a folder. */}
+          {groups.length > 1 && (
+            <AllReposButton count={boot?.repos.length ?? 0} />
+          )}
 
           {groups.map((g) => (
             <FolderButton
@@ -89,6 +99,8 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
             </div>
           )}
         </div>
+
+        <RunningSection />
       </div>
 
       {/* Pinned under the scroll, directly above the card that reports the same
@@ -238,6 +250,190 @@ const FolderButton = memo(function FolderButton({
     </button>
   )
 })
+
+/**
+ * What is running, anywhere in the workspace.
+ *
+ * The rail is the right home for this: it is the column that answers "which repos
+ * am I looking at", and the app shows one folder at a time — so "is anything still
+ * running?" otherwise meant opening each folder in turn and remembering what you
+ * saw. The backend has always known the whole answer, since its dev registry is
+ * process-wide; the frontend was discarding every server whose repo sat in an
+ * unscanned folder. See `ScanState.devServers`.
+ *
+ * Renders nothing when nothing is running, rather than an empty-state row: this
+ * sits below two sections that are always present, and a permanent "nothing is
+ * running" line is furniture.
+ */
+function RunningSection() {
+  const servers = useScanStore((s) => s.devServers)
+  if (servers.length === 0) return null
+
+  // Crashed first, then starting, then up. The list is read to find a problem, and
+  // a dead server is the thing you came looking for.
+  const sorted = [...servers].sort((a, b) => runRank(a) - runRank(b))
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between px-1.5 pb-1">
+        <SectionLabel>Running</SectionLabel>
+        <span className="wa-num font-mono text-[11px] text-adaptive-400">{sorted.length}</span>
+      </div>
+      {sorted.map((s) => (
+        <RunningRow key={`${repoId(s.ref)}#${s.task}`} server={s} />
+      ))}
+    </div>
+  )
+}
+
+function RunningRow({ server }: { server: DevServer }) {
+  const setCategory = useUiStore((s) => s.setCategory)
+  const openDetail = useUiStore((s) => s.openDetail)
+  const run = useRunAction()
+  const id = repoId(server.ref)
+  const crashed = server.state === 'crashed'
+  // Rust fills `url` in whenever it knows a port; the fallback covers a server
+  // whose port was sniffed from the output after the entry was first registered.
+  // Never for a crashed one — there is nothing listening to open.
+  const url = crashed
+    ? null
+    : (server.url ?? (server.port ? `http://localhost:${server.port}` : null))
+
+  return (
+    // A row, not a button, because it holds two targets: the name opens the repo and
+    // the square stops the task. Nesting a button inside a button is invalid.
+    <div className="group flex h-[30px] items-center gap-2 rounded-md border border-transparent px-2 hover:bg-adaptive-200">
+      <StatusDot
+        tone={crashed ? 'err' : server.state === 'up' ? 'ok' : 'warn'}
+        size={7}
+        style={
+          server.state === 'starting' || server.state === 'stopping'
+            ? { animation: 'wa-blink 1.4s step-end infinite' }
+            : undefined
+        }
+      />
+      <button
+        type="button"
+        // Both, and in this order: the folder has to be open for the repo to be
+        // addressable, and `setCategory` clears the detail page — so opening it
+        // second is what makes the jump land.
+        onClick={() => {
+          setCategory(server.ref.category)
+          openDetail(id)
+        }}
+        title={`${server.command.join(' ')}\n\nClick to open ${id}`}
+        className="flex min-w-0 flex-1 flex-col items-start text-left"
+      >
+        <span className="w-full truncate text-xs font-medium text-adaptive-800">
+          {server.ref.name}
+        </span>
+        {/* The folder and task, because two repos in different folders can share a
+            name and this list spans all of them. */}
+        <span className="w-full truncate font-mono text-[9.5px] text-adaptive-400">
+          {server.ref.category || 'workspace'} · {server.task}
+        </span>
+      </button>
+      {/* The port at rest, the actions on hover — the rail is 214px wide and the
+          name already has most of it, so both cannot be shown at once. */}
+      <span
+        className={cn(
+          'wa-num flex-none font-mono text-[10px] group-hover:hidden',
+          crashed ? 'text-sev-err' : 'text-adaptive-400'
+        )}
+      >
+        {crashed ? 'dead' : server.port ? `:${server.port}` : server.state}
+      </span>
+      <span className="hidden flex-none items-center gap-1.5 group-hover:flex">
+        {/* Only once the port is actually known. Before that `url` is null and the
+            button would open http://localhost:undefined — the port is a guess until
+            the server prints its banner, which is why Rust leaves it unset. */}
+        {url && (
+          <button
+            type="button"
+            onClick={() => void openUrl(url).catch(() => {})}
+            title={`Open ${url}`}
+            aria-label={`Open ${url}`}
+            className="text-adaptive-400 hover:text-primary"
+          >
+            <ExternalLink className="size-3" />
+          </button>
+        )}
+        <button
+          type="button"
+          onClick={() => run({ kind: 'devStop', ref: server.ref, task: server.task })}
+          title={`Stop ${server.task} in ${id}`}
+          aria-label={`Stop ${server.task} in ${id}`}
+          className="text-adaptive-400 hover:text-sev-err"
+        >
+          <Square className="size-3" />
+        </button>
+      </span>
+    </div>
+  )
+}
+
+/** Crashed, then starting/stopping, then up. */
+function runRank(s: DevServer): number {
+  if (s.state === 'crashed') return 0
+  if (s.state === 'starting' || s.state === 'stopping') return 1
+  return 2
+}
+
+/**
+ * Every repo in the workspace, in one flat list.
+ *
+ * A sibling of the folder buttons rather than a switch somewhere else, because it
+ * answers the same question they do — "which repos am I looking at" — and the two
+ * are mutually exclusive. Same shape, same selected treatment, so which one is
+ * active reads at a glance.
+ *
+ * Hidden when there is only one folder: it would then be a second button for the
+ * same set of repos.
+ */
+function AllReposButton({ count }: { count: number }) {
+  const selected = useUiStore((s) => s.allRepos)
+  const setAllRepos = useUiStore((s) => s.setAllRepos)
+  const scanning = useScanStore((s) => s.scanning !== null)
+
+  return (
+    <button
+      type="button"
+      onClick={() => setAllRepos(!selected)}
+      aria-current={selected ? 'true' : undefined}
+      title={
+        selected
+          ? 'Back to one folder at a time'
+          : `Show all ${count} repos at once, across every folder`
+      }
+      className={cn(
+        'flex h-[30px] w-full items-center gap-2 rounded-md border px-2 text-left',
+        selected
+          ? 'border-adaptive-300 bg-background'
+          : 'border-transparent hover:bg-adaptive-200'
+      )}
+    >
+      <Layers
+        className={cn('size-3.5 flex-none', selected ? 'text-primary' : 'text-adaptive-400')}
+      />
+      <span
+        className={cn(
+          'flex-1 truncate text-xs font-medium',
+          selected ? 'text-adaptive-950' : 'text-adaptive-800'
+        )}
+      >
+        All repos
+      </span>
+      {selected && scanning ? (
+        <span
+          className="size-2.5 flex-none rounded-full border border-primary border-t-transparent"
+          style={{ animation: 'wa-spin 0.7s linear infinite' }}
+        />
+      ) : (
+        <span className="wa-num flex-none font-mono text-[10px] text-adaptive-400">{count}</span>
+      )}
+    </button>
+  )
+}
 
 function ToolchainCard({ boot }: { boot: Bootstrap | undefined }) {
   const tools = boot?.tools ?? []

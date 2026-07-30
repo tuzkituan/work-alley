@@ -231,6 +231,12 @@ async function wire(qc: QueryClient) {
   // workspace that is no longer open.
   on('workspace:changed', () => {
     useScanStore.getState().reset()
+    // Re-seed immediately: `dev:changed` only fires when a server *changes*, so
+    // without this anything still running is invisible until it next starts or dies.
+    void api
+      .listDevServers()
+      .then((servers) => useScanStore.getState().setDevServers(servers))
+      .catch(() => {})
     useUiStore.getState().setCategory(null)
     useUiStore.getState().closeDetail()
     void qc.invalidateQueries()
@@ -261,6 +267,16 @@ async function wire(qc: QueryClient) {
   } catch {
     // A pty-less platform or a backend that has not finished booting. The strip is
     // simply empty, which is what it did before this existed.
+  }
+
+  // Same recovery, for dev servers. Rust persists its dev registry across a webview
+  // reload, but `dev:changed` only fires when something *changes* — so a server
+  // that was already up when this connected was invisible until it next started or
+  // died, and the Running list would have reported nothing running.
+  try {
+    useScanStore.getState().setDevServers(await api.listDevServers())
+  } catch {
+    // Nothing running, or a backend still booting.
   }
 }
 

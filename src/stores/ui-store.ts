@@ -15,10 +15,13 @@ export type ThemeMode = 'light' | 'dark'
  * Microsoft's Metro / Modern UI from Windows 8: square corners, no shadows or
  * gradients at all, solid saturated accent fills for state, real dividers instead
  * of soft edges, and typography doing the work that chrome does elsewhere.
+ * `adwaita` is GNOME's, from libadwaita: two radii (12px containers, 6px controls),
+ * soft elevation, and chrome that sits *darker* than the content in light mode.
+ *
  * Exported as a list so the persisted value can be validated against it; see
  * `migrateUiState`.
  */
-export const SKINS = ['classic', 'metro'] as const
+export const SKINS = ['classic', 'metro', 'adwaita'] as const
 export type Skin = (typeof SKINS)[number]
 
 /**
@@ -75,6 +78,15 @@ interface UiState {
    * launch, deliberately.
    */
   expandedCategory: Category | null
+  /**
+   * Show every repo in the workspace at once, ignoring folders.
+   *
+   * Mutually exclusive with `expandedCategory` and takes precedence over it. Exists
+   * because the one-folder-at-a-time model makes any workspace-wide question — "what
+   * is running right now?" — a matter of opening each folder in turn and remembering
+   * what you saw.
+   */
+  allRepos: boolean
   /** Repo whose card is highlighted with the primary border. */
   activeRepoId: RepoId | null
   /** Repo whose detail page replaces the list, or null for the list. */
@@ -134,6 +146,7 @@ interface UiState {
   setTermFontSize(size: number): void
   toggleCategory(category: Category): void
   setCategory(category: Category | null): void
+  setAllRepos(on: boolean): void
   setActiveRepo(id: RepoId | null): void
   openDetail(id: RepoId): void
   closeDetail(): void
@@ -169,6 +182,7 @@ export function migrateUiState(persisted: unknown) {
     termFontSize?: unknown
     detailTab?: unknown
     detailHeaderCollapsed?: unknown
+    allRepos?: unknown
   }
   return {
     theme: p.theme === 'light' || p.theme === 'dark' ? p.theme : 'light',
@@ -178,6 +192,10 @@ export function migrateUiState(persisted: unknown) {
     skin: SKINS.includes(p.skin as Skin) ? (p.skin as Skin) : 'classic',
     view: p.view === 'cards' || p.view === 'list' ? p.view : 'list',
     expandedCategory: typeof p.expandedCategory === 'string' ? p.expandedCategory : null,
+    // Only an exact `true` opts in: a blob from before this key existed has no
+    // opinion, and defaulting to the flat list would scan the whole workspace on
+    // first launch after an upgrade.
+    allRepos: p.allRepos === true,
     termFontSize:
       typeof p.termFontSize === 'number' && p.termFontSize >= 8 && p.termFontSize <= 20
         ? p.termFontSize
@@ -196,6 +214,7 @@ export const useUiStore = create<UiState>()(
       theme: 'light',
       skin: 'classic',
       expandedCategory: null,
+      allRepos: false,
       activeRepoId: null,
       detailRepoId: null,
       detailTab: 'changes',
@@ -211,17 +230,33 @@ export const useUiStore = create<UiState>()(
 
       toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
       setTheme: (theme) => set({ theme }),
-      toggleSkin: () => set((s) => ({ skin: s.skin === 'classic' ? 'metro' : 'classic' })),
+      // Cycles the list rather than flipping two values. It was a binary
+      // classic/metro swap, which silently skipped any third skin — and the command
+      // palette's "switch skin" is the only way to reach this without the menu.
+      toggleSkin: () =>
+        set((s) => ({ skin: SKINS[(SKINS.indexOf(s.skin) + 1) % SKINS.length]! })),
       setSkin: (skin) => set({ skin }),
       setTermFontSize: (size) => set({ termFontSize: Math.min(20, Math.max(8, size)) }),
 
+      // Both category actions leave all-repos mode: the two are alternative answers
+      // to "which repos am I looking at", and a folder click that left the flat list
+      // up would read as doing nothing — the same bug the FOLDER_SCOPED note
+      // describes.
       toggleCategory: (category) =>
         set((s) => ({
           expandedCategory: s.expandedCategory === category ? null : category,
+          allRepos: false,
           ...FOLDER_SCOPED,
         })),
 
-      setCategory: (expandedCategory) => set({ expandedCategory, ...FOLDER_SCOPED }),
+      setCategory: (expandedCategory) =>
+        set({ expandedCategory, allRepos: false, ...FOLDER_SCOPED }),
+
+      // Clears the folder rather than remembering it. Coming back out of all-repos
+      // mode lands on the workspace picker, which is honest about the fact that no
+      // folder is selected — quietly restoring one would make the toggle asymmetric.
+      setAllRepos: (allRepos) =>
+        set({ allRepos, expandedCategory: null, ...FOLDER_SCOPED }),
       // Selecting a repo also points the pane at it: the two disagreeing is what made
       // "where did my run go" a question.
       setActiveRepo: (activeRepoId) => set({ activeRepoId, outputScope: activeRepoId }),
@@ -256,6 +291,7 @@ export const useUiStore = create<UiState>()(
         skin: s.skin,
         view: s.view,
         expandedCategory: s.expandedCategory,
+        allRepos: s.allRepos,
         termFontSize: s.termFontSize,
         detailTab: s.detailTab,
         detailHeaderCollapsed: s.detailHeaderCollapsed,
@@ -264,7 +300,7 @@ export const useUiStore = create<UiState>()(
       // an older build is still merged over the defaults on load, keys and all. So
       // the version is bumped whenever the shape changes, and `migrate` rebuilds the
       // state from scratch rather than trusting whatever was stored.
-      version: 8,
+      version: 9,
       migrate: migrateUiState,
     }
   )

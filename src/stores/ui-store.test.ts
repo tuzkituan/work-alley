@@ -15,14 +15,26 @@ describe('ui store — skin', () => {
     expect(useUiStore.getState().skin).toBe('classic')
   })
 
-  it('toggles and sets', () => {
+  it('toggles through every skin and wraps, rather than flipping two', () => {
+    // It used to be a binary classic/metro swap, which silently skipped any skin
+    // added afterwards — and the command palette's "switch skin" is the only way to
+    // reach this without the menu. Asserted against SKINS so adding a fourth does
+    // not need this test edited, only its coverage extended for free.
+    expect(useUiStore.getState().skin).toBe(SKINS[0])
+    for (let i = 1; i < SKINS.length; i++) {
+      useUiStore.getState().toggleSkin()
+      expect(useUiStore.getState().skin).toBe(SKINS[i]!)
+    }
+    // Wraps back to the first rather than sticking on the last.
     useUiStore.getState().toggleSkin()
-    expect(useUiStore.getState().skin).toBe('metro')
-    useUiStore.getState().toggleSkin()
-    expect(useUiStore.getState().skin).toBe('classic')
+    expect(useUiStore.getState().skin).toBe(SKINS[0])
+  })
 
-    useUiStore.getState().setSkin('metro')
-    expect(useUiStore.getState().skin).toBe('metro')
+  it('sets any skin directly', () => {
+    for (const s of SKINS) {
+      useUiStore.getState().setSkin(s)
+      expect(useUiStore.getState().skin).toBe(s)
+    }
     useUiStore.getState().setSkin('classic')
   })
 
@@ -136,5 +148,58 @@ describe('ui store — switching folders', () => {
     const after = useUiStore.getState()
     expect(after.expandedCategory).toBeNull()
     expect(after.detailRepoId).toBeNull()
+  })
+})
+
+/**
+ * All-repos mode and a selected folder are alternative answers to "which repos am I
+ * looking at", so they must never both be set — `RepoGrid` gives all-repos
+ * precedence, and a folder click that left the flat list up would read as doing
+ * nothing, which is exactly the bug the FOLDER_SCOPED note describes.
+ */
+describe('ui store — all-repos mode', () => {
+  it('is off by default, so no upgrade scans the whole workspace unasked', () => {
+    expect(useUiStore.getState().allRepos).toBe(false)
+    expect(migrate({}).allRepos).toBe(false)
+    // Only an exact `true` opts in.
+    for (const bad of ['true', 1, {}, null]) {
+      expect(migrate({ allRepos: bad }).allRepos).toBe(false)
+    }
+    expect(migrate({ allRepos: true }).allRepos).toBe(true)
+  })
+
+  it('turning it on clears the selected folder', () => {
+    const ui = useUiStore.getState()
+    ui.setCategory('frontend')
+    ui.setAllRepos(true)
+    const after = useUiStore.getState()
+    expect(after.allRepos).toBe(true)
+    expect(after.expandedCategory).toBeNull()
+  })
+
+  it('picking a folder turns it off', () => {
+    const ui = useUiStore.getState()
+    ui.setAllRepos(true)
+    ui.setCategory('mobile')
+    const after = useUiStore.getState()
+    expect(after.allRepos).toBe(false)
+    expect(after.expandedCategory).toBe('mobile')
+
+    // toggleCategory is the other way in, and had already drifted from setCategory
+    // once before.
+    useUiStore.getState().setAllRepos(true)
+    useUiStore.getState().toggleCategory('frontend')
+    expect(useUiStore.getState().allRepos).toBe(false)
+  })
+
+  it('switching in or out closes the detail page and unscopes the pane', () => {
+    const ui = useUiStore.getState()
+    ui.setCategory('frontend')
+    ui.openDetail('frontend/web')
+
+    useUiStore.getState().setAllRepos(true)
+    const after = useUiStore.getState()
+    expect(after.detailRepoId).toBeNull()
+    expect(after.outputScope).toBeNull()
   })
 })

@@ -272,7 +272,7 @@ function Dashboard() {
                   per-repo commits live on the detail page, and container state is a
                   `docker ps` away in the output pane. Removing it gave the list back
                   the strip's height. */}
-              <NeedsYouStrip />
+              <NeedsYouStrip boot={boot} />
               <RepoGrid boot={boot} />
             </div>
           </ResizablePanel>

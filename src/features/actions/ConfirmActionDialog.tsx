@@ -121,8 +121,20 @@ export function ConfirmActionDialog() {
                   key={`${t.category}/${t.name}`}
                   className="flex items-center gap-2 border-b border-adaptive-200 px-2 py-1 text-xs last:border-b-0"
                 >
-                  <span className="w-5 font-mono text-[11px] text-adaptive-400">{t.category}</span>
-                  <span className="text-adaptive-800">{t.name}</span>
+                  {/* `w-16 flex-none truncate`, not `w-5`. The old 20px was sized
+                      for two-letter folders like `fe`; a flat-workspace category is
+                      a detected kind or a language — "frontend", "mobile", "c++" —
+                      and with no truncation and no flex-none those ran straight
+                      under the repo name. */}
+                  <span
+                    className="w-16 flex-none truncate font-mono text-[11px] text-adaptive-400"
+                    title={t.category}
+                  >
+                    {t.category}
+                  </span>
+                  <span className="min-w-0 truncate text-adaptive-800" title={t.name}>
+                    {t.name}
+                  </span>
                 </div>
               ))}
             </div>

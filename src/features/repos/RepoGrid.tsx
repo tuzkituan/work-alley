@@ -15,6 +15,7 @@ import { repoId, type Bootstrap } from "@/domain/types";
 import { useScanStore } from "@/stores/scan-store";
 import { useUiStore } from "@/stores/ui-store";
 import { useRescanCategory } from "@/hooks/use-category-scan";
+import { useReposInView } from "@/hooks/use-repos-in-view";
 import { RepoDetail } from "@/features/detail/RepoDetail";
 import { CheckoutAllDialog } from "@/features/actions/CheckoutAllDialog";
 import { useRunAction } from "@/hooks/use-action";
@@ -29,7 +30,6 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const detailRepoId = useUiStore((s) => s.detailRepoId);
-  const expanded = useUiStore((s) => s.expandedCategory);
   const filterText = useUiStore((s) => s.filterText);
   const filterChip = useUiStore((s) => s.filterChip);
   const clearFilters = useUiStore((s) => s.clearFilters);
@@ -38,23 +38,16 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
 
   const statuses = useScanStore((s) => s.repos);
   const trackedLatest = useScanStore((s) => s.trackedLatest);
-  const scanning = useScanStore((s) => s.scanning);
   const durationMs = useScanStore((s) => s.durationMs);
-  const isScanned = useScanStore((s) =>
-    expanded ? s.scanned.has(expanded) : false,
-  );
   const rescan = useRescanCategory();
   const run = useRunAction();
   const [checkoutOpen, setCheckoutOpen] = useState(false);
 
-  // Cards come from the open folder only.
-  const inFolder = useMemo(
-    () =>
-      expanded
-        ? (boot?.repos ?? []).filter((r) => r.category === expanded)
-        : [],
-    [boot?.repos, expanded],
-  );
+  // Whichever set is in view: one folder, or every repo in the workspace. The
+  // branch lives in the hook so this and the Needs-you strip cannot disagree about
+  // what they are describing.
+  const inView = useReposInView(boot);
+  const inFolder = inView.repos;
 
   const visible = useMemo(() => {
     const needle = filterText.trim().toLowerCase();
@@ -119,13 +112,13 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
       className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5"
     >
       <div className="flex flex-col gap-3.5">
-        {!expanded ? (
+        {!inView.scope ? (
           <NoFolderOpen boot={boot} />
         ) : (
           <>
             <div className="flex items-center gap-2 text-xs text-adaptive-500">
               <span className="font-mono text-[11px] font-semibold text-primary-600">
-                {expanded}/
+                {inView.label}
               </span>
               <span className="wa-num">
                 {filtered
@@ -133,10 +126,10 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                   : `${inFolder.length}`}{" "}
                 repos
               </span>
-              {scanning === expanded && (
+              {inView.scanning && (
                 <span className="text-adaptive-400">scanning…</span>
               )}
-              {isScanned && (
+              {inView.scanned && (
                 <span className="wa-num font-mono text-[11px] text-adaptive-400">
                   {durationMs}ms
                 </span>
@@ -182,14 +175,15 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
               <Button
                 variant="waOutline"
                 size="waXs"
-                disabled={scanning === expanded}
-                title={`Re-scan every repo in ${expanded}/`}
-                onClick={() => rescan(expanded)}
+                disabled={inView.scanning}
+                title={`Re-scan every repo in ${inView.label}`}
+                // null means "every folder", which is what all-repos mode needs.
+                onClick={() => rescan(inView.scope === "all" ? null : inView.scope)}
               >
                 <RefreshCw
                   className={cn(
                     "size-3",
-                    scanning === expanded && "animate-spin",
+                    inView.scanning && "animate-spin",
                   )}
                 />
                 Rescan
@@ -203,7 +197,7 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                 variant="waOutline"
                 size="waXs"
                 disabled={inFolder.length === 0}
-                title={`Fetch every repo in ${expanded}/`}
+                title={`Fetch every repo in ${inView.label}`}
                 onClick={() => run({ kind: "fetchMany", refs: inFolder })}
               >
                 Fetch all
@@ -212,7 +206,7 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                 variant="waPrimary"
                 size="waXs"
                 disabled={inFolder.length === 0}
-                title={`Pull every repo in ${expanded}/`}
+                title={`Pull every repo in ${inView.label}`}
                 onClick={() => run({ kind: "pullMany", refs: inFolder })}
               >
                 Pull all
@@ -221,7 +215,7 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                 variant="waOutline"
                 size="waXs"
                 disabled={inFolder.length === 0}
-                title={`Check out a branch across every repo in ${expanded}/`}
+                title={`Check out a branch across every repo in ${inView.label}`}
                 onClick={() => setCheckoutOpen(true)}
               >
                 <GitBranch className="size-3" />
@@ -233,13 +227,13 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
               open={checkoutOpen}
               onOpenChange={setCheckoutOpen}
               repos={inFolder}
-              scopeLabel={`${expanded}/`}
+              scopeLabel={inView.label}
             />
 
             {items.length === 0 ? (
               <div className="rounded-lg border border-adaptive-200 bg-card p-6 text-center text-sm text-adaptive-500">
                 {inFolder.length === 0
-                  ? `Nothing is cloned in ${expanded}/ yet.`
+                  ? `Nothing is cloned in ${inView.label} yet.`
                   : "No repositories match the current filters."}
               </div>
             ) : view === "list" ? (

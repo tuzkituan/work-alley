@@ -1,4 +1,4 @@
-import { useUiStore } from '@/stores/ui-store'
+import { SKINS, useUiStore } from '@/stores/ui-store'
 import type { Skin, ThemeMode } from '@/stores/ui-store'
 
 /**
@@ -52,7 +52,29 @@ const LABEL: Record<ThemeMode, string> = {
 const SKIN_LABEL: Record<Skin, string> = {
   classic: 'Classic',
   metro: 'Metro',
+  adwaita: 'Adwaita',
 }
+
+/** One phrase for what each skin looks like, for the picker's right-hand column. */
+const SKIN_HINT: Record<Skin, string> = {
+  classic: 'rounded',
+  metro: 'flat tiles',
+  adwaita: 'GNOME',
+}
+
+/**
+ * The skin picker's rows, derived from SKINS rather than written out.
+ *
+ * The menu used to hardcode one entry per skin, so adding a third left it
+ * unreachable from the UI entirely — the same way `toggleSkin` used to skip it.
+ * Deriving both from the one list means a fourth skin appears in the picker for
+ * free.
+ */
+export const SKIN_OPTIONS: { id: Skin; label: string; hint: string }[] = SKINS.map((id) => ({
+  id,
+  label: SKIN_LABEL[id],
+  hint: SKIN_HINT[id],
+}))
 
 /**
  * The theme is an explicit choice: light or dark. It does not follow the OS.

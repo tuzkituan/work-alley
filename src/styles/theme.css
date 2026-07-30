@@ -10,6 +10,7 @@
 /* Last, and that is load-bearing: the skin's `html[data-skin=…].dark` selectors
  * have to come after wa-bridge's `.dark` block. See the note in wa-skin.css. */
 @import './wa-skin.css';
+@import './wa-skin-adwaita.css';
 
 /* `.dark` lives on <html>, not the app root — Radix portals mount to document.body,
  * outside the root div, and would otherwise resolve the whole adaptive ramp to light. */
@@ -20,6 +21,7 @@
  * shape as `dark` for the same reason: zero added specificity, so a plain
  * utility on the element still wins. */
 @custom-variant metro (&:where([data-skin='metro'], [data-skin='metro'] *));
+@custom-variant adwaita (&:where([data-skin='adwaita'], [data-skin='adwaita'] *));
 
 /* Tailwind v4 changed the default border colour from gray-200 to `currentColor`,
  * so any element with a bare `border` inherits the *text* colour — which is why
