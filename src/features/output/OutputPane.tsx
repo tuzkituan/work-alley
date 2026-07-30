@@ -22,7 +22,7 @@ import { useCancelKey } from './use-cancel-key'
 import { BulkProgress } from './BulkProgress'
 import { EmptyLog, LogView } from './LogView'
 import { QuickActions } from './QuickActions'
-import { ScopeMenu, type ScopeOption } from './ScopeMenu'
+import { ScopeTabs, type ScopeOption } from './ScopeTabs'
 import { TabStrip } from './TabStrip'
 
 /**
@@ -148,15 +148,24 @@ export function OutputPane() {
   const summary = activityLabel(activity)
 
   return (
-    <div className="wa-output flex h-full flex-col border-l border-adaptive-200 bg-adaptive-50">
-      <div className="flex h-10 flex-none items-center gap-2 border-b border-adaptive-200 px-2.5">
-        <SectionLabel>Output</SectionLabel>
-        <ScopeMenu scope={scope} label={scopeLabel} options={scopeOptions} onSelect={(id) => {
+    <div
+      data-slot="output-pane"
+      className="wa-output flex h-full flex-col border-l border-adaptive-200 bg-adaptive-50"
+    >
+      {/* Scope first, then the header for the scope you picked. The dropdown this
+          replaces sat inside the header and showed one name at a time. */}
+      <ScopeTabs
+        scope={scope}
+        options={scopeOptions}
+        onSelect={(id) => {
           setScope(id)
           // Keep the pane and the repo table pointing at the same thing.
           if (id) setActiveRepo(id)
-        }} />
+        }}
+      />
 
+      <div className="flex h-10 flex-none items-center gap-2 border-b border-adaptive-200 px-2.5">
+        <SectionLabel>Output</SectionLabel>
         {/* What is running, across everything in this scope — not the status of the
             one run that happens to be showing, which is all this could say before and
             was always in the singular. */}
@@ -182,11 +191,11 @@ export function OutputPane() {
             showing. */}
         {shownTerm ? (
           <>
-            <span className="wa-o-narrow flex items-center rounded-sm border border-adaptive-200 font-mono text-[11px] text-adaptive-500">
+            <span className="wa-o-narrow flex h-[26px] items-center rounded-sm border border-adaptive-200 font-mono text-[11px] text-adaptive-500">
               <button
                 type="button"
                 aria-label="Smaller terminal text"
-                className="px-1.5 hover:text-adaptive-900"
+                className="h-full px-1.5 hover:text-adaptive-900"
                 onClick={() => useUiStore.getState().setTermFontSize(termFontSize - 1)}
               >
                 −
@@ -194,7 +203,7 @@ export function OutputPane() {
               <button
                 type="button"
                 aria-label="Larger terminal text"
-                className="px-1.5 hover:text-adaptive-900"
+                className="h-full px-1.5 hover:text-adaptive-900"
                 onClick={() => useUiStore.getState().setTermFontSize(termFontSize + 1)}
               >
                 +

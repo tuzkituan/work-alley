@@ -40,7 +40,10 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
 
   return (
     <div className="relative flex-none">
-      <div className="flex h-[52px] items-center gap-3.5 border-b border-adaptive-200 bg-adaptive-100 px-4">
+      <div
+      data-slot="top-bar"
+      className="flex h-[52px] items-center gap-3.5 border-b border-adaptive-200 bg-adaptive-100 px-4"
+    >
         {/* The bar doubles as the title bar. The drag attribute goes on the inert
             areas only — putting it on the whole bar would swallow button clicks. */}
         <div data-tauri-drag-region className="flex items-center gap-2">

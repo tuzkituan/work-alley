@@ -17,7 +17,7 @@ import { api } from '@/ipc/commands'
 import { keys } from '@/queries/keys'
 import { useRunAction } from '@/hooks/use-action'
 import { useRescanRepo } from '@/hooks/use-rescan-repo'
-import { taskOf } from '@/domain/severity'
+import { choresByGroup, runTarget, taskOf } from '@/domain/severity'
 import { repoId, type RepoRef, type RepoStatus } from '@/domain/types'
 import { useUiStore } from '@/stores/ui-store'
 
@@ -36,15 +36,19 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
   const { data: boot } = useQuery({ queryKey: keys.bootstrap, enabled: false })
   const editors = (boot as { editors?: { id: string; label: string }[] } | undefined)?.editors ?? []
 
-  const dev = taskOf(status, 'dev')
+  const target = runTarget(status)
+  const dev = target.server
   const sb = taskOf(status, 'storybook')
   const port = dev?.port ?? status?.devPort ?? null
   const url = dev?.url ?? (port ? `http://localhost:${port}` : null)
   const devUp = dev?.state === 'up'
   // Only offered where package.json actually declares the script — that is every
-  // ui/ library here, and nothing else.
-  const hasStorybook = status?.availableTasks.includes('storybook') ?? false
+  // ui/ library here, and nothing else. Suppressed when Storybook *is* the primary
+  // task, since then the main Run button already covers it.
+  const hasStorybook =
+    (status?.availableTasks.includes('storybook') ?? false) && target.id !== 'storybook'
   const scripts = status?.availableScripts ?? []
+  const choreGroups = choresByGroup(status)
   const dirty = (status?.dirtyCount ?? 0) + (status?.untrackedCount ?? 0)
   // Only to label the Push item with a count; the real preflight happens in Rust.
   const ahead = status?.sync.kind === 'diverged' ? status.sync.ahead : 0
@@ -189,6 +193,44 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
                 ))}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
+          </>
+        )}
+
+        {/* The ecosystem's own commands — `flutter pub get`, `./gradlew clean`,
+            `cargo clippy`. One submenu per group rather than one flat list: a React
+            Native repo offers four groups at once, and 40 items in a single scroller
+            is not a menu you can find anything in. */}
+        {choreGroups.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
+              Commands
+            </DropdownMenuLabel>
+            {choreGroups.map(([group, items]) => (
+              <DropdownMenuSub key={group}>
+                <DropdownMenuSubTrigger>{group}</DropdownMenuSubTrigger>
+                <DropdownMenuSubContent className="max-h-80 w-64 overflow-y-auto">
+                  {items.map((c) => (
+                    <DropdownMenuItem
+                      key={c.id}
+                      onClick={() => run({ kind: 'runChore', ref: repo, chore: c.id })}
+                      title={
+                        c.destructive
+                          ? 'Deletes build output or rewrites files — asks first'
+                          : c.label
+                      }
+                    >
+                      <span className="font-mono text-[11.5px]">{c.label}</span>
+                      {/* The confirm is enforced in Rust; this is only so you can
+                          see which items will ask before you click one. */}
+                      {c.destructive && (
+                        <span className="ml-auto pl-2 text-[10px] text-sev-warn">!</span>
+                      )}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuSubContent>
+              </DropdownMenuSub>
+            ))}
           </>
         )}
 

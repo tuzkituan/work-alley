@@ -78,7 +78,12 @@ export function TabStrip({
         ))}
 
         {runTabs.length === 0 && termTabs.length === 0 && (
-          <span className="font-mono text-[10.5px] text-adaptive-400">nothing here yet</span>
+          // The same 22px box a Chip and the + button occupy. As bare text its line
+          // box was 6px shorter than the + beside it, and since the + is what sets
+          // the strip's height the text sat above centre.
+          <span className="flex h-[22px] items-center font-mono text-[10.5px] text-adaptive-400">
+            nothing here yet
+          </span>
         )}
       </div>
 
@@ -90,7 +95,10 @@ export function TabStrip({
         aria-label={`New terminal in ${scopeLabel}`}
         title={`New terminal in ${scopeLabel}`}
         onClick={onNewTerminal}
-        className="mt-1.5 mr-2.5 flex size-[22px] flex-none items-center justify-center rounded-full border border-adaptive-200 text-adaptive-400 hover:border-adaptive-400 hover:text-adaptive-900"
+        // `mb` as well as `mt`, matching the scroller's `py-1.5` beside it. The
+        // parent is `items-start`, so with a top margin alone the button sat flush
+        // against the bottom border whenever the tab area was a single row.
+        className="mt-1.5 mr-2.5 mb-1.5 flex size-[22px] flex-none items-center justify-center rounded-full border border-adaptive-200 text-adaptive-400 hover:border-adaptive-400 hover:text-adaptive-900"
       >
         <Plus className="size-3" />
       </button>

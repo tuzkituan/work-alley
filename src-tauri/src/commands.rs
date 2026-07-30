@@ -981,8 +981,10 @@ async fn register_dev(
         .port_overrides
         .get(&tkey)
         .map(|p| (Some(*p), Some(PortSource::ConfigOverride)))
-        .unwrap_or_else(|| match crate::pkg::task_port(&path, &task) {
-            Some((p, s)) => (Some(p), Some(s)),
+        // Whatever `runner` derived for this task, carrying its own source — the
+        // authoritative port still arrives later by sniffing the output.
+        .unwrap_or_else(|| match crate::runner::find(&path, &task).and_then(|t| t.port) {
+            Some((p, source)) => (Some(p), Some(source)),
             None => (None, None),
         });
 
@@ -1971,6 +1973,63 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
+        ActionSpec::RunChore { repo, chore } => {
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+            let key = repo.key();
+
+            // Same gate as RunScript and DevStart: the id must name a recipe this
+            // repo's own files produced, so a caller cannot compose a command.
+            let spec = crate::chores::find(&cwd, &chore)
+                .ok_or_else(|| AppError::Invalid(format!("{key} has no \"{chore}\" command")))?;
+
+            let argv = crate::runner::resolve(&cwd, &spec.via, &tc)?;
+
+            // A subdirectory from the recipe, not from the caller — `pod install`
+            // only works in ios/ and a Gradle task only in android/. Checked rather
+            // than assumed, because a repo can lose the directory a stale scan saw.
+            let cwd = match &spec.cwd {
+                Some(sub) => {
+                    let dir = cwd.join(sub);
+                    if !dir.is_dir() {
+                        return Err(AppError::Invalid(format!("{key} has no {sub}/ directory")));
+                    }
+                    dir
+                }
+                None => cwd,
+            };
+
+            Ok(Built {
+                kind: "runChore".into(),
+                title: format!("{} — {key}", spec.label),
+                description: match &spec.cwd {
+                    Some(sub) => format!("Runs in {sub}/."),
+                    None => format!("Runs in {key}."),
+                },
+                argv,
+                cwd,
+                env: vec![],
+                // Medium for anything that deletes build output or rewrites files in
+                // place, so it gets a confirm rather than firing on one click.
+                danger: if spec.destructive {
+                    Danger::Medium
+                } else {
+                    Danger::Low
+                },
+                warnings: if spec.destructive {
+                    vec!["This deletes build output or rewrites files in the working tree.".into()]
+                } else {
+                    vec![]
+                },
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
         ActionSpec::CloneUrls { root: target, urls } => {
             let git = tc.require("git")?;
             let target = PathBuf::from(&target);
@@ -2214,21 +2273,33 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
         }
 
         ActionSpec::DevStart { repo, task } => {
-            let task = task.unwrap_or_else(|| "dev".to_string());
             let cwd = crate::paths::resolve_repo(&root, &repo)?;
             let key = repo.key();
+
+            // The gate on `task` is unchanged in kind — it must name one of the
+            // recipes `runner` derived from this repo — only the set is wider than
+            // "scripts in package.json". A caller still cannot invent an argv.
+            let available = crate::runner::run_tasks(&cwd);
+            let spec = match &task {
+                Some(id) => available
+                    .iter()
+                    .find(|t| &t.id == id)
+                    .ok_or_else(|| AppError::Invalid(format!("{key} has no \"{id}\" task")))?,
+                // No task named: whatever this repo's own files say it runs. This
+                // is what used to be a hardcoded "dev", and it failed outright for
+                // every repo that spells its dev server anything else.
+                None => available.first().ok_or_else(|| {
+                    AppError::Invalid(format!(
+                        "nothing to run in {key} — no dev/start/serve script, and no \
+                         Cargo/Go/Python/compose entry point"
+                    ))
+                })?,
+            };
+            let task = spec.id.clone();
             let tkey = crate::state::task_key(&key, &task);
 
             if state.dev.lock().unwrap().contains_key(&tkey) {
                 return Err(AppError::DevAlreadyRunning(tkey));
-            }
-            // The only gate on `task`: it must be one of the long-running scripts
-            // this repo actually declares. A closed set derived from the repo, so
-            // no caller can name an arbitrary script here.
-            if !crate::pkg::available_tasks(&cwd).contains(&task) {
-                return Err(AppError::Invalid(format!(
-                    "{key} has no \"{task}\" script in package.json"
-                )));
             }
 
             let argv = match cfg.dev_command_overrides.get(&tkey) {
@@ -2240,21 +2311,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                     }
                     argv
                 }
-                _ => {
-                    // The fallback only applies when the repo states no preference
-                    // at all — no `packageManager` field and no lockfile.
-                    let fallback = tc.preferred_package_manager().unwrap_or("npm");
-                    let (tool, args) = crate::pkg::task_command(&cwd, &task, fallback)
-                        .ok_or_else(|| {
-                            AppError::Invalid(format!(
-                                "{key} has no package.json — nothing to run"
-                            ))
-                        })?;
-                    let bin = tc.require(&tool)?;
-                    let mut argv = vec![bin.display().to_string()];
-                    argv.extend(args);
-                    argv
-                }
+                _ => crate::runner::argv(&cwd, spec, &tc)?,
             };
 
             let mut warnings = Vec::new();
@@ -2262,7 +2319,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 .port_overrides
                 .get(&tkey)
                 .copied()
-                .or_else(|| crate::pkg::task_port(&cwd, &task).map(|(p, _)| p));
+                .or(spec.port.map(|(p, _)| p));
             if let Some(p) = port {
                 if procs::port_in_use(p).await {
                     warnings.push(format!(
@@ -2276,11 +2333,9 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
 
             Ok(Built {
                 kind: "devStart".into(),
-                title: if task == "storybook" {
-                    format!("Start Storybook — {key}")
-                } else {
-                    format!("Start dev — {key}")
-                },
+                // The label, so the confirm reads "Start cargo run — svc/api"
+                // rather than calling every runner "dev".
+                title: format!("Start {} — {key}", spec.label),
                 description: port
                     .map(|p| format!("Expected on http://localhost:{p}"))
                     .unwrap_or_else(|| "Port will be detected from the output.".into()),
@@ -2300,19 +2355,37 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
         }
 
         ActionSpec::DevStop { repo, task } => {
-            let task = task.unwrap_or_else(|| "dev".to_string());
             let key = repo.key();
+            // No task named: stop whatever is up. Defaulting to "dev" meant asking
+            // to stop a server the repo may never have had — for a repo running
+            // only `start`, Stop could not reach its own process.
+            let task = match task {
+                Some(t) => t,
+                None => {
+                    let mut running: Vec<String> = state
+                        .dev_servers()
+                        .into_iter()
+                        .filter(|s| s.repo.key() == key)
+                        .map(|s| s.task)
+                        .collect();
+                    if running.len() != 1 {
+                        // Ambiguous on purpose: a library with dev and storybook
+                        // both up has to say which, not have one guessed for it.
+                        return Err(AppError::DevNotRunning(key.clone()));
+                    }
+                    running.remove(0)
+                }
+            };
             let tkey = crate::state::task_key(&key, &task);
             let server = state
                 .dev_server_for(&tkey)
                 .ok_or_else(|| AppError::DevNotRunning(tkey.clone()))?;
+            let label = crate::runner::find(&crate::paths::repo_path(&root, &repo), &task)
+                .map(|t| t.label)
+                .unwrap_or_else(|| task.clone());
             Ok(Built {
                 kind: "devStop".into(),
-                title: if task == "storybook" {
-                    format!("Stop Storybook — {key}")
-                } else {
-                    format!("Stop dev — {key}")
-                },
+                title: format!("Stop {label} — {key}"),
                 description: server
                     .port
                     .map(|p| format!("Frees port {p}."))

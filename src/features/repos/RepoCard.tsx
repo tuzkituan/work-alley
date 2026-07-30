@@ -4,7 +4,7 @@ import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { KindTag, MonoChip, StatePill, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
-import { derive, taskOf, TONE_TEXT, type Tone } from '@/domain/severity'
+import { derive, runState, runTarget, TONE_TEXT, type Tone } from '@/domain/severity'
 import { repoId, type RepoRef } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
@@ -37,9 +37,10 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
   if (!status) return <RepoCardSkeleton repo={repo} />
 
   const d = derive(status, trackedLatest)
-  const dev = taskOf(status, 'dev')
-  const sb = taskOf(status, 'storybook')
-  const devUp = dev?.state === 'up' || dev?.state === 'starting'
+  // This repo's own way of running, not a hardcoded `dev` script.
+  const target = runTarget(status)
+  const state = runState(status)
+  const running = status.tasks
 
   return (
     <div
@@ -49,7 +50,12 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
       style={{ minHeight: CARD_HEIGHT }}
       className={cn(
         'flex h-full cursor-default flex-col gap-2.5 rounded-lg border bg-card p-3 transition-opacity duration-[120ms]',
-        active ? 'border-primary-600' : 'border-adaptive-200'
+        active ? 'border-primary-600' : 'border-adaptive-200',
+        // Same run-state tint the list rows carry, so switching view does not
+        // change which cards read as needing attention.
+        state === 'crashed' && 'bg-sev-err/15',
+        state === 'up' && 'bg-sev-ok/10',
+        (state === 'starting' || state === 'stopping') && 'bg-sev-warn/10'
       )}
     >
       <div className="flex items-start gap-2">
@@ -74,7 +80,11 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
                 {repo.name} — open details
               </TooltipContent>
             </Tooltip>
-            <KindTag kind={status.shape.kind} stack={status.shape.stack} />
+            <KindTag
+              kind={status.shape.kind}
+              language={status.shape.language}
+              stack={status.shape.stack}
+            />
             <MonoChip>{repo.category}</MonoChip>
           </div>
 
@@ -125,23 +135,15 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
             }
           />
         )}
+        {/* Labelled by what is actually up: a repo can be running `cargo` or a
+            compose stack, and "Dev" was only ever right for a node script. */}
         <Stat
-          label={sb ? 'Dev · SB' : 'Dev'}
+          label={running.length > 1 ? 'Running' : (running[0]?.task ?? 'Run')}
           value={
-            [
-              dev ? (dev.port ? `:${dev.port}` : dev.state) : null,
-              sb ? (sb.port ? `sb:${sb.port}` : 'sb') : null,
-            ]
-              .filter(Boolean)
-              .join(' ') || 'stopped'
+            running.map((t) => (t.port ? `:${t.port}` : t.state)).join(' ') ||
+            'stopped'
           }
-          tone={
-            dev?.state === 'crashed' || sb?.state === 'crashed'
-              ? 'err'
-              : dev || sb
-                ? 'ok'
-                : 'idle'
-          }
+          tone={state === 'crashed' ? 'err' : state ? 'ok' : 'idle'}
         />
       </div>
 
@@ -173,12 +175,17 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
           Branch…
         </Button>
         <Button
-          variant={devUp ? 'waDanger' : 'waOutline'}
+          variant={target.up ? 'waDanger' : 'waOutline'}
           size="waSm"
           className="shrink-0"
-          onClick={() => run({ kind: devUp ? 'devStop' : 'devStart', ref: repo, task: 'dev' })}
+          disabled={!target.id}
+          title={!target.id ? 'Nothing to run in this repo' : undefined}
+          onClick={() => {
+            if (!target.id) return
+            run({ kind: target.up ? 'devStop' : 'devStart', ref: repo, task: target.id })
+          }}
         >
-          {devUp ? 'Stop dev' : 'Start dev'}
+          {target.up ? `Stop ${target.label}` : `Start ${target.label}`}
         </Button>
 
         <span

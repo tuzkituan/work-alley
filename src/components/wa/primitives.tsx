@@ -222,6 +222,9 @@ const KIND_STYLE: Record<string, string> = {
   mobile: 'border-amber-500/[0.38] bg-amber-500/[0.12] text-sev-warn',
   docs: 'border-adaptive-300 bg-adaptive-200/60 text-adaptive-500',
   unknown: 'border-adaptive-300 bg-adaptive-200/40 text-adaptive-400',
+  // A language tag is a different fact from a kind tag, so it reads differently —
+  // legible, but not competing with FE/BE for attention.
+  language: 'border-assist-500/25 bg-assist-500/[0.08] text-adaptive-600',
 }
 
 const KIND_LABEL: Record<string, string> = {
@@ -234,22 +237,118 @@ const KIND_LABEL: Record<string, string> = {
 }
 
 /**
- * The detected repo kind, as a compact tag.
+ * Short codes for the languages `detect` reports.
  *
- * Short by design: it appears on every row, so it has to cost almost no width.
- * The full kind and stack are in the title attribute.
+ * Only the ones that need shortening are listed — anything else falls back to the
+ * first three characters, which is right for CSS, HTML, LUA and QML and harmless
+ * for the long tail.
+ */
+const LANG_LABEL: Record<string, string> = {
+  TypeScript: 'TS',
+  JavaScript: 'JS',
+  Python: 'PY',
+  Ruby: 'RB',
+  Rust: 'RS',
+  Kotlin: 'KT',
+  Swift: 'SWIFT',
+  Shell: 'SH',
+  Elixir: 'EX',
+  Haskell: 'HS',
+  Scala: 'SCALA',
+  Perl: 'PL',
+  PowerShell: 'PS',
+  Markdown: 'MD',
+  'Objective-C': 'OBJC',
+  'Objective-C++': 'OBJC',
+  'Vim script': 'VIM',
+}
+
+function langLabel(language: string): string {
+  return LANG_LABEL[language] ?? language.slice(0, 3).toUpperCase()
+}
+
+/**
+ * Frameworks, most identifying first, mapped to their tag text.
+ *
+ * Order is the whole point: a repo's stack holds several true things at once, and
+ * only the most specific is worth the width. `next` wins over `react`, which wins
+ * over `vite` — all three are present in a Next app, and "NEXT" is the one that
+ * tells you what you are looking at.
+ *
+ * Deliberately not here: `storybook` (an addon every UI library has, not its
+ * identity) and `cmake` (a build system — the language says more).
+ */
+const FRAMEWORK_LABEL: [string, string][] = [
+  ['next', 'NEXT'],
+  ['nuxt', 'NUXT'],
+  ['angular', 'NG'],
+  ['react-native', 'RN'],
+  ['expo', 'EXPO'],
+  ['flutter', 'FLUTTER'],
+  ['svelte', 'SVELTE'],
+  ['vue', 'VUE'],
+  ['nestjs', 'NEST'],
+  ['fastify', 'FASTIFY'],
+  ['express', 'EXPRESS'],
+  ['react', 'REACT'],
+  ['vite', 'VITE'],
+  ['qt', 'QT'],
+  ['dotnet', '.NET'],
+]
+
+/**
+ * What the tag says, most specific answer first.
+ *
+ * Framework, else language, else the kind. The kind alone was all this used to
+ * show, which meant every mobile repo read "APP" whether it was Flutter or Kotlin,
+ * every frontend read "FE" whether it was React or Angular, and everything outside
+ * the JS ecosystem read "?".
+ *
+ * Generic language-ish stack entries (`rust`, `java`, `python`) are not consulted:
+ * the detected language already covers them and is more precise — `build.gradle`
+ * puts `java` in the stack for a codebase that is actually Kotlin.
+ */
+function tagLabel(kind: string, language?: string | null, stack?: string[]): string | null {
+  if (stack?.length) {
+    const hit = FRAMEWORK_LABEL.find(([id]) => stack.includes(id))
+    if (hit) return hit[1]
+  }
+  if (language) return langLabel(language)
+  return KIND_LABEL[kind] ?? null
+}
+
+/**
+ * What the repo is, as a compact tag.
+ *
+ * Short by design: it appears on every row, so it has to cost almost no width. The
+ * kind, language and full stack are all in the title attribute.
+ *
+ * Colour still comes from the *kind*, so the column reads as frontend / backend /
+ * mobile at a glance while the text names the actual framework.
  */
 export function KindTag({
   kind,
+  language,
   stack,
   className,
 }: {
   kind: string
+  language?: string | null
   stack?: string[]
   className?: string
 }) {
-  if (kind === 'unknown' && !stack?.length) return null
-  const detail = stack?.length ? `${kind} · ${stack.join(', ')}` : kind
+  const label = tagLabel(kind, language, stack)
+  if (!label || label === '?') return null
+
+  // An unknown kind has no colour to lend, so a tag that got its text from the
+  // language or the stack takes the neutral style rather than the faint one meant
+  // for "we could not tell".
+  const style = kind === 'unknown' ? KIND_STYLE.language : (KIND_STYLE[kind] ?? KIND_STYLE.unknown)
+
+  const detail = [kind, language, stack?.length ? stack.join(', ') : null]
+    .filter(Boolean)
+    .join(' · ')
+
   return (
     <span
       title={`Detected: ${detail}`}
@@ -257,11 +356,11 @@ export function KindTag({
       data-kind={kind}
       className={cn(
         'flex-none rounded-sm border px-1 font-mono text-[9.5px] leading-[14px] font-semibold',
-        KIND_STYLE[kind] ?? KIND_STYLE.unknown,
+        style,
         className
       )}
     >
-      {KIND_LABEL[kind] ?? '?'}
+      {label}
     </span>
   )
 }

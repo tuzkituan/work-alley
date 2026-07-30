@@ -69,6 +69,12 @@ export type RepoKind = 'frontend' | 'backend' | 'library' | 'mobile' | 'docs' | 
 /** What a repo appears to be, from its files. Detected, never configured. */
 export interface RepoShape {
   kind: RepoKind
+  /**
+   * Display name of the language this repo is mostly written in — "TypeScript",
+   * "C++", "Rust". Null when there is no code to judge by. Also the axis the list
+   * groups on when a folder holds more than one.
+   */
+  language: string | null
   /** Frameworks and languages found, e.g. ["vite", "react", "storybook"]. */
   stack: string[]
   hasDockerfile: boolean
@@ -92,10 +98,19 @@ export interface RepoStatus {
   devPort: number | null
   /** What this repo appears to be. */
   shape: RepoShape
-  /** Tasks this repo declares — "dev", "storybook". */
+  /** Long-running scripts this repo declares — "dev", "storybook". */
   availableTasks: string[]
+  /** Every way this repo can be run, best first. Empty => nothing here runs. */
+  runnable: RunnableTask[]
+  /** `runnable`'s first entry — what a Run button starts. Null disables it. */
+  primaryTask: string | null
   /** One-shot scripts this repo declares — "build", "lint", "format". */
   availableScripts: string[]
+  /**
+   * One-shot commands this repo's *ecosystems* offer — `flutter pub get`,
+   * `cargo clippy`, `./gradlew clean`. The non-JS counterpart of availableScripts.
+   */
+  chores: ChoreInfo[]
   /** Tasks currently running. A UI library often has dev and storybook both up. */
   tasks: DevServer[]
   /** Set => the rest is best-effort. A scan never fails wholesale. */
@@ -175,10 +190,32 @@ export type PortSource =
   | 'viteConfigDefault'
   | 'configOverride'
   | 'detectedFromOutput'
+  /** The convention for this kind of task — Django's 8000, Storybook's 6006. */
+  | 'taskDefault'
+
+/** One one-shot command a repo's ecosystem offers. */
+export interface ChoreInfo {
+  /** What a `runChore` action passes back. */
+  id: string
+  /** The command as you would type it — "flutter pub get", "./gradlew clean". */
+  label: string
+  /** Submenu heading: "Flutter", "Gradle", "Django". */
+  group: string
+  /** Deletes build output or rewrites files, so it is confirmed first. */
+  destructive: boolean
+}
+
+export interface RunnableTask {
+  /** What a `devStart` action passes back as `task`. */
+  id: string
+  /** Goes after "Start" / "Stop": "dev", "cargo run", "runserver". */
+  label: string
+  port: number | null
+}
 
 export interface DevServer {
   ref: RepoRef
-  /** "dev" or "storybook". */
+  /** A `RunnableTask.id` — "dev", "storybook", "cargo", "django". */
   task: string
   runId: string
   pid: number
@@ -271,6 +308,13 @@ export interface Config {
   devCommandOverrides: Record<string, string[]>
   portOverrides: Record<string, number>
   maxLogLinesPerRun: number
+  /**
+   * Minutes between background fetches; 0 turns it off.
+   *
+   * Every sync number is computed from local refs, so without this a workspace left
+   * open reports "in sync" with growing confidence and shrinking accuracy.
+   */
+  autoFetchMinutes: number
 }
 
 /**
@@ -596,6 +640,8 @@ export type ActionSpec =
   | { kind: 'script'; script: string; args: string[] }
   /** One of the repo's own package.json scripts. Validated against availableScripts. */
   | { kind: 'runScript'; ref: RepoRef; script: string }
+  /** One of the repo's ecosystem commands. Validated against chores. */
+  | { kind: 'runChore'; ref: RepoRef; chore: string }
   | { kind: 'push'; ref: RepoRef; force?: boolean }
   /**
    * The one action carrying free text. Safe because Rust passes argv straight to

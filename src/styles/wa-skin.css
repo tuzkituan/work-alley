@@ -38,22 +38,31 @@
 
 /* ═══════════════════════════════════════════════════════════ tokens: light ══ */
 html[data-skin='metro']:not(.dark) {
-  /* Three flat greys, not one. A white tile on a white canvas separated only by a
-     hairline is what made the first pass read as "classic with the corners filed
-     off" — Metro has no shadows, so the *fill* has to do the separating. Hex
-     rather than oklch because --wa-surface is also handed to xterm, whose colour
-     parser does not understand oklch. */
-  --wa-canvas: #f2f3f5; /* the page behind everything */
+  /* White, throughout. An earlier pass here used three stacked greys — canvas,
+     tile, chrome — on the theory that a skin with no shadows needs *fill* to
+     separate its surfaces. In practice that read as washed-out: five greys within
+     a few percent of each other, none of them clearly a surface and none clearly a
+     divider.
+     Lines do the separating instead, which is what the skin's own philosophy says
+     up top ("this skin makes borders *more* visible, not less") and what Windows 8
+     Explorer actually looked like — a white field with hairline rules.
+     Hex rather than oklch because --wa-surface is also handed to xterm, whose
+     colour parser does not understand oklch. */
+  --wa-canvas: #ffffff; /* the page behind everything */
   --wa-surface: #ffffff; /* tiles: panels, tables, cards */
-  --wa-chrome: #e8eaed; /* app bar, rail, docks — furniture sits *under* content */
-  --wa-line: #d3d6db;
+  --wa-chrome: #ffffff; /* app bar, rail, docks */
+  /* Carries all the separation now, so it is a touch stronger than the fills it
+     replaced were different from each other. */
+  --wa-line: #d8dbe0;
   --wa-line-strong: #a6a6a6;
 
   --background: var(--wa-canvas);
   --card: var(--wa-surface);
   --popover: var(--wa-surface);
-  --muted: var(--wa-chrome);
-  --secondary: var(--wa-chrome);
+  /* Not --wa-chrome any more. With chrome at white these have to keep a fill of
+     their own, or a muted panel becomes indistinguishable from the page. */
+  --muted: #f2f3f5;
+  --secondary: #f2f3f5;
   --accent: #e6e6e6; /* hover fill: flat grey, no tint */
   --border: var(--wa-line);
   --input: var(--wa-line-strong);
@@ -70,9 +79,13 @@ html[data-skin='metro']:not(.dark) {
   --radius: 0px;
 
   /* The adaptive ramp becomes plain flat greys — no near-surface trickery is
-     needed here, because Metro *wants* its dividers visible. */
-  --adaptive-50: #eef0f3;
-  --adaptive-100: var(--wa-chrome);
+     needed here, because Metro *wants* its dividers visible.
+     50 and 100 are deliberately *not* --wa-chrome now. They are the state greys —
+     row hover, selected row, table header — and the whole point of a white chrome
+     is that a hovered row still has somewhere to go. Tying them together is what
+     made every surface in the window the same value. */
+  --adaptive-50: #f7f8fa;
+  --adaptive-100: #eceef1;
   --adaptive-200: var(--wa-line);
   --adaptive-300: var(--wa-line-strong);
   --adaptive-400: #767676; /* Windows 8's disabled-text grey, 4.5:1 on white */
@@ -263,6 +276,22 @@ html[data-skin='metro'] :is([data-slot='dialog-overlay'], [data-slot='alert-dial
 
 /* Chrome — rails, docks, app bars — is the furniture grey, flat against the
    content. */
+/* The app's own furniture — title bar, folder rail, output pane.
+ *
+ * These carry `bg-adaptive-100` / `bg-adaptive-50` in their components, which is
+ * also the row-hover and table-header grey, so before they had a slot of their own
+ * the two could not be given different values. Painting them from --wa-chrome is
+ * what lets light mode be white while dark mode keeps furniture a shade above its
+ * black canvas. */
+html[data-skin='metro'] :is(
+    [data-slot='chrome-bar'],
+    [data-slot='top-bar'],
+    [data-slot='rail'],
+    [data-slot='output-pane']
+  ) {
+  background-color: var(--wa-chrome);
+}
+
 html[data-skin='metro'] [data-slot='terminal-dock'] {
   background-color: var(--wa-chrome);
   border-top-color: var(--wa-line);
@@ -552,12 +581,15 @@ html[data-skin='metro'] :is([data-slot='keycap'], [data-slot='mono-chip']) {
   box-shadow: none;
 }
 
+/* The state grey, not the chrome one: chrome is white in light mode, and a white
+   skeleton on a white card is an invisible loading state. In dark the two values
+   are the same, so nothing changes there. */
 html[data-skin='metro'] [data-slot='skeleton'] {
-  background-color: var(--wa-chrome);
+  background-color: var(--adaptive-100);
   box-shadow: none;
 }
 html[data-skin='metro'] [data-slot='progress'] {
-  background-color: var(--wa-chrome);
+  background-color: var(--adaptive-100);
   box-shadow: none;
 }
 html[data-skin='metro'] :is([data-slot='separator'], [data-slot='dropdown-menu-separator']) {

@@ -57,11 +57,11 @@ export function MachineTerminalDock() {
           {statusLabel(shown)}
         </span>
         <div className="flex-1" />
-        <span className="flex items-center rounded-sm border border-adaptive-200 font-mono text-[11px] text-adaptive-500">
+        <span className="flex h-[26px] items-center rounded-sm border border-adaptive-200 font-mono text-[11px] text-adaptive-500">
           <button
             type="button"
             aria-label="Smaller terminal text"
-            className="px-1.5 hover:text-adaptive-900"
+            className="h-full px-1.5 hover:text-adaptive-900"
             onClick={() => useUiStore.getState().setTermFontSize(termFontSize - 1)}
           >
             −
@@ -69,7 +69,7 @@ export function MachineTerminalDock() {
           <button
             type="button"
             aria-label="Larger terminal text"
-            className="px-1.5 hover:text-adaptive-900"
+            className="h-full px-1.5 hover:text-adaptive-900"
             onClick={() => useUiStore.getState().setTermFontSize(termFontSize + 1)}
           >
             +

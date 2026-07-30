@@ -41,6 +41,26 @@ export type Page = 'repos' | 'toolbox' | 'setup'
 export const DETAIL_TABS = ['changes', 'commits', 'branches', 'prs', 'runs'] as const
 export type DetailTab = (typeof DETAIL_TABS)[number]
 
+/**
+ * State that belongs to whichever folder is open, and so must not survive a switch
+ * to a different one.
+ *
+ * Shared by both category actions rather than written out twice, because that is
+ * exactly how this broke: the rail moved from `toggleCategory` to `setCategory`, and
+ * only the former cleared the detail page. Clicking a folder while a repo was open
+ * changed `expandedCategory` under a centre panel that `RepoGrid` still short-
+ * circuits to the detail view — so the click appeared to do nothing at all.
+ */
+const FOLDER_SCOPED = {
+  activeRepoId: null,
+  detailRepoId: null,
+  // Paired with `activeRepoId` everywhere else — see `setActiveRepo` — so clearing
+  // one without the other would leave the pane scoped to a repo in the folder you
+  // just left, with no tab selected to say so.
+  outputScope: null,
+  filterChip: null,
+} as const
+
 interface UiState {
   /** An explicit choice. The app does not follow the OS theme. */
   theme: ThemeMode
@@ -198,18 +218,20 @@ export const useUiStore = create<UiState>()(
       toggleCategory: (category) =>
         set((s) => ({
           expandedCategory: s.expandedCategory === category ? null : category,
-          // Selection, detail page and filters belong to the folder that was open.
-          activeRepoId: null,
-          detailRepoId: null,
-          filterChip: null,
+          ...FOLDER_SCOPED,
         })),
 
-      setCategory: (expandedCategory) => set({ expandedCategory, activeRepoId: null }),
+      setCategory: (expandedCategory) => set({ expandedCategory, ...FOLDER_SCOPED }),
       // Selecting a repo also points the pane at it: the two disagreeing is what made
       // "where did my run go" a question.
       setActiveRepo: (activeRepoId) => set({ activeRepoId, outputScope: activeRepoId }),
       // Opening a detail page also selects the repo, so the output pane follows.
-      openDetail: (id) => set({ detailRepoId: id, activeRepoId: id }),
+      //
+      // `outputScope` explicitly: this used to set `activeRepoId` alone and claim the
+      // pane followed, but scope is a separate field and only `setActiveRepo` was
+      // updating it — so opening a repo left the pane on whatever scope it was on,
+      // showing another repo's runs beside this one's detail page.
+      openDetail: (id) => set({ detailRepoId: id, activeRepoId: id, outputScope: id }),
       closeDetail: () => set({ detailRepoId: null }),
       setDetailTab: (detailTab) => set({ detailTab }),
       toggleDetailHeader: () =>

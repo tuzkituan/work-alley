@@ -1,4 +1,6 @@
 mod ansi;
+mod autofetch;
+mod chores;
 mod clone;
 mod commands;
 mod config;
@@ -16,6 +18,7 @@ mod pkg;
 mod procs;
 mod pty;
 mod readiness;
+mod runner;
 mod scripts;
 mod setup;
 mod state;
@@ -203,6 +206,16 @@ pub fn run() {
                 toolchain::Toolchain::default(),
             ));
             app.manage(state.clone());
+
+            // Keeps ahead/behind honest without anyone pressing Fetch. Spawned
+            // before the toolchain probe finishes on purpose — it waits out its own
+            // startup delay and re-reads the config every cycle, so there is nothing
+            // to sequence it after.
+            {
+                let handle = app.handle().clone();
+                let state = state.clone();
+                tauri::async_runtime::spawn(autofetch::run(handle, state));
+            }
 
             let handle = app.handle().clone();
             tauri::async_runtime::spawn(async move {

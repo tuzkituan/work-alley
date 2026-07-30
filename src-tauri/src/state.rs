@@ -240,6 +240,21 @@ impl AppState {
     }
 
     /// Every running task for one repo.
+    /// Whether any run is currently touching this repo.
+    ///
+    /// `targets` rather than `repo`, so a bulk pull counts for every repo it is
+    /// working through — a bulk action leaves `repo` unset, which is exactly the case
+    /// a background task must not step on. Used by auto-fetch: a concurrent `git
+    /// fetch` and `git pull` in one repo contend for the same ref locks, and it is
+    /// the user's pull that must not be the one that fails.
+    pub fn is_repo_busy(&self, repo_key: &str) -> bool {
+        self.runs.lock().unwrap().values().any(|h| {
+            let s = h.summary.lock().unwrap();
+            matches!(s.status, crate::model::RunStatus::Running)
+                && s.targets.iter().any(|t| t.key() == repo_key)
+        })
+    }
+
     pub fn dev_servers_for_repo(&self, repo_key: &str) -> Vec<DevServer> {
         let prefix = format!("{repo_key}#");
         let raw: Vec<DevServer> = {

@@ -384,9 +384,20 @@ pub async fn scan_one(
     }
 
     status.tracked_dep = crate::pkg::read_tracked_dep(&path, tracked_package.as_deref()).await;
-    status.dev_port = crate::pkg::detect_port(&path).map(|(p, _)| p);
     status.available_tasks = crate::pkg::available_tasks(&path);
+
+    // One detection pass, reused three ways — it reads package.json and stats a
+    // dozen paths, so doing it once per scanned repo is the whole budget for it.
+    let runnable = crate::runner::run_tasks(&path);
+    status.primary_task = runnable.first().map(|t| t.id.clone());
+    // The port belongs to whatever this repo actually runs: a Django repo's 8000 is
+    // as much "the dev port" as a vite repo's 5173, and reading only .env and
+    // vite.config left every non-JS card blank.
+    status.dev_port = runnable.first().and_then(|t| t.port).map(|(p, _)| p);
+    status.runnable = runnable.iter().map(|t| t.info()).collect();
+
     status.available_scripts = crate::pkg::available_scripts(&path);
+    status.chores = crate::chores::chores(&path).iter().map(|c| c.info()).collect();
     status.shape = crate::detect::detect(&path);
     status.scan_ms = started.elapsed().as_millis() as u64;
     status

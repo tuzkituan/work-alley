@@ -1,7 +1,8 @@
 import { useEffect, useRef } from 'react'
-import { derive, taskOf } from '@/domain/severity'
-import { repoRefOf, type RepoId } from '@/domain/types'
+import { choresByGroup, derive, runTarget, taskOf } from '@/domain/severity'
+import { repoId, repoRefOf, type RepoId } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
+import { useTerminalStore } from '@/stores/terminal-store'
 import { useTrackedPackage } from '@/hooks/use-tracked-package'
 import { useBusy } from '@/hooks/use-busy'
 import { useRescanRepo } from '@/hooks/use-rescan-repo'
@@ -42,8 +43,32 @@ export function useDetailRepo(id: RepoId) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id, status])
 
+  // Opening a repo shows the terminal you left in it, if there is one.
+  //
+  // The pane resolves what to display in priority order (see `buildTabs`), and a
+  // run outranks a terminal — so a repo with a live shell *and* any earlier run
+  // opened onto the run log, with the shell one click away behind a chip.
+  // Selecting it here is what makes "open the repo I was working in" land on the
+  // work rather than on a finished command's output.
+  useEffect(() => {
+    // Read imperatively rather than by selector: this needs to fire on open, not
+    // on every terminal event, and subscribing here would re-render the header,
+    // the action bar and four panels each time a session printed a line.
+    const { tabs, order, setActive } = useTerminalStore.getState()
+    const own = [...order]
+      .reverse()
+      .map((termId) => tabs.get(termId))
+      .find((t) => t?.status === 'live' && t.ref && repoId(t.ref) === id)
+    // No session here: leave the selection alone. A terminal belonging to another
+    // repo is already filtered out of this pane, so it cannot win anyway.
+    if (own) setActive(own.termId)
+  }, [id])
+
   const d = status ? derive(status, trackedLatest) : null
-  const dev = taskOf(status, 'dev')
+  // What "run this repo" means here — its own script, or the Cargo/Go/Python
+  // entry point its files imply. `dev` keeps its name because the header, the
+  // action bar and the panels all read it as "the main server".
+  const target = runTarget(status)
   const sb = taskOf(status, 'storybook')
 
   return {
@@ -51,13 +76,16 @@ export function useDetailRepo(id: RepoId) {
     repo,
     status,
     d,
-    dev,
+    dev: target.server,
     sb,
-    // 'starting' counts as up: the button has to offer Stop, or a server stuck
-    // starting can never be stopped from here.
-    devUp: dev?.state === 'up' || dev?.state === 'starting',
-    hasStorybook: status?.availableTasks.includes('storybook') ?? false,
+    target,
+    devUp: target.up,
+    // Storybook keeps its own button, but not when it is the only thing this repo
+    // runs — then the primary button already is it.
+    hasStorybook:
+      (status?.availableTasks.includes('storybook') ?? false) && target.id !== 'storybook',
     scripts: status?.availableScripts ?? [],
+    choreGroups: choresByGroup(status),
     dirty: (status?.dirtyCount ?? 0) + (status?.untrackedCount ?? 0),
     ahead: status?.sync.kind === 'diverged' ? status.sync.ahead : 0,
     behind: status?.sync.kind === 'diverged' ? status.sync.behind : 0,

@@ -1,4 +1,4 @@
-import type { DevServer, NeedsYouKind, RepoStatus, SyncState } from './types'
+import type { ChoreInfo, DevServer, NeedsYouKind, RepoStatus, SyncState } from './types'
 
 /**
  * One table drives every colour in the app.
@@ -240,4 +240,67 @@ export function taskOf(status: RepoStatus | undefined, task: string): DevServer 
 
 export function anyTaskRunning(status: RepoStatus | undefined): boolean {
   return (status?.tasks.length ?? 0) > 0
+}
+
+/**
+ * What a Run button acts on for this repo.
+ *
+ * The task id is the repo's own — `bun run dev` for one, `cargo run` or
+ * `manage.py runserver` for the next. Every button used to send the literal
+ * `'dev'`, so a repo that spells its dev server anything else could not be started
+ * at all, and the error blamed a missing `dev` script rather than saying so.
+ *
+ * `id` is null when nothing here runs. That is a real answer for a library or a
+ * docs repo, and callers disable the button rather than sending a guess.
+ */
+export function runTarget(status: RepoStatus | undefined) {
+  const id = status?.primaryTask ?? null
+  const server = id ? taskOf(status, id) : undefined
+  return {
+    id,
+    label: status?.runnable.find((t) => t.id === id)?.label ?? id ?? 'dev',
+    server,
+    // 'starting' counts as up: the button has to offer Stop, or a server stuck
+    // starting can never be stopped from here.
+    up: server?.state === 'up' || server?.state === 'starting',
+  }
+}
+
+/**
+ * The worst state across every task running in this repo, or null when none is.
+ *
+ * Worst rather than first, because a crash is the thing you need to see: a repo
+ * with dev up and storybook dead is a repo that needs attention.
+ */
+export function runState(
+  status: RepoStatus | undefined
+): 'crashed' | 'up' | 'starting' | 'stopping' | null {
+  const states = new Set((status?.tasks ?? []).map((t) => t.state))
+  if (states.has('crashed')) return 'crashed'
+  if (states.has('up')) return 'up'
+  if (states.has('starting')) return 'starting'
+  if (states.has('stopping')) return 'stopping'
+  return null
+}
+
+/**
+ * A repo's ecosystem commands, bucketed by their group heading.
+ *
+ * Order is the backend's — `chores` emits ecosystem by ecosystem — so a React
+ * Native repo reads Packages, React Native, Gradle, CocoaPods rather than in
+ * whatever order a Map happened to hash.
+ */
+export function choresByGroup(status: RepoStatus | undefined): [string, ChoreInfo[]][] {
+  const out = new Map<string, ChoreInfo[]>()
+  for (const c of status?.chores ?? []) {
+    const list = out.get(c.group)
+    if (list) list.push(c)
+    else out.set(c.group, [c])
+  }
+  return [...out.entries()]
+}
+
+/** The run whose log holds the failure, for a "view the error" affordance. */
+export function crashedRunId(status: RepoStatus | undefined): string | null {
+  return (status?.tasks ?? []).find((t) => t.state === 'crashed')?.runId ?? null
 }

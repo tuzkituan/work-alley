@@ -4,11 +4,20 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 /// The tools we resolve once at startup and then only ever invoke by absolute path.
-pub const TOOLS: [&str; 12] = [
+pub const TOOLS: &[&str] = &[
     // pnpm belongs here even though `preferred_package_manager` lists it: without a
     // resolved path, `require("pnpm")` fails for every repo whose lockfile or
     // `packageManager` field asks for it, and no script in it can be run at all.
     "git", "bun", "npm", "pnpm", "yarn", "node", "gh", "docker", "podman", "jq", "ss", "lsof",
+    // The non-JS runners `runner` builds argv for. A repo can be a Rust service or
+    // a Django app, and without these resolved there is no way to start one — the
+    // same reason the package managers are here rather than left to PATH.
+    "cargo", "go", "python3", "python", "flutter", "dart",
+    // The programs `chores` builds one-shot commands from. A repo can be a Gradle
+    // module or a CocoaPods project, and the menu entry has to resolve to a real
+    // path for the same reason every other tool here does.
+    "gradle", "swift", "xcodebuild", "pod", "mvn", "composer", "php", "bundle", "mix", "dotnet",
+    "cmake", "ctest",
 ];
 
 #[derive(Debug, Clone, Default)]
@@ -108,7 +117,7 @@ pub async fn probe() -> Toolchain {
     }
 
     // 2. Whatever we inherited.
-    for t in TOOLS {
+    for &t in TOOLS {
         if !tc.paths.contains_key(t) {
             if let Some(p) = which(t) {
                 tc.paths.insert(t.to_string(), p);
@@ -119,7 +128,7 @@ pub async fn probe() -> Toolchain {
     // 3. Well-known locations. This is the path that survives a desktop launcher
     //    with no shell involvement whatsoever.
     for dir in candidate_dirs() {
-        for t in TOOLS {
+        for &t in TOOLS {
             if tc.paths.contains_key(t) {
                 continue;
             }
@@ -139,11 +148,24 @@ pub async fn probe() -> Toolchain {
 
     tc.path_env = build_path_env(&tc.paths);
 
-    for t in TOOLS {
+    // Concurrently, because this loop is on the startup path and each probe is a
+    // process spawn with a 3s timeout. Serially, the cost was the *sum* of every
+    // slow tool — and `flutter --version` alone can spend seconds rebuilding a
+    // snapshot. Now the whole pass costs about as much as the slowest single tool.
+    let mut probes = Vec::new();
+    for &t in TOOLS {
         if let Some(p) = tc.paths.get(t).cloned() {
-            if let Some(v) = version_of(&p, t, &tc.path_env).await {
-                tc.versions.insert(t.to_string(), v);
-            }
+            let path_env = tc.path_env.clone();
+            probes.push(tokio::spawn(async move {
+                (t, version_of(&p, t, &path_env).await)
+            }));
+        }
+    }
+    for probe in probes {
+        // A panicking probe must not take startup with it; a tool with no version
+        // is already a state every consumer handles.
+        if let Ok((t, Some(v))) = probe.await {
+            tc.versions.insert(t.to_string(), v);
         }
     }
 
@@ -366,9 +388,10 @@ fn is_executable(p: &std::path::Path) -> bool {
 }
 
 async fn version_of(path: &std::path::Path, tool: &str, path_env: &str) -> Option<String> {
-    let _ = tool;
     let mut cmd = tokio::process::Command::new(path);
-    cmd.arg("--version")
+    // `go --version` is not a thing — the go toolchain spells it as a subcommand,
+    // and asking the wrong way reports go as installed-but-versionless.
+    cmd.arg(if tool == "go" { "version" } else { "--version" })
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());

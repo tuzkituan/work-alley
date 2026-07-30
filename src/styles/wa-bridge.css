@@ -273,8 +273,16 @@ body,
     116px;
 }
 
+/* Both selectors, and `.wa-no-tracked` explicitly: `.wa-cols.wa-no-tracked` is
+   two classes to `.wa-cols`' one, and a container query adds no specificity of its
+   own — so the wide 7-track template kept winning here. The row renders only six
+   cells at this width, which left Actions in the second-to-last track and the
+   116px one empty, i.e. the actions group floating ~120px short of the right edge.
+   The templates are identical because the columns this variant drops are the same
+   ones the query already hides. */
 @container (max-width: 900px) {
-  .wa-cols {
+  .wa-cols,
+  .wa-cols.wa-no-tracked {
     grid-template-columns:
       18px
       minmax(160px, 2.6fr)
@@ -294,7 +302,8 @@ body,
    never dropped. 116px is exactly four 26px icon buttons plus their gaps, which
    is why the row actions are icons rather than labels. */
 @container (max-width: 640px) {
-  .wa-cols {
+  .wa-cols,
+  .wa-cols.wa-no-tracked {
     grid-template-columns:
       18px
       minmax(120px, 2.6fr)

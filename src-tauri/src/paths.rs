@@ -81,8 +81,8 @@ fn skippable(name: &str) -> bool {
 ///   - a repo inside a subfolder takes that **subfolder name** as its group, so a
 ///     workspace that already organises its repos keeps that organisation;
 ///   - a repo sitting **directly** in the workspace is grouped by its **detected
-///     kind** (frontend / backend / library / …), because a flat folder has no
-///     organisation to preserve.
+///     kind** (frontend / backend / library / …), or by its **language** when the
+///     kind is unknown, because a flat folder has no organisation to preserve.
 ///
 /// A mixed workspace gets both, which is why this is expressed per-repo rather
 /// than as a mode switch.
@@ -143,7 +143,7 @@ pub fn discover_all(root: &Path) -> Vec<(RepoRef, PathBuf)> {
     flat.sort_by_key(|(n, _)| n.to_lowercase());
     for (name, path) in flat {
         // Detection is a few file checks plus one package.json read.
-        let group = crate::detect::detect(&path).kind.group_name().to_string();
+        let group = crate::detect::detect(&path).group_name();
         out.push((RepoRef { category: group, name }, path));
     }
 
@@ -160,7 +160,7 @@ pub fn discover_all(root: &Path) -> Vec<(RepoRef, PathBuf)> {
             .and_then(|s| s.to_str())
             .unwrap_or("repo")
             .to_string();
-        let group = crate::detect::detect(root).kind.group_name().to_string();
+        let group = crate::detect::detect(root).group_name();
         out.push((RepoRef { category: group, name }, root.to_path_buf()));
     }
 

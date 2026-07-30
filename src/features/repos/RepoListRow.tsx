@@ -1,14 +1,17 @@
 import { memo } from 'react'
-import { ArrowDownToLine, FileText, Play, Square } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
+import { ArrowDownToLine, Code, Play, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { KindTag, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
-import { derive, taskOf, TONE_TEXT } from '@/domain/severity'
+import { crashedRunId, derive, runState, runTarget, TONE_TEXT } from '@/domain/severity'
 import { repoId, type RepoRef } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
+import { useRunStore } from '@/stores/run-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
+import { keys } from '@/queries/keys'
 import { busyLabel, useBusy } from '@/hooks/use-busy'
 import { shortPackageName, useTrackedPackage } from '@/hooks/use-tracked-package'
 import { RepoMenu } from './RepoMenu'
@@ -57,11 +60,18 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
   const openDetail = useUiStore((s) => s.openDetail)
   const busy = useBusy(id)
   const run = useRunAction()
+  const selectRun = useRunStore((s) => s.setActive)
+  // From the bootstrap cache, so this costs nothing per row — the same trick
+  // RepoMenu uses for the same list.
+  const { data: boot } = useQuery({ queryKey: keys.bootstrap, enabled: false })
+  const editors = (boot as { editors?: { id: string; label: string }[] } | undefined)?.editors ?? []
 
   const d = status ? derive(status, trackedLatest) : null
-  const dev = taskOf(status, 'dev')
-  const sb = taskOf(status, 'storybook')
-  const devUp = dev?.state === 'up' || dev?.state === 'starting'
+  // This repo's own way of running — `dev` for one, `cargo run` or `runserver`
+  // for the next. Every row used to send the literal 'dev'.
+  const target = runTarget(status)
+  const state = runState(status)
+  const running = status?.tasks ?? []
   const driftedFromLatest =
     !!status?.trackedDep.resolved && !!trackedLatest && status.trackedDep.resolved !== trackedLatest
 
@@ -71,7 +81,17 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
       className={cn(
         'wa-cols border-b border-adaptive-200 px-3',
         !trackedPackage && 'wa-no-tracked',
-        active ? 'bg-adaptive-100' : 'hover:bg-adaptive-100/60'
+        // Run state colours the whole row. On 43 rows the Dev column is not where
+        // you look to find the one server that died, and a crash is exactly the
+        // thing that should be findable without reading a column.
+        state === 'crashed' && 'bg-sev-err/15 hover:bg-sev-err/25',
+        state === 'up' && 'bg-sev-ok/10 hover:bg-sev-ok/15',
+        (state === 'starting' || state === 'stopping') &&
+          'bg-sev-warn/10 hover:bg-sev-warn/20',
+        !state && (active ? 'bg-adaptive-100' : 'hover:bg-adaptive-100/60'),
+        // Selection has to stay visible on a tinted row, and the tint already owns
+        // the background — so it becomes a left edge instead.
+        active && state && 'shadow-[inset_2px_0_0_0_var(--color-primary-600)]'
       )}
       style={{ height: ROW_HEIGHT }}
     >
@@ -105,7 +125,13 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
         >
           {repo.name}
         </button>
-        {status && <KindTag kind={status.shape.kind} stack={status.shape.stack} />}
+        {status && (
+          <KindTag
+            kind={status.shape.kind}
+            language={status.shape.language}
+            stack={status.shape.stack}
+          />
+        )}
       </div>
 
       {status ? (
@@ -154,21 +180,43 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
           <Skeleton className="wa-col-optional h-3 w-12" />
         ))}
 
-      <span
+      {/* A button whenever there is something to look at, so a crashed server's
+          output is one click from the row that is red because of it. Selecting the
+          repo is what scopes the output pane; picking the run puts the failing one
+          on screen rather than whichever happens to be newest. */}
+      <button
+        type="button"
+        disabled={running.length === 0}
         className={cn(
-          'wa-col-dev wa-col-narrow wa-num truncate font-mono text-[11.5px]',
-          dev?.state === 'crashed' || sb?.state === 'crashed'
+          'wa-col-dev wa-col-narrow wa-num truncate text-left font-mono text-[11.5px]',
+          state === 'crashed'
             ? 'text-sev-err'
-            : dev || sb
+            : state
               ? 'text-sev-ok'
-              : 'text-adaptive-400'
+              : 'text-adaptive-400',
+          running.length > 0 && 'hover:underline'
         )}
-        title={sb ? `storybook on :${sb.port ?? '?'}` : undefined}
+        title={
+          running.length === 0
+            ? 'Nothing running here'
+            : `${running
+                .map(
+                  (t) =>
+                    `${t.task} — ${t.state}${t.port ? ` on :${t.port}` : ''}`
+                )
+                .join('\n')}\n\nClick to view the output`
+        }
+        onClick={(e) => {
+          e.stopPropagation()
+          setActiveRepo(id)
+          const focus = crashedRunId(status) ?? running[0]?.runId
+          if (focus) selectRun(focus)
+        }}
       >
-        {[dev ? (dev.port ? `:${dev.port}` : dev.state) : null, sb ? 'sb' : null]
-          .filter(Boolean)
-          .join(' ') || 'stopped'}
-      </span>
+        {running.length === 0
+          ? 'stopped'
+          : running.map((t) => (t.port ? `:${t.port}` : t.state)).join(' ')}
+      </button>
 
       {/* Icons, not labels: "Pull Status Dev" needed ~200px and the Actions track
           is 124px, so the group used to spill left over the Dev column. Every one
@@ -188,31 +236,49 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
         >
           <ArrowDownToLine className="size-3.5" />
         </Button>
+        {/* Opening the repo in an editor, in the slot "Show git status" used to
+            hold. Status is one of five read-only inspections and already sits in
+            the menu under Inspect, whereas this is the action you reach for on a
+            row and it had no place on one. First editor only — choosing between
+            several stays behind the menu's "Open in". */}
+        {editors[0] && (
+          <Button
+            variant="waOutline"
+            size="waIcon"
+            className="shrink-0"
+            title={`Open in ${editors[0].label}`}
+            aria-label={`Open in ${editors[0].label}`}
+            onClick={(e) => {
+              e.stopPropagation()
+              run({ kind: 'openInEditor', ref: repo, editor: editors[0]!.id })
+            }}
+          >
+            <Code className="size-3.5" />
+          </Button>
+        )}
+        {/* Disabled rather than hidden when nothing here runs: a library and a docs
+            repo legitimately have no dev server, and a button that vanishes per row
+            is harder to read down a list than one that greys out. */}
         <Button
-          variant="waOutline"
+          variant={target.up ? 'waDanger' : 'waOutline'}
           size="waIcon"
           className="shrink-0"
-          title="Show git status"
-          aria-label="Status"
+          disabled={!target.id}
+          title={
+            !target.id
+              ? 'Nothing to run in this repo'
+              : target.up
+                ? `Stop ${target.label}`
+                : `Start ${target.label}`
+          }
+          aria-label={target.up ? `Stop ${target.label}` : `Start ${target.label}`}
           onClick={(e) => {
             e.stopPropagation()
-            run({ kind: 'status', ref: repo })
+            if (!target.id) return
+            run({ kind: target.up ? 'devStop' : 'devStart', ref: repo, task: target.id })
           }}
         >
-          <FileText className="size-3.5" />
-        </Button>
-        <Button
-          variant={devUp ? 'waDanger' : 'waOutline'}
-          size="waIcon"
-          className="shrink-0"
-          title={devUp ? 'Stop the dev server' : 'Start the dev server'}
-          aria-label={devUp ? 'Stop dev server' : 'Start dev server'}
-          onClick={(e) => {
-            e.stopPropagation()
-            run({ kind: devUp ? 'devStop' : 'devStart', ref: repo, task: 'dev' })
-          }}
-        >
-          {devUp ? <Square className="size-3" /> : <Play className="size-3.5" />}
+          {target.up ? <Square className="size-3" /> : <Play className="size-3.5" />}
         </Button>
         <RepoMenu repo={repo} status={status} />
       </div>

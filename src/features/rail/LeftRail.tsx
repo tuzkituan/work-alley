@@ -26,7 +26,13 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
   const groups = boot?.categories ?? []
 
   return (
-    <div className="flex h-full flex-col gap-4 border-r border-adaptive-200 bg-adaptive-100 px-2.5 py-3">
+    <div
+      // A skin handle. Without one, the only way to restyle this surface was the
+      // `bg-adaptive-100` utility below — which is also the row-hover and
+      // table-header grey, so the two could not be changed independently.
+      data-slot="rail"
+      className="flex h-full flex-col gap-4 border-r border-adaptive-200 bg-adaptive-100 px-2.5 py-3"
+    >
       <div className="wa-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
         <div className="flex flex-col gap-1">
           <div className="flex items-center justify-between px-1.5 pb-1">

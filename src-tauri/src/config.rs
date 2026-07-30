@@ -21,6 +21,14 @@ pub struct Config {
     #[serde(default)]
     pub port_overrides: BTreeMap<String, u16>,
     pub max_log_lines_per_run: usize,
+    /// Minutes between background fetches; 0 turns it off.
+    ///
+    /// Defaulted rather than opt-in because every sync number the UI shows is
+    /// computed from local refs, so without this a workspace left open reports
+    /// "in sync" with growing confidence and shrinking accuracy. `serde(default)`
+    /// so a config written before this field existed still loads.
+    #[serde(default = "default_auto_fetch_minutes")]
+    pub auto_fetch_minutes: u64,
     /// Most recently opened workspaces, newest first.
     #[serde(default)]
     pub recent_roots: Vec<PathBuf>,
@@ -42,6 +50,12 @@ pub struct Config {
     pub root_forced: bool,
 }
 
+/// Ten minutes: long enough that a laptop on a phone tether is not fetching
+/// constantly, short enough that "behind by 3" is news rather than history.
+fn default_auto_fetch_minutes() -> u64 {
+    10
+}
+
 impl Config {
     pub fn defaults(workspace_root: PathBuf) -> Self {
         let cpus = std::thread::available_parallelism()
@@ -56,6 +70,7 @@ impl Config {
             dev_command_overrides: BTreeMap::new(),
             port_overrides: BTreeMap::new(),
             max_log_lines_per_run: 5_000,
+            auto_fetch_minutes: default_auto_fetch_minutes(),
             recent_roots: Vec::new(),
             onboarding_done_unix: None,
             root_forced: false,
@@ -125,6 +140,7 @@ pub struct ConfigPatch {
     pub scan_concurrency: Option<usize>,
     pub recent_commit_limit: Option<u32>,
     pub max_log_lines_per_run: Option<usize>,
+    pub auto_fetch_minutes: Option<u64>,
     pub dev_command_overrides: Option<BTreeMap<String, Vec<String>>>,
     pub port_overrides: Option<BTreeMap<String, u16>>,
 }
@@ -142,6 +158,11 @@ impl ConfigPatch {
         }
         if let Some(v) = self.max_log_lines_per_run {
             c.max_log_lines_per_run = v.clamp(200, 100_000);
+        }
+        if let Some(v) = self.auto_fetch_minutes {
+            // 0 is meaningful — off — so the floor cannot be 1. The ceiling is a
+            // day, past which "automatic" is indistinguishable from disabled.
+            c.auto_fetch_minutes = if v == 0 { 0 } else { v.clamp(1, 1440) };
         }
         if let Some(v) = self.dev_command_overrides {
             c.dev_command_overrides = v;
@@ -187,8 +208,29 @@ mod tests {
         assert_eq!(c.port_overrides.get("fe/web#dev"), Some(&5173));
         // Absent means never onboarded, which is the honest reading of an old config.
         assert_eq!(c.onboarding_done_unix, None);
+        // A field added later must arrive at its default, not at 0 — 0 means "never
+        // fetch", so `serde(default)` alone silently disables the feature for
+        // everyone who already had a config.
+        assert_eq!(c.auto_fetch_minutes, default_auto_fetch_minutes());
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 0 is a value, not an omission: it is how auto-fetch is turned off, so it has
+    /// to survive a clamp whose lower bound is 1 for every other input.
+    #[test]
+    fn zero_turns_auto_fetch_off_and_is_not_clamped_up() {
+        let mut c = Config::defaults(PathBuf::from("/nonexistent"));
+
+        ConfigPatch { auto_fetch_minutes: Some(0), ..Default::default() }.apply(&mut c);
+        assert_eq!(c.auto_fetch_minutes, 0);
+
+        ConfigPatch { auto_fetch_minutes: Some(5), ..Default::default() }.apply(&mut c);
+        assert_eq!(c.auto_fetch_minutes, 5);
+
+        // Past a day, "automatic" is indistinguishable from disabled.
+        ConfigPatch { auto_fetch_minutes: Some(99_999), ..Default::default() }.apply(&mut c);
+        assert_eq!(c.auto_fetch_minutes, 1440);
     }
 
     #[test]

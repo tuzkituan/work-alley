@@ -12,13 +12,28 @@ import {
 import { keys } from '@/queries/keys'
 import { useRunAction } from '@/hooks/use-action'
 import { CheckoutAllDialog } from '@/features/actions/CheckoutAllDialog'
+import { cn } from '@/lib/utils'
 import type { useDetailRepo } from './use-detail-repo'
+
+/**
+ * Drops the leading binary name from a command label.
+ *
+ * `flutter pub get` under a "Flutter" heading reads as "pub get" — the heading
+ * already said which tool, and repeating it three times a row is all the width.
+ * Only the first token, and only when it matches: `./gradlew clean` keeps its
+ * wrapper path, which is information.
+ */
+function stripTool(label: string, group: string): string {
+  const [head, ...rest] = label.split(' ')
+  if (!rest.length) return label
+  return head?.toLowerCase() === group.toLowerCase() ? rest.join(' ') : label
+}
 
 /** The always-visible actions. Everything rarer stays in the RepoMenu above. */
 export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }) {
   const run = useRunAction()
   const [checkoutOpen, setCheckoutOpen] = useState(false)
-  const { repo, dev, sb, devUp, hasStorybook, scripts, ahead } = ctx
+  const { repo, dev, sb, devUp, target, hasStorybook, scripts, choreGroups, ahead } = ctx
 
   // From the bootstrap cache, so this costs nothing — the same trick RepoMenu uses.
   const { data: boot } = useQuery({ queryKey: keys.bootstrap, enabled: false })
@@ -73,9 +88,16 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
         <Button
           variant={devUp ? 'waDanger' : 'waOutline'}
           size="waSm"
-          onClick={() => run({ kind: devUp ? 'devStop' : 'devStart', ref: repo, task: 'dev' })}
+          disabled={!target.id}
+          title={!target.id ? 'Nothing to run in this repo' : undefined}
+          onClick={() => {
+            if (!target.id) return
+            run({ kind: devUp ? 'devStop' : 'devStart', ref: repo, task: target.id })
+          }}
         >
-          {devUp ? `Stop dev${dev?.port ? ` :${dev.port}` : ''}` : 'Start dev'}
+          {devUp
+            ? `Stop ${target.label}${dev?.port ? ` :${dev.port}` : ''}`
+            : `Start ${target.label}`}
         </Button>
         {hasStorybook && (
           <Button
@@ -158,6 +180,37 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
           ))}
         </div>
       )}
+
+      {/* The ecosystem's own commands, one row per group. On the page rather than
+          two submenus deep, for the same reason the scripts above are: this is the
+          screen you are on when you want `pub get` or `clippy`, and the row menu is
+          three clicks from here. */}
+      {choreGroups.map(([group, items]) => (
+        <div key={group} className="flex flex-wrap items-center gap-1">
+          <span className="flex-none pr-0.5 text-[10px] font-semibold tracking-[0.05em] text-adaptive-400 uppercase">
+            {group}
+          </span>
+          {items.map((c) => (
+            <Button
+              key={c.id}
+              variant="waGhost"
+              size="waXs"
+              className={cn('font-mono', c.destructive && 'text-sev-warn')}
+              title={
+                c.destructive
+                  ? `${c.label} — deletes build output or rewrites files, so it asks first`
+                  : c.label
+              }
+              onClick={() => run({ kind: 'runChore', ref: repo, chore: c.id })}
+            >
+              {/* The group already names the tool, so the button drops it: a row of
+                  "flutter pub get / flutter clean / flutter test" is mostly the word
+                  "flutter". */}
+              {stripTool(c.label, group)}
+            </Button>
+          ))}
+        </div>
+      ))}
 
       <CheckoutAllDialog
         open={checkoutOpen}

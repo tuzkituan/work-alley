@@ -15,7 +15,10 @@ import { WindowControls } from './WindowControls'
  */
 export function ChromeBar({ title = 'Work Alley' }: { title?: string }) {
   return (
-    <div className="flex h-[38px] flex-none items-center gap-2 border-b border-adaptive-200 bg-adaptive-100 pr-2 pl-3.5">
+    <div
+      data-slot="chrome-bar"
+      className="flex h-[38px] flex-none items-center gap-2 border-b border-adaptive-200 bg-adaptive-100 pr-2 pl-3.5"
+    >
       {/* The drag attribute goes on the inert areas only — on the whole bar it
           swallows the button clicks. */}
       <div data-tauri-drag-region className="flex items-center gap-2">

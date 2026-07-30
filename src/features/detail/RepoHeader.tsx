@@ -45,7 +45,13 @@ export function RepoHeader({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }) {
         </Button>
         <StatusDot tone={d?.tone ?? 'idle'} size={9} />
         <h1 className="truncate text-base font-semibold tracking-[-0.01em]">{repo.name}</h1>
-        {status && <KindTag kind={status.shape.kind} stack={status.shape.stack} />}
+        {status && (
+          <KindTag
+            kind={status.shape.kind}
+            language={status.shape.language}
+            stack={status.shape.stack}
+          />
+        )}
         {repo.category && <MonoChip>{repo.category}</MonoChip>}
         {d && <StatePill tone={d.tone} label={d.stateLabel} />}
         <div className="flex-1" />

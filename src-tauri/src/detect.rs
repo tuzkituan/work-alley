@@ -72,10 +72,42 @@ pub fn detect(repo: &Path) -> RepoShape {
         stack.push("storybook".into());
     }
 
-    let kind = classify(repo, pkg.as_ref(), &deps, &stack);
+    // --- ecosystems with no JS manifest -------------------------------------
+    //
+    // Everything below was previously invisible. A folder of CMake/Qt projects
+    // reached `classify` with an empty stack and came out as Docs, on the strength
+    // of having a README.
+    if file("CMakeLists.txt") {
+        stack.push("cmake".into());
+    }
+    if has_ext(repo, "pro") {
+        stack.push("qmake".into());
+    }
+    if is_qt(repo) {
+        stack.push("qt".into());
+    }
+    if file("Gemfile") {
+        stack.push("ruby".into());
+    }
+    if file("mix.exs") {
+        stack.push("elixir".into());
+    }
+    if file("Package.swift") {
+        stack.push("swift".into());
+    }
+    if file("build.zig") {
+        stack.push("zig".into());
+    }
+    if has_ext(repo, "csproj") || has_ext(repo, "sln") {
+        stack.push("dotnet".into());
+    }
+
+    let language = language(repo, &stack, pkg.is_some());
+    let kind = classify(repo, pkg.as_ref(), &deps, &stack, language.as_deref());
 
     RepoShape {
         kind,
+        language,
         stack,
         has_dockerfile: file("Dockerfile") || file("docker-compose.yml") || file("compose.yml"),
         is_monorepo: file("pnpm-workspace.yaml")
@@ -93,6 +125,7 @@ fn classify(
     pkg: Option<&serde_json::Value>,
     deps: &[String],
     stack: &[String],
+    language: Option<&str>,
 ) -> RepoKind {
     let has = |dep: &str| deps.iter().any(|d| d == dep);
     let in_stack = |s: &str| stack.iter().any(|x| x == s);
@@ -100,7 +133,16 @@ fn classify(
 
     // Mobile beats everything: react-native and Flutter projects also look like
     // frontends by dependency alone.
-    if in_stack("flutter") || in_stack("react-native") || repo.join("android").is_dir() && repo.join("ios").is_dir() {
+    //
+    // The native cases are here too. A Kotlin Android app has a `build.gradle`, so
+    // it used to classify as Backend on the strength of `java` being in its stack,
+    // and an iOS app with no manifest we read fell through to Docs.
+    if in_stack("flutter")
+        || in_stack("react-native")
+        || repo.join("android").is_dir() && repo.join("ios").is_dir()
+        || is_android_app(repo)
+        || is_ios_app(repo)
+    {
         return RepoKind::Mobile;
     }
 
@@ -175,8 +217,11 @@ fn classify(
         return RepoKind::Unknown;
     }
 
-    // No manifest at all: docs, config, or notes.
-    if repo.join("README.md").exists() || repo.join("docs").is_dir() {
+    // No manifest we read. Docs only when there is genuinely no code here —
+    // "has a README" used to be enough, which filed a whole folder of CMake and Qt
+    // projects under Docs and tagged seven real repos DOC.
+    let only_prose = matches!(language, None | Some("Markdown"));
+    if only_prose && (repo.join("README.md").exists() || repo.join("docs").is_dir()) {
         return RepoKind::Docs;
     }
 
@@ -204,6 +249,248 @@ fn has_app_shell(repo: &Path) -> bool {
         }
     }
     false
+}
+
+/// The language this repo is mostly written in, as a display name.
+///
+/// Manifest evidence first, because a manifest states the language outright and
+/// costs one `exists()`. Only when nothing declares itself does this fall back to
+/// counting source files — which is the only thing that works for the large class
+/// of projects with no manifest we read at all.
+fn language(repo: &Path, stack: &[String], has_pkg: bool) -> Option<String> {
+    let in_stack = |s: &str| stack.iter().any(|x| x == s);
+    let named = |s: &str| Some(s.to_string());
+
+    if in_stack("flutter") {
+        return named("Dart");
+    }
+    if in_stack("rust") {
+        return named("Rust");
+    }
+    if in_stack("go") {
+        return named("Go");
+    }
+    // A tsconfig is what decides it; `package.json` alone says nothing about which
+    // of the two a repo is written in.
+    if has_pkg {
+        return if repo.join("tsconfig.json").exists() {
+            named("TypeScript")
+        } else {
+            named("JavaScript")
+        };
+    }
+    if in_stack("python") {
+        return named("Python");
+    }
+    if in_stack("php") {
+        return named("PHP");
+    }
+    if in_stack("ruby") {
+        return named("Ruby");
+    }
+    if in_stack("elixir") {
+        return named("Elixir");
+    }
+    if in_stack("swift") {
+        return named("Swift");
+    }
+    if in_stack("zig") {
+        return named("Zig");
+    }
+    if in_stack("dotnet") {
+        return named("C#");
+    }
+
+    // Java and C-family build files name a toolchain, not a language: gradle builds
+    // Kotlin as readily as Java, and CMake builds both C and C++. The census is what
+    // tells them apart, so these fall through to it with a floor rather than an
+    // answer.
+    let census = dominant_language(repo);
+    if census.is_some() {
+        return census;
+    }
+    if in_stack("java") {
+        return named("Java");
+    }
+    if in_stack("cmake") || in_stack("qmake") || in_stack("qt") {
+        return named("C++");
+    }
+    None
+}
+
+/// Directories that hold code nobody wrote here, so counting them would report the
+/// language of a dependency tree.
+const SKIP_DIRS: [&str; 12] = [
+    ".git",
+    "node_modules",
+    "target",
+    "build",
+    "dist",
+    "out",
+    "vendor",
+    "third_party",
+    ".venv",
+    "venv",
+    "Pods",
+    ".next",
+];
+
+/// The most common source language among this repo's own files.
+///
+/// Root plus one level down, capped — enough to characterise a repo without turning
+/// a scan into a full tree walk. Ties break on name so the answer is stable across
+/// scans rather than dependent on readdir order.
+fn dominant_language(repo: &Path) -> Option<String> {
+    use std::collections::BTreeMap;
+
+    let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut seen = 0usize;
+
+    count_files(repo, &mut counts, &mut seen);
+    if let Ok(entries) = std::fs::read_dir(repo) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name = name.to_string_lossy();
+            if name.starts_with('.') || SKIP_DIRS.contains(&name.as_ref()) {
+                continue;
+            }
+            count_files(&path, &mut counts, &mut seen);
+        }
+    }
+
+    // Prose loses to any real code: a C++ project with two source files and nine
+    // pages of docs is a C++ project.
+    if counts.len() > 1 {
+        counts.remove("Markdown");
+    }
+
+    counts
+        .into_iter()
+        .max_by_key(|(lang, n)| (*n, std::cmp::Reverse(*lang)))
+        .map(|(lang, _)| lang.to_string())
+}
+
+/// Tallies one directory's files by language, stopping at the shared cap.
+fn count_files(
+    dir: &Path,
+    counts: &mut std::collections::BTreeMap<&'static str, usize>,
+    seen: &mut usize,
+) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        if *seen >= 600 {
+            return;
+        }
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        *seen += 1;
+        if let Some(lang) = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .and_then(language_of_ext)
+        {
+            *counts.entry(lang).or_insert(0) += 1;
+        }
+    }
+}
+
+/// Extension to language, for the census only.
+///
+/// Implementation files only. `.h` is deliberately absent: it belongs to C and C++
+/// equally, so counting it decides the very question the census is here to answer.
+fn language_of_ext(ext: &str) -> Option<&'static str> {
+    Some(match ext {
+        "rs" => "Rust",
+        "go" => "Go",
+        "ts" | "tsx" | "mts" | "cts" => "TypeScript",
+        "js" | "jsx" | "mjs" | "cjs" => "JavaScript",
+        "py" => "Python",
+        "rb" => "Ruby",
+        "php" => "PHP",
+        "java" => "Java",
+        "kt" | "kts" => "Kotlin",
+        "swift" => "Swift",
+        "c" => "C",
+        "cpp" | "cc" | "cxx" | "hpp" | "hxx" => "C++",
+        "cs" => "C#",
+        "m" => "Objective-C",
+        "mm" => "Objective-C++",
+        "sh" | "bash" | "zsh" => "Shell",
+        "ps1" => "PowerShell",
+        "lua" => "Lua",
+        "vim" => "Vim script",
+        "qml" => "QML",
+        "dart" => "Dart",
+        "ex" | "exs" => "Elixir",
+        "zig" => "Zig",
+        "hs" => "Haskell",
+        "scala" => "Scala",
+        "pl" | "pm" => "Perl",
+        "css" | "scss" | "sass" | "less" => "CSS",
+        "html" | "htm" => "HTML",
+        "md" | "markdown" => "Markdown",
+        _ => return None,
+    })
+}
+
+/// Whether the build files mention Qt. Cheap and specific: the marker is the same
+/// in both build systems, and it is what distinguishes a Qt app from any other
+/// CMake tree.
+fn is_qt(repo: &Path) -> bool {
+    if let Ok(text) = std::fs::read_to_string(repo.join("CMakeLists.txt")) {
+        if text.contains("find_package(Qt") || text.contains("Qt5") || text.contains("Qt6") {
+            return true;
+        }
+    }
+    // qmake's own form, in whichever .pro file is here.
+    let Ok(entries) = std::fs::read_dir(repo) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        e.path().extension().and_then(|x| x.to_str()) == Some("pro")
+            && std::fs::read_to_string(e.path())
+                .map(|t| t.contains("QT +=") || t.contains("QT+="))
+                .unwrap_or(false)
+    })
+}
+
+/// An Android app module. The manifest is the definitive marker — a Gradle build
+/// file alone says only "JVM project".
+fn is_android_app(repo: &Path) -> bool {
+    ["app/src/main/AndroidManifest.xml", "src/main/AndroidManifest.xml"]
+        .iter()
+        .any(|p| repo.join(p).exists())
+}
+
+/// An Xcode project or workspace. Both are directories, not files.
+fn is_ios_app(repo: &Path) -> bool {
+    let Ok(entries) = std::fs::read_dir(repo) else {
+        return false;
+    };
+    entries.flatten().any(|e| {
+        matches!(
+            e.path().extension().and_then(|x| x.to_str()),
+            Some("xcodeproj") | Some("xcworkspace")
+        )
+    })
+}
+
+/// Whether any file at the repo root has this extension.
+fn has_ext(repo: &Path, ext: &str) -> bool {
+    let Ok(entries) = std::fs::read_dir(repo) else {
+        return false;
+    };
+    entries
+        .flatten()
+        .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some(ext))
 }
 
 fn read_package_json(repo: &Path) -> Option<serde_json::Value> {
@@ -375,5 +662,112 @@ mod tests {
     fn empty_directory_does_not_panic() {
         let d = scratch("empty");
         assert_eq!(detect(&d).kind, RepoKind::Unknown);
+        assert_eq!(detect(&d).language, None);
+    }
+
+    #[test]
+    fn a_cmake_qt_project_is_cpp_and_not_docs() {
+        // The whole folder of these used to come out as Docs, tagged DOC, on the
+        // strength of having a README.
+        let d = scratch("qt");
+        write(&d, "README.md", "# aero");
+        write(
+            &d,
+            "CMakeLists.txt",
+            "cmake_minimum_required(VERSION 3.16)\nfind_package(Qt6 REQUIRED)",
+        );
+        write(&d, "src/main.cpp", "int main() {}");
+        write(&d, "src/window.cpp", "");
+        let s = detect(&d);
+        assert_eq!(s.language.as_deref(), Some("C++"));
+        assert_ne!(s.kind, RepoKind::Docs);
+        assert!(s.stack.contains(&"cmake".to_string()));
+        assert!(s.stack.contains(&"qt".to_string()));
+    }
+
+    #[test]
+    fn a_readme_only_repo_still_has_no_language() {
+        // The mirror of the case above: prose alone must stay Docs.
+        let d = scratch("prose");
+        write(&d, "README.md", "# notes");
+        write(&d, "guide.md", "");
+        let s = detect(&d);
+        assert_eq!(s.kind, RepoKind::Docs);
+        // Markdown is a language, but it is the one that means "no code".
+        assert_eq!(s.language.as_deref(), Some("Markdown"));
+    }
+
+    #[test]
+    fn a_tsconfig_is_what_makes_a_node_repo_typescript() {
+        let d = scratch("ts");
+        write(&d, "package.json", r#"{"dependencies":{"react":"18"}}"#);
+        assert_eq!(detect(&d).language.as_deref(), Some("JavaScript"));
+        write(&d, "tsconfig.json", "{}");
+        assert_eq!(detect(&d).language.as_deref(), Some("TypeScript"));
+    }
+
+    #[test]
+    fn a_manifest_outranks_the_file_census() {
+        // A Rust crate with more generated JS than Rust is still a Rust repo.
+        let d = scratch("rust-census");
+        write(&d, "Cargo.toml", "[package]\nname='x'");
+        write(&d, "src/main.rs", "fn main() {}");
+        for i in 0..5 {
+            write(&d, &format!("web/bundle{i}.js"), "");
+        }
+        assert_eq!(detect(&d).language.as_deref(), Some("Rust"));
+    }
+
+    #[test]
+    fn the_census_decides_between_c_and_cpp() {
+        // CMake builds both, so the build file cannot answer this.
+        let c = scratch("plain-c");
+        write(&c, "CMakeLists.txt", "project(x)");
+        write(&c, "main.c", "");
+        write(&c, "util.c", "");
+        assert_eq!(detect(&c).language.as_deref(), Some("C"));
+    }
+
+    #[test]
+    fn dependency_directories_are_not_counted() {
+        // Otherwise every repo with a node_modules reports JavaScript.
+        let d = scratch("skip-deps");
+        write(&d, "main.py", "");
+        for i in 0..20 {
+            write(&d, &format!("node_modules/p{i}.js"), "");
+        }
+        assert_eq!(detect(&d).language.as_deref(), Some("Python"));
+    }
+
+    #[test]
+    fn a_kotlin_android_app_is_mobile_not_a_java_backend() {
+        // `build.gradle.kts` put `java` in the stack, and `java` meant Backend.
+        let d = scratch("android");
+        write(&d, "build.gradle.kts", "plugins { id(\"com.android.application\") }");
+        write(&d, "app/src/main/AndroidManifest.xml", "<manifest/>");
+        write(&d, "app/src/main/kotlin/Main.kt", "fun main() {}");
+        let s = detect(&d);
+        assert_eq!(s.kind, RepoKind::Mobile);
+        // And the census names the language the tag shows, rather than "java".
+        assert_eq!(s.language.as_deref(), Some("Kotlin"));
+    }
+
+    #[test]
+    fn an_xcode_project_is_mobile() {
+        let d = scratch("ios");
+        fs::create_dir_all(d.join("App.xcodeproj")).unwrap();
+        write(&d, "App/AppDelegate.swift", "");
+        let s = detect(&d);
+        assert_eq!(s.kind, RepoKind::Mobile);
+        assert_eq!(s.language.as_deref(), Some("Swift"));
+    }
+
+    #[test]
+    fn a_shell_script_repo_is_shell_rather_than_unknown() {
+        let d = scratch("sh");
+        write(&d, "README.md", "# scripts");
+        write(&d, "deploy.sh", "#!/bin/sh");
+        write(&d, "backup.sh", "#!/bin/sh");
+        assert_eq!(detect(&d).language.as_deref(), Some("Shell"));
     }
 }

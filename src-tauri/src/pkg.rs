@@ -287,24 +287,6 @@ pub fn parse_storybook_port(script: &str) -> Option<u16> {
     None
 }
 
-/// The port a named task will bind.
-pub fn task_port(repo: &Path, task: &str) -> Option<(u16, crate::model::PortSource)> {
-    if task == "storybook" {
-        return storybook_port(repo).map(|p| (p, crate::model::PortSource::ViteConfigDefault));
-    }
-    detect_port(repo)
-}
-
-pub fn has_dev_script(repo: &Path) -> bool {
-    let Ok(text) = std::fs::read_to_string(repo.join("package.json")) else {
-        return false;
-    };
-    serde_json::from_str::<serde_json::Value>(&text)
-        .ok()
-        .and_then(|j| j.get("scripts")?.get("dev").cloned())
-        .is_some()
-}
-
 /// Resolves the dev-server port without starting anything.
 ///
 /// An env file is the most common place a project pins its port; failing that, the

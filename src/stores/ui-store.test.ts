@@ -60,3 +60,81 @@ describe('ui store — skin', () => {
     }
   })
 })
+
+/**
+ * Switching folders has to reset what belonged to the old one.
+ *
+ * `RepoGrid` short-circuits the whole centre panel to the detail page whenever
+ * `detailRepoId` is set, so a category action that leaves it alone produces a
+ * sidebar click that visibly does nothing. Both actions are covered because the
+ * two had already drifted apart once.
+ */
+describe('ui store — switching folders', () => {
+  it('opening a repo points the output pane at it', () => {
+    // `openDetail` set activeRepoId alone while claiming the pane followed. Scope is
+    // a separate field, so the pane stayed on whatever repo it was already showing.
+    const ui = useUiStore.getState()
+    ui.setCategory('frontend')
+    ui.setActiveRepo('frontend/web')
+    ui.openDetail('frontend/api')
+    expect(useUiStore.getState().outputScope).toBe('frontend/api')
+  })
+
+  it('leaving a folder unscopes the pane along with the selection', () => {
+    const ui = useUiStore.getState()
+    ui.setCategory('frontend')
+    ui.setActiveRepo('frontend/web')
+    expect(useUiStore.getState().outputScope).toBe('frontend/web')
+
+    useUiStore.getState().setCategory('mobile')
+    // Otherwise the pane is scoped to a repo the table no longer lists.
+    expect(useUiStore.getState().outputScope).toBeNull()
+  })
+
+  it('setCategory closes an open repo detail page', () => {
+    const ui = useUiStore.getState()
+    ui.setCategory('frontend')
+    ui.openDetail('frontend/web')
+    expect(useUiStore.getState().detailRepoId).toBe('frontend/web')
+
+    useUiStore.getState().setCategory('mobile')
+    const after = useUiStore.getState()
+    expect(after.expandedCategory).toBe('mobile')
+    expect(after.detailRepoId).toBeNull()
+    expect(after.activeRepoId).toBeNull()
+  })
+
+  it('toggleCategory closes it too', () => {
+    const ui = useUiStore.getState()
+    ui.setCategory('frontend')
+    ui.openDetail('frontend/web')
+
+    useUiStore.getState().toggleCategory('mobile')
+    expect(useUiStore.getState().detailRepoId).toBeNull()
+  })
+
+  it('drops a filter chip that belonged to the folder being left', () => {
+    // The chips count repos in the open folder, so one carried across reads as a
+    // filter matching nothing.
+    const ui = useUiStore.getState()
+    ui.setCategory('frontend')
+    ui.toggleFilterChip('uncommitted')
+    expect(useUiStore.getState().filterChip).toBe('uncommitted')
+
+    useUiStore.getState().setCategory('mobile')
+    expect(useUiStore.getState().filterChip).toBeNull()
+  })
+
+  it('collapsing the open folder also closes the detail page', () => {
+    // toggleCategory on the *current* folder means "close it" — leaving a detail
+    // page up over no folder at all.
+    const ui = useUiStore.getState()
+    ui.setCategory('frontend')
+    ui.openDetail('frontend/web')
+
+    useUiStore.getState().toggleCategory('frontend')
+    const after = useUiStore.getState()
+    expect(after.expandedCategory).toBeNull()
+    expect(after.detailRepoId).toBeNull()
+  })
+})

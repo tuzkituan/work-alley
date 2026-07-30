@@ -83,6 +83,32 @@ pub struct LastCommit {
     pub relative: String,
 }
 
+/// One way to run a repo, as the UI needs it: enough to label a button and predict
+/// a URL, and nothing about how the argv is built — that stays in `runner`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunnableTask {
+    /// What a `devStart` action passes back as `task`.
+    pub id: String,
+    /// Goes after "Start" / "Stop": "dev", "cargo run", "runserver".
+    pub label: String,
+    pub port: Option<u16>,
+}
+
+/// One one-shot command a repo's ecosystem offers, as the UI needs it.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChoreInfo {
+    /// What a `runChore` action passes back.
+    pub id: String,
+    /// The command as you would type it — "flutter pub get", "./gradlew clean".
+    pub label: String,
+    /// Submenu heading: "Flutter", "Gradle", "Django".
+    pub group: String,
+    /// Deletes build output or rewrites files, so the UI confirms first.
+    pub destructive: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoStatus {
@@ -105,11 +131,24 @@ pub struct RepoStatus {
     pub dev_port: Option<u16>,
     /// What this repo appears to be — frontend, backend, library, mobile.
     pub shape: RepoShape,
-    /// Tasks this repo declares in package.json — "dev", "storybook".
+    /// Long-running scripts this repo declares in package.json — "dev",
+    /// "storybook". A subset of `runnable`, kept because the Storybook affordance
+    /// is specifically about a declared script.
     pub available_tasks: Vec<String>,
+    /// Every way this repo can be run, best first — declared scripts, then the
+    /// ecosystem runner its files imply. Empty means nothing here runs, which is a
+    /// real answer for a library or a docs repo.
+    pub runnable: Vec<RunnableTask>,
+    /// `runnable`'s first entry. The task a Run button starts when the user has not
+    /// picked one; None disables that button rather than failing on "dev".
+    pub primary_task: Option<String>,
     /// One-shot scripts this repo declares — "build", "lint", "format". Also the
     /// closed set a `runScript` action is validated against.
     pub available_scripts: Vec<String>,
+    /// One-shot commands this repo's *ecosystems* offer — `flutter pub get`,
+    /// `cargo clippy`, `./gradlew clean`. The closed set a `runChore` action is
+    /// validated against, and the non-JS counterpart of `available_scripts`.
+    pub chores: Vec<ChoreInfo>,
     /// Tasks currently running for this repo. Not a single `dev_server`, because a
     /// UI library commonly has dev and storybook up at the same time.
     pub tasks: Vec<DevServer>,
@@ -136,7 +175,10 @@ impl RepoStatus {
             dev_port: None,
             shape: RepoShape::default(),
             available_tasks: Vec::new(),
+            runnable: Vec::new(),
+            primary_task: None,
             available_scripts: Vec::new(),
+            chores: Vec::new(),
             tasks: Vec::new(),
             error: Some(msg.into()),
             scan_ms: 0,
@@ -295,6 +337,10 @@ pub enum PortSource {
     ViteConfigDefault,
     ConfigOverride,
     DetectedFromOutput,
+    /// The convention for this kind of task — Django's 8000, Storybook's 6006, the
+    /// first published port in a compose file. Distinct from the vite/env answers
+    /// because it is a property of the runner, not of anything the repo configured.
+    TaskDefault,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -463,11 +509,32 @@ impl RepoKind {
     }
 }
 
+impl RepoShape {
+    /// Folder name for a repo in a workspace with no subdirectories to group by.
+    ///
+    /// The kind when there is one, otherwise the language. Everything outside the
+    /// JS ecosystem classifies as Unknown, so keying only on kind swept a folder of
+    /// CMake and shell projects into one "other" — a name that says nothing about
+    /// six repos. "other" is now what you get when neither answer exists.
+    pub fn group_name(&self) -> String {
+        if self.kind != RepoKind::Unknown {
+            return self.kind.group_name().to_string();
+        }
+        self.language
+            .as_deref()
+            .map(str::to_lowercase)
+            .unwrap_or_else(|| "other".to_string())
+    }
+}
+
 /// What a repo appears to be, from its files. Detected, never configured.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RepoShape {
     pub kind: RepoKind,
+    /// Display name of the language this repo is mostly written in — "TypeScript",
+    /// "C++", "Rust". None when there is no code to judge by.
+    pub language: Option<String>,
     /// Frameworks and languages found, e.g. ["vite", "react", "storybook"].
     pub stack: Vec<String>,
     pub has_dockerfile: bool,
@@ -478,6 +545,7 @@ impl Default for RepoShape {
     fn default() -> Self {
         RepoShape {
             kind: RepoKind::Unknown,
+            language: None,
             stack: Vec::new(),
             has_dockerfile: false,
             is_monorepo: false,
@@ -808,6 +876,17 @@ pub enum ActionSpec {
         #[serde(rename = "ref")]
         repo: RepoRef,
         script: String,
+    },
+    /// One of the one-shot commands this repo's *ecosystem* offers — `flutter pub
+    /// get`, `cargo clippy`, `./gradlew clean`.
+    ///
+    /// `chore` is caller-supplied but looked up in `chores::chores` for that repo,
+    /// exactly as `script` is looked up in `available_scripts`. The argv is built in
+    /// Rust from that lookup, never from the id.
+    RunChore {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        chore: String,
     },
     Push {
         #[serde(rename = "ref")]
