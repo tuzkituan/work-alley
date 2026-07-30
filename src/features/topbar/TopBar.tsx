@@ -54,7 +54,9 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
           <div className="flex size-[22px] items-center justify-center rounded-md bg-primary text-[13px] font-bold text-primary-foreground">
             {name.charAt(0)}
           </div>
-          <span className="text-sm font-semibold tracking-[-0.01em]">{name}</span>
+          <span data-slot="app-name" className="text-sm font-semibold tracking-[-0.01em]">
+            {name}
+          </span>
         </div>
 
         <WorkspaceSwitcher boot={boot} />
@@ -128,11 +130,11 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
             <DropdownMenuRadioGroup value={skin} onValueChange={(v) => setSkin(v as Skin)}>
               <DropdownMenuRadioItem value="classic">
                 Classic
-                <span className="ml-auto text-[10px] text-adaptive-400">hairlines</span>
+                <span className="ml-auto text-[10px] text-adaptive-400">rounded</span>
               </DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="neumorph">
-                Soft
-                <span className="ml-auto text-[10px] text-adaptive-400">shadows</span>
+              <DropdownMenuRadioItem value="metro">
+                Metro
+                <span className="ml-auto text-[10px] text-adaptive-400">flat tiles</span>
               </DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
           </DropdownMenuContent>

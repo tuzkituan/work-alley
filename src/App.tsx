@@ -190,7 +190,7 @@ function Dashboard() {
           )}
         </div>
         <ConfirmActionDialog />
-        <Toaster theme={theme} position="bottom-right" />
+        <Toaster theme={theme} position="bottom-left" />
       </TooltipProvider>
     )
   }
@@ -224,7 +224,7 @@ function Dashboard() {
         {/* The clone goes through the same confirmation gate as everything else,
             so the dialog has to be mounted on this screen too. */}
         <ConfirmActionDialog />
-        <Toaster theme={theme} position="bottom-right" />
+        <Toaster theme={theme} position="bottom-left" />
       </TooltipProvider>
     )
   }
@@ -296,7 +296,7 @@ function Dashboard() {
       {/* Sonner sniffs the theme itself, so it must be told explicitly. */}
       <Toaster
         theme={theme}
-        position="bottom-right"
+        position="bottom-left"
         style={
           {
             '--normal-bg': 'var(--card)',
@@ -355,7 +355,10 @@ function MainTabs() {
   const setPage = useUiStore((s) => s.setPage)
 
   return (
-    <div className="flex flex-none items-center gap-1 border-b border-adaptive-200 px-3 pt-2">
+    <div
+      data-slot="main-tabs"
+      className="flex flex-none items-center gap-1 border-b border-adaptive-200 px-3 pt-2"
+    >
       {TABS.map((t) => (
         <button
           key={t.id}

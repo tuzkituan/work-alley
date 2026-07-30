@@ -186,8 +186,8 @@ const FolderButton = memo(function FolderButton({
       type="button"
       onClick={() => setCategory(category)}
       // Correct markup regardless of the skin, and the only way CSS can tell the
-      // selected folder from the rest: under neumorph the selected fill sits
-      // 0.02L from the rail, which is invisible without a raise.
+      // selected folder from the rest — selection is expressed here in border and
+      // background utilities, which a skin has no way to read.
       aria-current={selected ? 'true' : undefined}
       title={
         empty

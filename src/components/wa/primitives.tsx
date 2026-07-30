@@ -24,6 +24,7 @@ export function StatusDot({
 }) {
   return (
     <span
+      data-slot="status-dot"
       className={cn('flex-none rounded-full', TONE_BG[tone], className)}
       style={{ width: size, height: size }}
     />
@@ -54,6 +55,11 @@ export function Pill({
       type={onClick ? 'button' : undefined}
       onClick={onClick}
       title={title}
+      // The tone as data, not only as a class: TONE_TINT bakes it into arbitrary
+      // opacity utilities (`bg-amber-500/[0.12]`), which a skin cannot read. Metro
+      // wants these as solid tiles, so it needs to know *which* tone.
+      data-slot="pill"
+      data-tone={tone}
       className={cn(
         'flex flex-none items-center gap-1.5 rounded-full border px-[9px] py-[4px] text-xs',
         TONE_TINT[tone],
@@ -74,6 +80,8 @@ export function Pill({
 export function StatePill({ tone, label }: { tone: Tone; label: string }) {
   return (
     <span
+      data-slot="state-pill"
+      data-tone={tone}
       className={cn(
         'flex-none rounded-full border px-[7px] py-[2px] text-[11px] font-semibold',
         TONE_TINT[tone],
@@ -109,6 +117,7 @@ export function SectionLabel({
 }) {
   return (
     <span
+      data-slot="section-label"
       className={cn(
         'text-[11px] font-bold tracking-[0.06em] text-adaptive-500 uppercase',
         className
@@ -169,9 +178,9 @@ export function PanelShell({
 }) {
   return (
     <div
-      // The hook the neumorph skin hangs a raised surface on. PanelShell is a
-      // bare div with no other stable handle, and the skin cannot reach it any
-      // other way; the classes below stay correct for the classic skin.
+      // The hook a skin hangs its panel treatment on. PanelShell is a bare div
+      // with no other stable handle, and CSS cannot reach it any other way; the
+      // classes below stay correct for the classic skin.
       data-slot="panel"
       className={cn(
         'flex min-h-0 flex-col overflow-hidden rounded-lg border border-adaptive-200 bg-card',
@@ -241,6 +250,8 @@ export function KindTag({
   return (
     <span
       title={`Detected: ${detail}`}
+      data-slot="kind-tag"
+      data-kind={kind}
       className={cn(
         'flex-none rounded-sm border px-1 font-mono text-[9.5px] leading-[14px] font-semibold',
         KIND_STYLE[kind] ?? KIND_STYLE.unknown,

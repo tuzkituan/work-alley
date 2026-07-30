@@ -11,18 +11,18 @@ import { migrateUiState, SKINS, useUiStore, type Skin } from './ui-store'
 const migrate = migrateUiState
 
 describe('ui store — skin', () => {
-  it('defaults to classic, so the soft skin is opt-in', () => {
+  it('defaults to classic, so the metro skin is opt-in', () => {
     expect(useUiStore.getState().skin).toBe('classic')
   })
 
   it('toggles and sets', () => {
     useUiStore.getState().toggleSkin()
-    expect(useUiStore.getState().skin).toBe('neumorph')
+    expect(useUiStore.getState().skin).toBe('metro')
     useUiStore.getState().toggleSkin()
     expect(useUiStore.getState().skin).toBe('classic')
 
-    useUiStore.getState().setSkin('neumorph')
-    expect(useUiStore.getState().skin).toBe('neumorph')
+    useUiStore.getState().setSkin('metro')
+    expect(useUiStore.getState().skin).toBe('metro')
     useUiStore.getState().setSkin('classic')
   })
 
@@ -49,7 +49,7 @@ describe('ui store — skin', () => {
 
   it('rejects a skin that is not one, rather than storing it', () => {
     // A typo, a removed skin, and a value of the wrong type entirely.
-    for (const bad of ['neomorph', 'neumorphism', 42, null, {}]) {
+    for (const bad of ['Metro', 'metro-ui', 'neumorph', 42, null, {}]) {
       expect(migrate({ skin: bad }).skin).toBe('classic')
     }
   })

@@ -73,24 +73,6 @@
   /* The hover/focus ring, as one token so every interactive surface agrees. */
   --shadow-focus-ring: 0 0 0 3px var(--adaptive-300);
 
-  /* --- elevation vocabulary --------------------------------------------
-   *
-   * Classic has none: its depth cue is a 1px border, so these are transparent
-   * no-ops. They exist here rather than only in the skin because theme.css maps
-   * them into `@theme inline`, which resolves *live* — an unset var would emit an
-   * invalid `box-shadow` the moment the skin is off. `wa-skin.css` overrides
-   * them; see the note there about what each depth means.
-   */
-  --wa-raise-1: 0 0 #0000;
-  --wa-raise-2: 0 0 #0000;
-  --wa-inset-1: 0 0 #0000;
-  --wa-inset-2: 0 0 #0000;
-  --wa-pressed: 0 0 #0000;
-  /* The two floats keep classic's stock shadcn shadows, which dialogs and
-     popovers already rely on. */
-  --wa-float-1: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
-  --wa-float-2: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
-
   /* One level of indirection so the skin can move the thumb without inheriting
      whatever the contrast ramp did. Classic's values are the ramp, unchanged. */
   --wa-scroll-thumb: var(--adaptive-300);

@@ -47,7 +47,7 @@ export function MachineTerminalDock() {
 
   return (
     <div
-      // Carved out of the page rather than sitting on it, under the neumorph skin.
+      // A chrome surface rather than content, which is what the skin styles it as.
       data-slot="terminal-dock"
       className="flex h-full min-h-0 flex-col border-t border-adaptive-200 bg-adaptive-50"
     >

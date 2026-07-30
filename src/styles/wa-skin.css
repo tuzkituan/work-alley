@@ -1,455 +1,610 @@
-/* The `neumorph` skin: one surface colour, soft shadows, no borders.
+/* The `metro` skin: Microsoft's Metro / Modern UI, as shipped in Windows 8 and 8.1.
  *
- * Read this before editing anything here.
+ * ── What Metro actually is, since it is easy to half-do ─────────────────────
+ * "Content, not chrome." Every decision below follows from that:
+ *
+ *   · No rounded corners. Anywhere. A radius is decoration.
+ *   · No shadows and no gradients. Nothing pretends to be a physical object, so
+ *     there is no light source to be consistent with.
+ *   · State is a solid fill of the accent colour, not a subtle tint. Selected
+ *     means "this rectangle is now blue with white text".
+ *   · Separation comes from flat dividers and whitespace, which is the opposite
+ *     of a soft-edged design: this skin makes borders *more* visible, not less.
+ *   · Typography carries the hierarchy — light-weight titles, wide-tracked
+ *     uppercase labels — instead of borders and elevation.
+ *   · Colour is drawn from the Windows 8 tile palette, at full saturation.
  *
  * ── Why this file is one stylesheet and not 300 class edits ──────────────────
  * Every Tailwind declaration lives inside `@layer theme|base|components|
  * utilities`. Unlayered CSS — which is all of this file — beats every layer
  * regardless of specificity, with no `!important`. Combined with the `data-slot`
- * attributes every shadcn primitive already emits, and the `data-variant` /
+ * attributes every shadcn primitive already emits, and `data-variant` /
  * `data-size` on Button, that means the whole of src/components/ui/ plus most
  * feature surfaces reskin from here without a single component edit.
  *
  * ── The cost of that, stated plainly ────────────────────────────────────────
  * These rules outrank *all* utilities on the properties they set, including a
  * className a future caller writes. Under this skin, `<PanelShell
- * className="shadow-none" />` will not work. That is the trade: one file with a
+ * className="rounded-lg" />` will not work. That is the trade: one file with a
  * loud comment, instead of ~300 edits across ~42 files.
  *
  * ── Selector shape ──────────────────────────────────────────────────────────
- * Four mutually exclusive selectors, never a bare `[data-skin='neumorph']`.
- * `.dark` (from shadcn-theme.css and wa-bridge.css) is also (0,1,0), so a bare
- * attribute selector — later in source — would beat `.dark` on any token the
- * dark block forgot to restate: a silent light-in-dark bug that only shows on
- * the token you missed. `:not(.dark)` / `.dark` makes the two blocks
- * independent, so neither has to know what the other set.
- *
- * ── Accessibility, honestly ─────────────────────────────────────────────────
- * A soft shadow at ΔL ~0.1 cannot meet WCAG 1.4.11's 3:1 for component
- * boundaries, and no amount of token tuning changes that. Hence: classic stays
- * the default, depth is never the only signal for state, and the
- * `prefers-contrast: more` block at the bottom gives the borders back.
+ * Four mutually exclusive selectors, never a bare `[data-skin='metro']`. `.dark`
+ * (from shadcn-theme.css and wa-bridge.css) is also (0,1,0), so a bare attribute
+ * selector — later in source — would beat `.dark` on any token the dark block
+ * forgot to restate: a silent light-in-dark bug that only shows on the token you
+ * missed. `:not(.dark)` / `.dark` makes the two blocks independent.
  */
 
 /* ═══════════════════════════════════════════════════════════ tokens: light ══ */
-html[data-skin='neumorph']:not(.dark) {
-  /* Hex, deliberately: this same value is handed to xterm through --wa-term-bg,
-     and xterm's colour parser does not understand oklch. Declaring it once as
-     hex is also what proves the terminal well and its panel are the same
-     colour rather than two values that drifted apart. */
-  --wa-surface: #eceef2;
-  --wa-surface-sunk: #e4e7ec; /* rails, gutters, docks — carved out of the page */
-  --wa-surface-lift: #f2f4f8; /* floating layers, so a popover is not invisible */
+html[data-skin='metro']:not(.dark) {
+  /* Three flat greys, not one. A white tile on a white canvas separated only by a
+     hairline is what made the first pass read as "classic with the corners filed
+     off" — Metro has no shadows, so the *fill* has to do the separating. Hex
+     rather than oklch because --wa-surface is also handed to xterm, whose colour
+     parser does not understand oklch. */
+  --wa-canvas: #f2f3f5; /* the page behind everything */
+  --wa-surface: #ffffff; /* tiles: panels, tables, cards */
+  --wa-chrome: #e8eaed; /* app bar, rail, docks — furniture sits *under* content */
+  --wa-line: #d3d6db;
+  --wa-line-strong: #a6a6a6;
 
-  /* Every shadcn surface collapses onto the one colour. This alone handles the
-     20 `bg-card` and 23 `bg-background` call sites. */
-  --background: var(--wa-surface);
+  --background: var(--wa-canvas);
   --card: var(--wa-surface);
-  --popover: var(--wa-surface-lift);
-  --muted: var(--wa-surface);
-  --secondary: var(--wa-surface);
-  --accent: #e2e5eb; /* hover fill only — must stay perceptible */
-  /* Neutralises theme.css's `@layer base { * { border-color: var(--border) } }`,
-     which is what every bare `border` in stock shadcn resolves to. */
-  --border: transparent;
-  --input: transparent;
-  --ring: oklch(0.55 0.14 258);
+  --popover: var(--wa-surface);
+  --muted: var(--wa-chrome);
+  --secondary: var(--wa-chrome);
+  --accent: #e6e6e6; /* hover fill: flat grey, no tint */
+  --border: var(--wa-line);
+  --input: var(--wa-line-strong);
 
-  /* One override retiles rounded-sm/md/lg: wa-bridge derives all three from it. */
-  --radius: 1rem;
+  /* Cobalt, Windows 8.1's default accent. Metro state is a solid fill of this,
+     so it has to hold white text at 4.5:1 — #0078d7 is 4.6:1. */
+  --primary: #0078d7;
+  --primary-foreground: #ffffff;
+  --ring: #0078d7;
 
-  /* --- the adaptive ramp, re-tuned -------------------------------------------
-   *
-   * 50–400 are surfaces and lines; 500+ are text.
-   *
-   * --adaptive-200 is the interesting one. It is a 1px border in 94 places and a
-   * filled hover region in 16 (waGhost's hover, the left rail, dropdown items).
-   * Setting it *equal* to the surface would kill every one of those hovers. So it
-   * sits a hair off the surface instead — at ΔL ~0.013 a 1px line is invisible
-   * at any normal viewing distance while a 26px filled block still reads
-   * plainly. One token, both intents, no edits. This is the value most likely to
-   * need tuning by eye.
-   */
-  --adaptive-50: var(--wa-surface-lift);
-  --adaptive-100: var(--wa-surface-sunk);
-  --adaptive-200: #e3e6eb;
-  --adaptive-300: #d3d7de;
-  --adaptive-400: #aeb4c0;
-  /* Darkened one notch: the surface is 0.945L, not 1.0L, so the stock text steps
-     lose roughly 0.8:1 of contrast against it. */
-  --adaptive-500: oklch(0.5 0 0);
-  --adaptive-600: oklch(0.4 0 0);
+  /* Square. Everything. This one line retiles rounded-sm/md/lg, since wa-bridge
+     derives all three from it; the literal and rounded-full sites are squared
+     off further down. */
+  --radius: 0px;
 
-  /* --- elevation: light source top-left, consistently, at four depths ------- */
-  --wa-hi: #ffffff;
-  --wa-lo: rgb(163 172 189 / 0.55);
+  /* The adaptive ramp becomes plain flat greys — no near-surface trickery is
+     needed here, because Metro *wants* its dividers visible. */
+  --adaptive-50: #eef0f3;
+  --adaptive-100: var(--wa-chrome);
+  --adaptive-200: var(--wa-line);
+  --adaptive-300: var(--wa-line-strong);
+  --adaptive-400: #767676; /* Windows 8's disabled-text grey, 4.5:1 on white */
+  --adaptive-500: #5a5a5a;
+  --adaptive-600: #3a3a3a;
 
-  --wa-raise-1: -2px -2px 4px var(--wa-hi), 2px 2px 5px var(--wa-lo);
-  --wa-raise-2: -5px -5px 12px var(--wa-hi), 6px 6px 16px var(--wa-lo);
-  --wa-float-1: -6px -6px 16px var(--wa-hi), 10px 12px 28px var(--wa-lo);
-  --wa-float-2: -8px -8px 22px var(--wa-hi), 16px 20px 44px rgb(120 130 150 / 0.45);
+  /* Windows 8 tile colours, at full saturation, replacing Tailwind's 500s.
+     Metro status is never a pastel. */
+  --green-500: #60a917; /* green */
+  --amber-500: #f0a30a; /* amber */
+  --red-500: #e51400; /* red */
+  --blue-500: #0078d7; /* cobalt, matching the accent */
 
-  --wa-inset-1: inset 2px 2px 4px var(--wa-lo), inset -2px -2px 4px var(--wa-hi);
-  --wa-inset-2: inset 4px 4px 9px var(--wa-lo), inset -3px -3px 7px var(--wa-hi);
-  --wa-pressed: inset 2px 2px 5px var(--wa-lo), inset -2px -2px 5px var(--wa-hi);
+  /* Metro has no elevation, so the focus ring is the only box-shadow left in the
+     skin — and even that is really an outline; see the focus section. */
+  --shadow-focus-ring: 0 0 0 2px var(--ring);
 
-  /* Carries the raise as well as the ring, so a raised control gaining focus
-     does not flatten. See the interactive-elevation note below for the other
-     half of this. */
-  --shadow-focus-ring: 0 0 0 2px var(--ring), var(--wa-raise-1);
+  /* The Windows 8 scrollbar: a square grey thumb, no track. The thumb's own radius
+     is squared off below — a pseudo-element is out of reach of the blanket rule. */
+  --wa-scroll-thumb: #cdcdcd;
+  --wa-scroll-thumb-hover: #a6a6a6;
 
-  --wa-scroll-thumb: #cfd4dc;
-  --wa-scroll-thumb-hover: #b6bdc9;
-
-  /* Same colour as the panel: the terminal reads as a depression in the surface
-     rather than a black rectangle glued onto it. */
-  --wa-term-bg: #eceef2;
-  --wa-term-fg: #262b33;
-  --wa-term-cursor: #262b33;
-  --wa-term-cursor-accent: #eceef2;
-  --wa-term-selection: #c3d6f0;
-  /* Only the two greys move: Tango's were picked against pure white and wash
-     out on a grey surface. The other 14 ANSI slots are a palette programs
-     address by index, so re-tinting them would break real output. */
-  --wa-term-white: #b9bfc9;
-  --wa-term-bright-white: #f6f8fb;
+  /* The console keeps a true white ground rather than the canvas grey: it is a
+     framed console, and the 1px line below does the framing. */
+  --wa-term-bg: #ffffff;
+  --wa-term-fg: #1a1a1a;
+  --wa-term-cursor: #1a1a1a;
+  --wa-term-cursor-accent: #ffffff;
+  --wa-term-selection: #cce4f7; /* Explorer's selection blue */
+  /* The 16 ANSI slots become the tile palette. This is the one place re-tinting
+     a palette is defensible: these are Metro's *named* colours, so a program
+     asking for "red" gets Metro red rather than Tango red. */
+  --wa-term-black: #1a1a1a;
+  --wa-term-red: #e51400;
+  --wa-term-green: #60a917;
+  --wa-term-yellow: #f0a30a;
+  --wa-term-blue: #0078d7;
+  --wa-term-magenta: #d80073;
+  --wa-term-cyan: #00aba9;
+  --wa-term-white: #c8c8c8;
+  --wa-term-bright-black: #767676;
+  --wa-term-bright-red: #fa6800;
+  --wa-term-bright-green: #a4c400;
+  --wa-term-bright-yellow: #e3c800;
+  --wa-term-bright-blue: #1ba1e2;
+  --wa-term-bright-magenta: #aa00ff;
+  --wa-term-bright-cyan: #00c9c7;
+  --wa-term-bright-white: #f2f2f2;
 }
 
 /* ══════════════════════════════════════════════════════════════ tokens: dark ══ */
-html[data-skin='neumorph'].dark {
-  /* Markedly lighter than classic dark's 0.145L, and that is required rather
-     than a taste call: a highlight needs headroom *above* the surface, and on
-     near-black there is none — the top-left light disappears and all that is
-     left is a drop shadow, which is not neumorphism. */
-  --wa-surface: #3a3f47;
-  --wa-surface-sunk: #33373e;
-  --wa-surface-lift: #40454e;
+html[data-skin='metro'].dark {
+  /* Metro dark is genuinely black — the Start screen and every Windows 8 dark app
+     used #000. But *everything* at #000 is a void: the first pass had rail,
+     content, tiles and output pane all indistinguishable. So black is the canvas,
+     and the tiles sit one step above it. */
+  --wa-canvas: #000000;
+  --wa-surface: #121212; /* tiles */
+  --wa-chrome: #1e1e1e; /* app bar, rail, docks */
+  --wa-line: #383838; /* visible: this is the only separator the skin has */
+  --wa-line-strong: #565656;
 
-  --background: var(--wa-surface);
+  --background: var(--wa-canvas);
   --card: var(--wa-surface);
-  --popover: var(--wa-surface-lift);
-  --muted: var(--wa-surface);
-  --secondary: var(--wa-surface);
-  --accent: #474d57;
-  --border: transparent;
-  --input: transparent;
-  --ring: oklch(0.72 0.13 250);
+  --popover: var(--wa-chrome);
+  --muted: var(--wa-chrome);
+  --secondary: var(--wa-chrome);
+  --accent: #2b2b2b;
+  --border: var(--wa-line);
+  --input: var(--wa-line-strong);
 
-  --radius: 1rem;
+  /* Lightened one step: #0078d7 on black is 3.4:1, which is not enough for the
+     small text this app is full of. */
+  --primary: #2d9ceb;
+  --primary-foreground: #000000;
+  --ring: #4fb3f2;
 
-  /* Inverted, like classic dark: 50–400 walk toward light. */
-  --adaptive-50: var(--wa-surface-lift);
-  --adaptive-100: var(--wa-surface-sunk);
-  --adaptive-200: #42474f;
-  --adaptive-300: #4e545e;
-  --adaptive-400: #7b828f;
-  /* Lightened, mirroring the light block: the surface is 0.29L, not 0.145L. */
-  --adaptive-500: oklch(0.76 0 0);
-  --adaptive-600: oklch(0.88 0 0);
+  --radius: 0px;
 
-  --wa-hi: rgb(255 255 255 / 0.07);
-  --wa-lo: rgb(0 0 0 / 0.5);
+  --adaptive-50: #0a0a0a;
+  --adaptive-100: var(--wa-chrome);
+  --adaptive-200: var(--wa-line);
+  --adaptive-300: var(--wa-line-strong);
+  --adaptive-400: #8a8a8a;
+  --adaptive-500: #b3b3b3;
+  --adaptive-600: #d9d9d9;
 
-  --wa-raise-1: -2px -2px 4px var(--wa-hi), 2px 2px 5px var(--wa-lo);
-  --wa-raise-2: -5px -5px 12px var(--wa-hi), 6px 6px 16px var(--wa-lo);
-  --wa-float-1: -6px -6px 16px var(--wa-hi), 10px 12px 28px rgb(0 0 0 / 0.6);
-  --wa-float-2: -8px -8px 22px var(--wa-hi), 16px 20px 44px rgb(0 0 0 / 0.7);
+  /* The tile palette, brightened for a black ground. */
+  --green-500: #a4c400;
+  --amber-500: #f0a30a;
+  --red-500: #ff4343;
+  --blue-500: #2d9ceb;
 
-  --wa-inset-1: inset 2px 2px 4px var(--wa-lo), inset -2px -2px 4px var(--wa-hi);
-  --wa-inset-2: inset 4px 4px 10px rgb(0 0 0 / 0.6), inset -3px -3px 7px var(--wa-hi);
-  --wa-pressed: inset 2px 2px 5px var(--wa-lo), inset -2px -2px 5px var(--wa-hi);
+  --shadow-focus-ring: 0 0 0 2px var(--ring);
 
-  --shadow-focus-ring: 0 0 0 2px var(--ring), var(--wa-raise-1);
+  --wa-scroll-thumb: #4d4d4d;
+  --wa-scroll-thumb-hover: #767676;
 
-  --wa-scroll-thumb: #565c67;
-  --wa-scroll-thumb-hover: #6c737f;
-
-  --wa-term-bg: #3a3f47;
-  --wa-term-fg: #e2e5ea;
-  --wa-term-cursor: #e2e5ea;
-  --wa-term-cursor-accent: #3a3f47;
-  --wa-term-selection: #4d5a6d;
-  /* One Dark's blacks were chosen against #16181a and vanish on #3a3f47. */
-  --wa-term-black: #4a5058;
-  --wa-term-bright-black: #7d8593;
-  --wa-term-white: #c3cad4;
+  --wa-term-bg: #000000;
+  --wa-term-fg: #f2f2f2;
+  --wa-term-cursor: #f2f2f2;
+  --wa-term-cursor-accent: #000000;
+  --wa-term-selection: #264f78;
+  --wa-term-black: #1a1a1a;
+  --wa-term-red: #e51400;
+  --wa-term-green: #60a917;
+  --wa-term-yellow: #f0a30a;
+  --wa-term-blue: #1ba1e2;
+  --wa-term-magenta: #d80073;
+  --wa-term-cyan: #00aba9;
+  --wa-term-white: #c8c8c8;
+  --wa-term-bright-black: #767676;
+  --wa-term-bright-red: #ff4343;
+  --wa-term-bright-green: #a4c400;
+  --wa-term-bright-yellow: #e3c800;
+  --wa-term-bright-blue: #4fb3f2;
+  --wa-term-bright-magenta: #aa00ff;
+  --wa-term-bright-cyan: #00c9c7;
+  --wa-term-bright-white: #ffffff;
 }
 
-/* ═════════════════════════════════════════════════════ raised surfaces ══ */
+/* ═══════════════════════════════════════════════ square off everything ══ */
 
-/* Two selectors cover every card in the app. `[data-slot='panel']` is PanelShell
- * (4 importers); `.bg-card` is the ~20 places that hand-roll the same surface
- * inline. Targeting a utility class by name is safe *here* in a way that
- * targeting `.border-b` would not be: `bg-card` means "this is a card", so the
- * class carries the intent. A single-side border does not — it is a panel edge
- * in one file and a table-row separator in the next.
+/* --radius covers rounded-sm/md/lg. These are the utilities that hardcode a
+ * shape and so cannot follow a token: the 12 `rounded-[5px]` button sites, the
+ * 21 `rounded-full` pills and status dots, and the corner-specific ones.
+ *
+ * The status dots going square is intentional, not collateral damage — Metro's
+ * own status glyphs are squares, and a round dot beside a square pill beside a
+ * square avatar would be the one soft thing on the screen.
  */
-html[data-skin='neumorph'] :is([data-slot='panel'], .bg-card, .wa-table) {
+html[data-skin='metro'] :is([class*='rounded'], [data-slot]) {
+  border-radius: 0;
+}
+
+/* ═════════════════════════════════════════════════════════ flat surfaces ══ */
+
+/* A panel is a tile: flat fill, one hairline, no shadow. Two selectors cover the
+ * app — `[data-slot='panel']` is PanelShell, and `.bg-card` is the ~20 places
+ * that hand-roll the same surface inline. Targeting a utility class by name is
+ * safe *here* in a way that targeting `.border-b` would not be: `bg-card` means
+ * "this is a card", so the class carries the intent. A single-side border does
+ * not — it is a panel edge in one file and a table-row separator in the next.
+ */
+html[data-skin='metro'] :is([data-slot='panel'], .bg-card, .wa-table) {
   background-color: var(--wa-surface);
-  box-shadow: var(--wa-raise-2);
+  border-color: var(--wa-line);
+  box-shadow: none;
 }
 
-/* Nested panels demote to the shallow raise. Without this the detail page stacks
-   three levels of raise-2 and turns to mud — the signature neumorphism smell. */
-html[data-skin='neumorph']
-  :is([data-slot='panel'], .bg-card)
-  :is([data-slot='panel'], .bg-card) {
-  box-shadow: var(--wa-raise-1);
+/* The centre column and the output pane are tiles too, even though neither is a
+   `bg-card`: they carry `bg-background`, which is now the canvas, and left as-is
+   the whole middle of the window was one undifferentiated field. */
+html[data-skin='metro'] :is([data-slot='main-tabs'], [data-slot='panel-header']) {
+  background-color: var(--wa-surface);
 }
 
-/* A panel header keeps a separator, because the ΔL trick makes the inherited
-   hairline nearly invisible and a titled panel needs its title divided. */
-html[data-skin='neumorph'] [data-slot='panel-header'] {
-  border-bottom-color: transparent;
-  box-shadow: 0 1px 0 var(--wa-hi), 0 2px 3px -2px var(--wa-lo);
+/* The title in a light weight with open tracking. This is Metro's actual
+   hierarchy mechanism, and without it a squared-off skin just looks like the
+   classic one with the corners filed off. */
+html[data-skin='metro'] [data-slot='panel-header'] {
+  border-bottom-color: var(--wa-line);
+}
+html[data-skin='metro'] [data-slot='panel-header'] > span:first-child {
+  font-weight: 300;
+  font-size: 14px;
+  letter-spacing: 0.01em;
 }
 
-/* ════════════════════════════════════════════════════ floating surfaces ══ */
-
-/* Lifted off the base colour on purpose: a same-colour popover over a
-   same-colour panel is the classic neumorphism failure. */
-html[data-skin='neumorph']
+/* Overlays are flat too. The scrim does the separating that a shadow would, so
+   it is heavier here than the app-wide default rather than lighter. */
+html[data-skin='metro']
   :is(
     [data-slot='popover-content'],
     [data-slot='dropdown-menu-content'],
-    [data-slot='dropdown-menu-sub-content']
+    [data-slot='dropdown-menu-sub-content'],
+    [data-slot='tooltip-content'],
+    [data-slot='dialog-content'],
+    [data-slot='alert-dialog-content'],
+    [data-slot='command']
   ) {
-  background-color: var(--wa-surface-lift);
-  box-shadow: var(--wa-float-1);
+  box-shadow: none;
+  border: 1px solid var(--wa-line-strong);
+}
+html[data-skin='metro'] :is([data-slot='dialog-overlay'], [data-slot='alert-dialog-overlay']) {
+  background-color: rgb(0 0 0 / 0.6);
 }
 
-/* Small and short: a 20px blur on a 24px-tall box is a smudge, not a shadow. */
-html[data-skin='neumorph'] [data-slot='tooltip-content'] {
-  box-shadow: var(--wa-raise-1);
+/* Chrome — rails, docks, app bars — is the furniture grey, flat against the
+   content. */
+html[data-skin='metro'] [data-slot='terminal-dock'] {
+  background-color: var(--wa-chrome);
+  border-top-color: var(--wa-line);
 }
 
-html[data-skin='neumorph']
-  :is([data-slot='dialog-content'], [data-slot='alert-dialog-content'], [data-slot='command']) {
-  background-color: var(--wa-surface-lift);
-  box-shadow: var(--wa-float-2);
+/* No well, no inset: the terminal is a plain rectangle of console. The overlay
+   the previous skin drew here is explicitly cancelled — `content: none` rather
+   than a transparent shadow, so there is no stacking-context left behind. */
+html[data-skin='metro'] [data-slot='term-surface'] {
+  border: 1px solid var(--wa-line);
 }
-
-/* A heavy scrim under soft shadows reads as fog rather than as focus. */
-html[data-skin='neumorph'] :is([data-slot='dialog-overlay'], [data-slot='alert-dialog-overlay']) {
-  background-color: rgb(0 0 0 / 0.25);
-}
-
-/* ══════════════════════════════════════════════════════════ inset wells ══ */
-
-html[data-skin='neumorph'] :is([data-slot='input'], [data-slot='command-input-wrapper']) {
-  background-color: var(--wa-surface);
-  border-color: transparent;
-  box-shadow: var(--wa-inset-1);
-}
-html[data-skin='neumorph'] [data-slot='command-input-wrapper'] {
-  border-radius: var(--radius-md);
-}
-
-/* The terminal is the app's deepest well. The inset is drawn on an overlay
- * rather than as `box-shadow: inset` because xterm renders an opaque canvas
- * filling the wrapper: an inset shadow would show only in the padding and stop
- * dead at the canvas edge, which looks like a rendering bug. `pointer-events:
- * none` is not optional — xterm's selection and link handlers live on
- * descendants of this element.
- */
-html[data-skin='neumorph'] [data-slot='term-surface'] {
-  position: relative;
-  border-radius: var(--radius-md);
-  padding: 10px;
-}
-html[data-skin='neumorph'] [data-slot='term-surface']::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  border-radius: inherit;
-  box-shadow: var(--wa-inset-2);
-}
-
-/* Docks and rails are carved out of the page, not sitting on it. */
-html[data-skin='neumorph'] [data-slot='terminal-dock'] {
-  background-color: var(--wa-surface-sunk);
-  border-top-color: transparent;
-  box-shadow: inset 0 3px 6px -3px var(--wa-lo);
+html[data-skin='metro'] [data-slot='term-surface']::after {
+  content: none;
 }
 
 /* ═════════════════════════════════════════════════════════════ buttons ══ */
 
-/* Keyed on the attributes button.tsx already emits, so its cva table is
- * reachable without adding a single variant to it — and a future shadcn update
- * still applies cleanly.
+/* The Metro button: a 2px rectangle of border, no fill, and a solid fill on
+ * hover. Keyed on the attributes button.tsx already emits, so its cva table is
+ * reachable without adding a variant to it — and a future shadcn update still
+ * applies cleanly.
  *
- * These write Tailwind's `--tw-shadow` *slot* and then restate the five-slot
- * box-shadow, rather than setting the longhand directly. That is what keeps
- * `hover:shadow-focus-ring` working: as an unlayered longhand this rule would
- * beat the utility outright and the focus ring would be silently swallowed on
- * all 16 of its call sites. Writing the slot instead lets the utility win the
- * custom property, and because --shadow-focus-ring carries var(--wa-raise-1) the
- * control gains a ring *without flattening*.
+ * `border-width: 2px` is the one place this skin adds weight rather than removing
+ * it. A 1px button in a design with no shadows and no radius reads as a text
+ * label, not a control.
  */
-/* waOutline only — `waGhost` deliberately stays flat. Ghost means "no chrome",
-   and it is what the dense rows use for their row actions and close buttons;
-   raising all of those would turn every list into a field of pebbles. A toggled
-   ghost still presses in, via the aria-pressed rule below. */
-html[data-skin='neumorph'] [data-slot='button'][data-variant='waOutline'] {
-  background-color: var(--wa-surface);
-  border-color: transparent;
-  --tw-shadow: var(--wa-raise-1);
-  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow),
-    var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+html[data-skin='metro'] [data-slot='button'][data-variant='waOutline'] {
+  background-color: transparent;
+  border-width: 2px;
+  border-color: var(--wa-line-strong);
+  color: var(--adaptive-600);
+  box-shadow: none;
   transition:
-    box-shadow 120ms ease,
-    background-color 120ms ease;
+    background-color 80ms linear,
+    color 80ms linear,
+    border-color 80ms linear;
+}
+html[data-skin='metro'] [data-slot='button'][data-variant='waOutline']:hover:not(:disabled) {
+  background-color: var(--adaptive-600);
+  border-color: var(--adaptive-600);
+  color: var(--wa-surface);
 }
 
-/* waPrimary keeps its fill. The primary action is the one place a colour is
-   allowed to break the one-surface rule — in a borderless UI a grey "Pull All"
-   would be indistinguishable from the page. */
-html[data-skin='neumorph'] [data-slot='button'][data-variant='waPrimary'] {
+/* Primary is a solid accent tile with no border at all — the Metro call to
+   action. */
+html[data-skin='metro'] [data-slot='button'][data-variant='waPrimary'] {
+  background-color: var(--primary);
   border-color: transparent;
-  --tw-shadow: var(--wa-raise-1);
-  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow),
-    var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+  color: var(--primary-foreground);
+  box-shadow: none;
+}
+html[data-skin='metro'] [data-slot='button'][data-variant='waPrimary']:hover:not(:disabled) {
+  /* Darken rather than fade: opacity on a flat fill reads as disabled. */
+  background-color: color-mix(in srgb, var(--primary) 82%, #000);
 }
 
-/* waDanger's red edge and waDashed's dashed edge are *semantic*, not chrome, so
-   they are re-asserted against the global --border: transparent. */
-html[data-skin='neumorph'] [data-slot='button'][data-variant='waDanger'] {
-  border-color: var(--error-500);
+/* Danger inverts to a solid red tile on hover, which is Metro's way of saying
+   "this one is different" without an icon or a tint. */
+html[data-skin='metro'] [data-slot='button'][data-variant='waDanger'] {
+  border-width: 2px;
+  border-color: var(--red-500);
+  color: var(--red-500);
 }
-html[data-skin='neumorph'] [data-slot='button'][data-variant='waDashed'] {
-  border-color: var(--adaptive-300);
-}
-
-/* The press. This is the point of the skin: a soft button must actually sink. */
-html[data-skin='neumorph'] [data-slot='button']:active:not(:disabled) {
-  --tw-shadow: var(--wa-pressed);
+html[data-skin='metro'] [data-slot='button'][data-variant='waDanger']:hover:not(:disabled) {
+  background-color: var(--red-500);
+  color: #ffffff;
 }
 
-/* Toggled state. Note the background change as well as the depth: depth alone is
-   invisible to a low-vision user and on a dim display, so it is never the only
-   signal. */
-html[data-skin='neumorph'] :is([data-slot='button'], button)[aria-pressed='true'] {
-  background-color: var(--wa-surface-sunk);
-  --tw-shadow: var(--wa-pressed);
-  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow),
-    var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+/* Ghost stays chrome-free — it is what the dense rows use for row actions — and
+   picks up the same flat grey hover the rest of the skin uses. */
+html[data-skin='metro'] [data-slot='button'][data-variant='waGhost'] {
+  box-shadow: none;
 }
 
-/* Selected, for things that are navigation rather than a control. */
-html[data-skin='neumorph'] [aria-current='true'] {
-  background-color: var(--wa-surface);
-  box-shadow: var(--wa-raise-1);
+/* A dashed edge is not a Metro idiom; the quick-action chips become plain
+   outlined tiles that fill on hover like every other command here. */
+html[data-skin='metro'] [data-slot='button'][data-variant='waDashed'] {
+  border-style: solid;
+  border-color: var(--wa-line-strong);
+  color: var(--adaptive-500);
+}
+html[data-skin='metro'] [data-slot='button'][data-variant='waDashed']:hover:not(:disabled) {
+  background-color: var(--adaptive-600);
+  border-color: var(--adaptive-600);
+  color: var(--wa-surface);
 }
 
-/* The 12 literal `rounded-[5px]` sites are all button sizes plus the dock's tab
-   chips; an arbitrary-value utility cannot follow --radius, so it is restated. */
-html[data-skin='neumorph']
-  [data-slot='button']:is(
-    [data-size='waSm'],
-    [data-size='waXs'],
-    [data-size='waChip'],
-    [data-size='waIcon']
-  ) {
-  border-radius: 9px;
+/* Row actions are the exception to the 2px rule, and this is the biggest single
+ * correction to the first pass: four bordered 26px squares on every one of ~20
+ * rows turned the table into a wall of boxes, which is the opposite of "content,
+ * not chrome". At icon size the border comes off entirely and the control is just
+ * its glyph — until you point at it, when it becomes a solid accent tile. That
+ * reveal-on-hover *is* the Metro command idiom.
+ *
+ * Scoped to `waIcon` (26px, the in-row size). `waIconLg` is the top bar, where a
+ * bordered square is right because it sits on chrome rather than in a table.
+ */
+html[data-skin='metro']
+  [data-slot='button'][data-variant='waOutline'][data-size='waIcon'] {
+  border-color: transparent;
+  background-color: transparent;
+  color: var(--adaptive-500);
+}
+html[data-skin='metro']
+  [data-slot='button'][data-variant='waOutline'][data-size='waIcon']:hover:not(:disabled) {
+  background-color: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+}
+
+/* State is a solid accent fill with white text — the single most recognisable
+ * Metro idiom, and the reason RepoGrid's view toggle and the terminal dock's
+ * chips got `aria-pressed` in the first place. Colour *and* contrast reversal, so
+ * the state does not depend on hue perception alone.
+ */
+html[data-skin='metro'] :is([data-slot='button'], button)[aria-pressed='true'],
+html[data-skin='metro'] [aria-current='true'] {
+  background-color: var(--primary);
+  border-color: var(--primary);
+  color: var(--primary-foreground);
+  box-shadow: none;
+}
+/* Icons inside a filled state have to invert with it. */
+html[data-skin='metro']
+  :is([aria-pressed='true'], [aria-current='true'])
+  :is(svg, span, .text-adaptive-400, .text-adaptive-500) {
+  color: var(--primary-foreground);
 }
 
 /* ════════════════════════════════════════════════════════════════ tabs ══ */
 
-/* The list becomes a groove and the active trigger lifts out of it — the
-   canonical neumorphic tab. The `line` variant's underline is an indicator
-   rather than a surface, so it is left alone. */
-html[data-skin='neumorph'] [data-slot='tabs-list'] {
-  background-color: var(--wa-surface);
-  box-shadow: var(--wa-inset-1);
-}
-html[data-skin='neumorph'] [data-slot='tabs-trigger'][data-state='active'] {
-  background-color: var(--wa-surface);
-  border-color: transparent;
-  box-shadow: var(--wa-raise-1);
-}
-html[data-skin='neumorph'] [data-slot='tabs-trigger']:not([data-state='active']) {
+/* Metro pivot headers: no track, no fill, no capsule. The active tab is named by
+   a 3px accent underline and a darker label, and that is all. */
+html[data-skin='metro'] [data-slot='tabs-list'] {
+  background-color: transparent;
   box-shadow: none;
+  padding: 0;
+  gap: 0.25rem;
+}
+html[data-skin='metro'] [data-slot='tabs-trigger'] {
+  background-color: transparent;
+  border: 0;
+  border-bottom: 3px solid transparent;
+  box-shadow: none;
+  font-weight: 400;
+}
+html[data-skin='metro'] [data-slot='tabs-trigger'][data-state='active'] {
+  background-color: transparent;
+  border-bottom-color: var(--primary);
+  color: var(--adaptive-600);
+  font-weight: 600;
 }
 
 /* ════════════════════════════════════════════════════════════ gutters ══ */
 
-/* --border: transparent would leave the 1px resize handles *invisible*, which is
- * a real usability regression — you cannot grab what you cannot see. A carved
- * seam replaces them, at the same width, so nothing in the layout moves. The
- * `hover:bg-primary` App.tsx passes to these still wins, so drag feedback is
- * untouched.
- */
-html[data-skin='neumorph'] [data-slot='resizable-handle'] {
-  background-color: transparent;
-  box-shadow: inset 1px 0 1px var(--wa-hi), inset -1px 0 2px var(--wa-lo);
+/* A flat 1px rule, and the `hover:bg-primary` App.tsx passes still wins, so the
+   drag target lights up in the accent colour. */
+html[data-skin='metro'] [data-slot='resizable-handle'] {
+  background-color: var(--wa-line);
+  box-shadow: none;
 }
-html[data-skin='neumorph'] [data-slot='resizable-handle'][aria-orientation='horizontal'] {
-  box-shadow: inset 0 1px 1px var(--wa-hi), inset 0 -1px 2px var(--wa-lo);
+
+html[data-skin='metro'] .wa-scroll::-webkit-scrollbar-thumb {
+  border-radius: 0;
+}
+
+/* ══════════════════════════════════════════════════════ status as tiles ══ */
+
+/* Metro status is a solid tile, never a 12%-opacity tint. The tint is baked into
+ * arbitrary utilities (`bg-amber-500/[0.12]`) that CSS cannot rewrite, which is
+ * why Pill and StatePill now carry `data-tone` — the tone as data, so the skin can
+ * pick the fill.
+ *
+ * The foreground is per-tone rather than a single white, because these are real
+ * Windows 8 tile colours and half of them are light: white on amber #f0a30a is
+ * 2.2:1, black is 9.5:1. Every pair below clears 4.5:1.
+ */
+html[data-skin='metro'] :is([data-slot='pill'], [data-slot='state-pill']) {
+  background-color: var(--wa-tile);
+  border-color: transparent;
+  color: var(--wa-tile-fg);
+  font-weight: 600;
+}
+/* The label and count spans carry their own text colours, and the dot its own
+   fill; on a solid tile both have to become the tile's foreground. */
+html[data-skin='metro'] :is([data-slot='pill'], [data-slot='state-pill']) span {
+  color: var(--wa-tile-fg);
+}
+html[data-skin='metro'] :is([data-slot='pill'], [data-slot='state-pill']) [data-slot='status-dot'] {
+  background-color: var(--wa-tile-fg);
+}
+
+html[data-skin='metro'] [data-tone='ok'] {
+  --wa-tile: var(--green-500);
+  --wa-tile-fg: #000000;
+}
+html[data-skin='metro'] [data-tone='warn'] {
+  --wa-tile: var(--amber-500);
+  --wa-tile-fg: #000000;
+}
+html[data-skin='metro'] [data-tone='err'] {
+  --wa-tile: var(--red-500);
+  --wa-tile-fg: #ffffff;
+}
+html[data-skin='metro'] [data-tone='info'] {
+  --wa-tile: var(--blue-500);
+  --wa-tile-fg: #ffffff;
+}
+html[data-skin='metro'] [data-tone='idle'] {
+  --wa-tile: var(--adaptive-200);
+  --wa-tile-fg: var(--adaptive-600);
+}
+/* Dark's tones are the brightened tile colours, so every one of them takes black. */
+html[data-skin='metro'].dark :is([data-tone='err'], [data-tone='info']) {
+  --wa-tile-fg: #000000;
+}
+
+/* The kind tag becomes a tile too, which also fixes a live bug: KIND_STYLE's
+   `library` row references `--color-assist-500`, which is not defined anywhere, so
+   that tag currently renders with no fill or border at all. */
+html[data-skin='metro'] [data-slot='kind-tag'] {
+  border-color: transparent;
+  color: #ffffff;
+  font-weight: 700;
+}
+html[data-skin='metro'] [data-kind='frontend'] {
+  background-color: #0078d7; /* cobalt */
+}
+html[data-skin='metro'] [data-kind='backend'] {
+  background-color: #60a917; /* green */
+  color: #000000;
+}
+html[data-skin='metro'] [data-kind='library'] {
+  background-color: #6a00ff; /* indigo */
+}
+html[data-skin='metro'] [data-kind='mobile'] {
+  background-color: #f0a30a; /* amber */
+  color: #000000;
+}
+html[data-skin='metro'] [data-kind='docs'] {
+  background-color: #647687; /* steel */
+}
+html[data-skin='metro'] [data-kind='unknown'] {
+  background-color: var(--adaptive-300);
+  color: var(--adaptive-600);
+}
+
+/* ══════════════════════════════════════════════════════════ typography ══ */
+
+/* Metro is typography-led: with no shadows, no radius and no gradients, type
+ * weight and tracking are what is left to build hierarchy with. Without this
+ * section the skin is just the classic one with square corners — which is exactly
+ * how the first pass read.
+ *
+ * Light weights at large sizes, heavy tracking at small ones. That inversion is
+ * the whole trick of Segoe-era Metro.
+ */
+html[data-skin='metro'] [data-slot='app-name'] {
+  font-weight: 300;
+  font-size: 15px;
+  letter-spacing: 0.02em;
+}
+html[data-skin='metro'] h1 {
+  font-weight: 200;
+  font-size: 22px;
+  letter-spacing: 0;
+}
+/* Section labels are already uppercase here; Metro tracks them wider and drops
+   the weight, because they are labels rather than headings. */
+html[data-skin='metro'] [data-slot='section-label'] {
+  letter-spacing: 0.12em;
+  font-weight: 600;
+}
+/* Pivot headers: uppercase, tracked, light — the Windows 8 tab. */
+html[data-skin='metro'] [data-slot='main-tabs'] button {
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  font-weight: 400;
+  font-size: 11px;
 }
 
 /* ═════════════════════════════════════════════════ smaller primitives ══ */
 
-/* A keycap and a mono tag are the textbook engraved chip. */
-html[data-skin='neumorph'] :is([data-slot='keycap'], [data-slot='mono-chip']) {
-  border-color: transparent;
-  border-radius: 7px;
-  box-shadow: var(--wa-inset-1);
+/* Square outlined chips, not engraved ones. */
+html[data-skin='metro'] :is([data-slot='keycap'], [data-slot='mono-chip']) {
+  border-color: var(--wa-line-strong);
+  box-shadow: none;
 }
 
-html[data-skin='neumorph'] [data-slot='skeleton'] {
-  background-color: var(--wa-surface-sunk);
-  box-shadow: var(--wa-inset-1);
+html[data-skin='metro'] [data-slot='skeleton'] {
+  background-color: var(--wa-chrome);
+  box-shadow: none;
 }
-html[data-skin='neumorph'] [data-slot='progress'] {
-  background-color: var(--wa-surface);
-  box-shadow: var(--wa-inset-1);
+html[data-skin='metro'] [data-slot='progress'] {
+  background-color: var(--wa-chrome);
+  box-shadow: none;
 }
-html[data-skin='neumorph'] :is([data-slot='separator'], [data-slot='dropdown-menu-separator']) {
-  background-color: var(--adaptive-300);
+html[data-skin='metro'] :is([data-slot='separator'], [data-slot='dropdown-menu-separator']) {
+  background-color: var(--wa-line);
 }
-html[data-skin='neumorph'] [data-sonner-toast] {
-  border-color: transparent;
-  box-shadow: var(--wa-float-2);
+html[data-skin='metro'] [data-sonner-toast] {
+  border: 1px solid var(--wa-line-strong);
+  box-shadow: none;
+}
+
+/* Uppercase, wide-tracked section labels are already this app's convention; Metro
+   just leans on them harder, because they are carrying hierarchy that borders and
+   elevation carry elsewhere. */
+html[data-skin='metro'] h1 {
+  font-weight: 300;
+  letter-spacing: 0;
 }
 
 /* ══════════════════════════════════════════════════════════════ focus ══ */
 
-/* An outline, not a box-shadow, and for three concrete reasons: it is a
- * different property so no shadow rule anywhere — present or future — can
- * clobber it; it is not clipped by the `overflow-hidden` that PanelShell and
- * every window frame set, which an outer ring on a focused descendant would be;
- * and `outline-offset` gives visible separation when there is no border to
- * thicken.
+/* An outline, not a box-shadow, for three reasons: it is a different property so
+ * no rule here can clobber it; it is not clipped by the `overflow-hidden` that
+ * PanelShell and every window frame set, which a box-shadow ring on a focused
+ * descendant would be; and it needs no radius to follow.
  *
  * Unlayered, so it outranks `.outline-none` (which Tailwind emits in @layer
- * utilities) without `!important`. Coloured, not neutral: a grey ring on #eceef2
- * is ~1.2:1 and effectively invisible. This alone satisfies WCAG 2.4.7/2.4.11
- * for focus, whatever happens to the shadows.
+ * utilities) without `!important`. Windows 8 used a 1px dotted focus rect; 2px
+ * solid accent is the same idea at a size that survives a HiDPI webview.
  */
-html[data-skin='neumorph'] :focus-visible {
+html[data-skin='metro'] :focus-visible {
   outline: 2px solid var(--ring);
-  outline-offset: 3px;
+  outline-offset: 2px;
 }
 
 /* ═══════════════════════════════════════════════════════ escape hatches ══ */
 
-/* The OS asked for contrast; the skin gives its borders back. Not optional —
-   this is the mitigation for the 1.4.11 limitation in the header comment. */
+/* Metro is already a high-contrast design — flat fills, real dividers, no soft
+   edges — so this only hardens the lines rather than reinstating anything. */
 @media (prefers-contrast: more) {
-  html[data-skin='neumorph'] {
-    --adaptive-200: var(--adaptive-400);
-    --border: var(--adaptive-400);
-    --wa-lo: rgb(60 70 90 / 0.85);
-  }
-  html[data-skin='neumorph']
-    :is([data-slot='panel'], .bg-card, [data-slot='dialog-content'], [data-slot='input']) {
-    border-color: var(--adaptive-400);
+  html[data-skin='metro'] {
+    --wa-line: var(--wa-line-strong);
+    --border: var(--wa-line-strong);
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  html[data-skin='neumorph'] [data-slot='button'] {
+  html[data-skin='metro'] [data-slot='button'] {
     transition-duration: 0ms;
   }
 }

@@ -16,10 +16,10 @@
 @custom-variant dark (&:where(.dark, .dark *));
 
 /* The other axis, so a component that genuinely needs to opt into skin-specific
- * styling can write `neumorph:…` rather than growing a variant. Same `:where()`
+ * styling can write `metro:…` rather than growing a variant. Same `:where()`
  * shape as `dark` for the same reason: zero added specificity, so a plain
  * utility on the element still wins. */
-@custom-variant neumorph (&:where([data-skin='neumorph'], [data-skin='neumorph'] *));
+@custom-variant metro (&:where([data-skin='metro'], [data-skin='metro'] *));
 
 /* Tailwind v4 changed the default border colour from gray-200 to `currentColor`,
  * so any element with a bare `border` inherits the *text* colour — which is why
@@ -124,24 +124,4 @@
 
   /* Exposes the hover/focus ring as a single `shadow-focus-ring` class. */
   --shadow-focus-ring: var(--shadow-focus-ring);
-
-  /* --- skin elevations ------------------------------------------------------
-   *
-   * Exposed as utilities so a component that has to *choose* a depth can say
-   * `shadow-raise-2` instead of growing a cva variant. Because this block is
-   * `inline` they resolve live against [data-skin], which is also why
-   * wa-bridge.css declares transparent no-op values for the classic case — an
-   * unset var here would emit an invalid box-shadow.
-   *
-   * The insets live in the --inset-shadow-* namespace on purpose: that lands
-   * them in Tailwind's --tw-inset-shadow slot, so a well and a raised edge
-   * compose on one element instead of overwriting each other.
-   */
-  --shadow-raise-1: var(--wa-raise-1);
-  --shadow-raise-2: var(--wa-raise-2);
-  --shadow-float-1: var(--wa-float-1);
-  --shadow-float-2: var(--wa-float-2);
-  --inset-shadow-well-1: var(--wa-inset-1);
-  --inset-shadow-well-2: var(--wa-inset-2);
-  --inset-shadow-pressed: var(--wa-pressed);
 }

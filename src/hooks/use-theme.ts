@@ -7,8 +7,8 @@ import type { Skin, ThemeMode } from '@/stores/ui-store'
  * Every Radix portal (Dialog, Popover, DropdownMenu, Tooltip, CommandDialog,
  * Sonner) mounts into document.body — outside the app root. If `.dark` or
  * `data-skin` lived on the root, those portals would lose them and resolve the
- * whole --adaptive-* ramp to its light, hairlined values: white dialogs floating
- * over a dark app.
+ * whole --adaptive-* ramp to its light values: white dialogs floating over a dark
+ * app, and a rounded one over a squared-off skin.
  *
  * A module-scope subscription rather than an effect in `App`, and that is a fix
  * rather than a style preference. `buildTermTheme()` samples these very
@@ -49,10 +49,9 @@ const LABEL: Record<ThemeMode, string> = {
   dark: 'Dark',
 }
 
-/** "Soft" rather than "Neumorph": the UI describes the look, not the technique. */
 const SKIN_LABEL: Record<Skin, string> = {
   classic: 'Classic',
-  neumorph: 'Soft',
+  metro: 'Metro',
 }
 
 /**

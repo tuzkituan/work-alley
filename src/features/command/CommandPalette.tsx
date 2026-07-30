@@ -200,16 +200,16 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
             >
               Toggle theme (light / dark)
             </CommandItem>
-            {/* "skin", "classic" and "soft" all live in the value because cmdk
+            {/* "skin", "classic" and "metro" all live in the value because cmdk
                 filters on that, not on the label. */}
             <CommandItem
-              value="action:skin classic soft neumorphic"
+              value="action:skin classic metro flat tiles windows"
               onSelect={() => {
                 setOpen(false)
                 toggleSkin()
               }}
             >
-              Toggle skin (classic / soft)
+              Toggle skin (classic / metro)
             </CommandItem>
             <CommandItem
               value="action:toolbox"

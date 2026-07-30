@@ -8,16 +8,17 @@ export type ViewMode = 'cards' | 'list'
 export type ThemeMode = 'light' | 'dark'
 
 /**
- * The skin: which *material* the app is painted in, independent of the theme's
- * *lighting*. Two axes, four real looks.
+ * The skin: which *design language* the app is painted in, independent of the
+ * theme's lighting. Two axes, four real looks.
  *
- * `classic` is the 1px-hairline look this app has always had and stays the
- * default. `neumorph` paints every surface in one colour and separates them with
- * soft shadows instead of borders — which is deliberately opt-in, because it
- * cannot meet WCAG 1.4.11's 3:1 contrast for component boundaries. Exported as a
- * list so the persisted value can be validated against it; see `migrate`.
+ * `classic` is the look this app has always had and stays the default. `metro` is
+ * Microsoft's Metro / Modern UI from Windows 8: square corners, no shadows or
+ * gradients at all, solid saturated accent fills for state, real dividers instead
+ * of soft edges, and typography doing the work that chrome does elsewhere.
+ * Exported as a list so the persisted value can be validated against it; see
+ * `migrateUiState`.
  */
-export const SKINS = ['classic', 'neumorph'] as const
+export const SKINS = ['classic', 'metro'] as const
 export type Skin = (typeof SKINS)[number]
 
 /**
@@ -161,7 +162,7 @@ export const useUiStore = create<UiState>()(
 
       toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
       setTheme: (theme) => set({ theme }),
-      toggleSkin: () => set((s) => ({ skin: s.skin === 'classic' ? 'neumorph' : 'classic' })),
+      toggleSkin: () => set((s) => ({ skin: s.skin === 'classic' ? 'metro' : 'classic' })),
       setSkin: (skin) => set({ skin }),
       setTermFontSize: (size) => set({ termFontSize: Math.min(20, Math.max(8, size)) }),
 
