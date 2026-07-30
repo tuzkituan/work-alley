@@ -84,8 +84,17 @@ pub fn ssh_add_verdict(code: Option<i32>) -> AgentState {
 }
 
 async fn ssh_agent_state(tc: &Toolchain) -> (AgentState, Vec<String>) {
-    // `SSH_AUTH_SOCK` unset is conclusive: there is nothing to ask. Skipping the
-    // subprocess also keeps this off the critical path on a machine without one.
+    // `SSH_AUTH_SOCK` unset is conclusive *on unix*: there is nothing to ask.
+    // Skipping the subprocess also keeps this off the critical path on a machine
+    // without one.
+    //
+    // On Windows it is conclusive of nothing. The OpenSSH agent there is a Windows
+    // *service* reached over the named pipe `\\.\pipe\openssh-ssh-agent`, and this
+    // variable is never set even with keys loaded — so short-circuiting made the
+    // credentials step report "nothing configured" forever, which turns a required
+    // setup step into a dead end. `ssh-add -l`'s exit code answers it properly, and
+    // its 2 already covers "the service is not running".
+    #[cfg(unix)]
     if std::env::var_os("SSH_AUTH_SOCK").is_none() {
         return (AgentState::Absent, Vec::new());
     }
@@ -94,6 +103,7 @@ async fn ssh_agent_state(tc: &Toolchain) -> (AgentState, Vec<String>) {
     };
 
     let mut cmd = tokio::process::Command::new(bin);
+    crate::platform::hide_console(&mut cmd);
     cmd.arg("-l")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

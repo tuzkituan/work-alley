@@ -365,6 +365,7 @@ use crate::platform::{is_executable, which};
 
 async fn version_of(path: &std::path::Path, tool: &str, path_env: &str) -> Option<String> {
     let mut cmd = tokio::process::Command::new(path);
+    crate::platform::hide_console(&mut cmd);
     // `go --version` is not a thing — the go toolchain spells it as a subcommand,
     // and asking the wrong way reports go as installed-but-versionless.
     cmd.arg(if tool == "go" { "version" } else { "--version" })

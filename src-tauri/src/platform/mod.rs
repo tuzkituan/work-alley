@@ -701,8 +701,169 @@ pub fn test_shell(kind: ShellKind) -> &'static Shell {
 }
 
 // ---------------------------------------------------------------------------
+// Child-process shaping
+// ---------------------------------------------------------------------------
+
+/// Stops a child from flashing a console window.
+///
+/// Must be called on every piped child. This app is a `windows_subsystem = "windows"`
+/// process, so it owns no console — which means each `git status` allocates one,
+/// paints it, and destroys it. Across a forty-repo scan that is forty windows
+/// appearing and vanishing, and it is the single most visible defect on Windows if
+/// any call site is missed.
+///
+/// No-op on unix.
+pub fn hide_console(cmd: &mut tokio::process::Command) {
+    #[cfg(windows)]
+    cmd.creation_flags(imp::CREATE_NO_WINDOW);
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
+/// `hide_console` for a blocking command.
+pub fn hide_console_std(cmd: &mut std::process::Command) {
+    #[cfg(windows)]
+    imp::hide_console_std(cmd);
+    #[cfg(not(windows))]
+    let _ = cmd;
+}
+
+/// Prepares a child to be torn down as a whole tree.
+///
+/// Unix: its own session, so `killpg` reaches every descendant. vite spawns esbuild;
+/// killing only the direct child orphans it and leaves the port bound, which makes
+/// the next start fail confusingly.
+///
+/// Windows: a new process group plus no console window. The tree part is handled by
+/// `adopt`, which needs the pid and so cannot happen until after the spawn.
+pub fn new_group(cmd: &mut tokio::process::Command) {
+    imp::new_group(cmd);
+}
+
+/// Prepares a GUI child that must outlive this app.
+///
+/// An editor keeps running after Work Alley exits, so it must not be in the group we
+/// tear down on shutdown. Deliberately *not* given `CREATE_NO_WINDOW` on Windows: a
+/// GUI program needs no console, and `DETACHED_PROCESS` is what stops it dying with us.
+pub fn detach(cmd: &mut std::process::Command) {
+    imp::detach(cmd);
+}
+
+// ---------------------------------------------------------------------------
+// Process groups
+// ---------------------------------------------------------------------------
+
+/// A child and everything it spawns, as one thing that can be killed.
+///
+/// Unix: a process-group id. Windows: an owned Job Object, which is the only real
+/// analogue — descendants join it automatically, `TerminateJobObject` is atomic, and
+/// `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` means our own exit tears them down for free.
+///
+/// `taskkill /T` is *not* the analogue, which is why it is only the fallback: it walks
+/// the live parent chain, so the moment vite's esbuild is reparented it is missed —
+/// exactly the case this abstraction exists for.
+#[derive(Clone)]
+pub struct Group(std::sync::Arc<imp::GroupInner>);
+
+/// Takes ownership of a just-spawned child's tree.
+///
+/// `handle` is the OS process handle where the caller has one (`tokio`'s
+/// `Child::raw_handle`, `portable_pty`'s `Child::as_raw_handle`); `None` falls back to
+/// opening the process by pid. Ignored entirely on unix.
+///
+/// On Windows the child is assigned a few hundred microseconds after `CreateProcess`
+/// returns, so a child that forks in that window escapes. No real package manager or
+/// dev server does, and documenting the race is more honest than pretending the
+/// alternative — suspended-start plus resume — is worth its complexity here.
+pub fn adopt(pid: u32, handle: Option<isize>) -> Group {
+    Group(std::sync::Arc::new(imp::adopt(pid, handle)))
+}
+
+impl Group {
+    /// The pid to show the user.
+    ///
+    /// Unix: the pgid, which is the leader's pid. Windows: the direct child's pid, the
+    /// job itself having no number worth showing.
+    pub fn pid(&self) -> u32 {
+        self.0.display_pid()
+    }
+
+    /// Whether the whole-tree guarantee actually holds.
+    ///
+    /// False only on Windows when the job could not be created — which in practice
+    /// means this app is already inside a job that forbids breakaway. The kill paths
+    /// then degrade to `taskkill /F /T` rather than failing the action.
+    pub fn is_tree(&self) -> bool {
+        self.0.is_tree()
+    }
+}
+
+/// Asks the tree to stop, waits out the grace period, then kills it.
+///
+/// There is no graceful phase on Windows and cannot be: `GenerateConsoleCtrlEvent`
+/// needs a console this GUI process does not have, and `taskkill` without `/F` posts
+/// `WM_CLOSE`, which console programs ignore. So "Stop" terminates there, and the
+/// action descriptions say so.
+pub async fn terminate(g: &Group, grace: std::time::Duration) {
+    if g.0.request_stop() {
+        tokio::time::sleep(grace).await;
+    }
+    g.0.kill();
+}
+
+/// The synchronous variant, for app shutdown where nothing can be awaited.
+pub fn terminate_now(g: &Group) {
+    g.0.kill();
+}
+
+/// Ends a terminal session's tree the way closing its window would.
+///
+/// Unix: `SIGHUP`, which is what a hangup on the controlling terminal delivers.
+/// Windows: there is no SIGHUP for a ConPTY child, and dropping the pseudoconsole is
+/// the nearest equivalent — which `pty` already does — so this terminates.
+pub fn hangup(g: &Group) {
+    g.0.hangup();
+}
+
+// ---------------------------------------------------------------------------
 // Port inspection
 // ---------------------------------------------------------------------------
+
+/// Who is listening on a TCP port.
+///
+/// `ss` then `lsof` on unix; `netstat` on Windows, which is always present and needs
+/// no elevation. Returns pids with the process name where known, so the confirmation
+/// dialog can say *what* it is about to signal rather than just a number.
+pub async fn port_holders(tc: &crate::toolchain::Toolchain, port: u16) -> Vec<(u32, String)> {
+    imp::port_holders(tc, port).await
+}
+
+/// One command per pid to free a port.
+///
+/// A `Vec` of argvs rather than one, because `taskkill` takes a single `/PID` — so
+/// the Windows form is inherently per-process, and the caller runs them as a
+/// sequence of steps. That also gives the action per-pid result markers, which the
+/// single `kill -TERM a b c` never had.
+pub fn kill_pids_argv(pids: &[u32]) -> Vec<Vec<String>> {
+    pids.iter().map(|p| imp::kill_pid_argv(*p)).collect()
+}
+
+/// What "free this port" actually does to a process, for the confirmation dialog.
+///
+/// Not cosmetic: on unix these get a SIGTERM they can catch and clean up after, and
+/// on Windows they are terminated outright. Saying "signalled" on Windows would be a
+/// lie, and this is a dialog whose whole job is to be believed.
+pub fn kill_verb_note() -> &'static str {
+    #[cfg(windows)]
+    {
+        "These are terminated outright — Windows has no signal for a polite stop. \
+         Anything unsaved in them is lost."
+    }
+    #[cfg(not(windows))]
+    {
+        "These are signalled directly. Anything unsaved in them is lost."
+    }
+}
 
 /// Parses the `users:(("node",pid=12345,fd=20))` tail of an `ss -p` line.
 pub fn parse_ss_holders(stdout: &str) -> Vec<(u32, String)> {
@@ -729,9 +890,157 @@ pub fn parse_ss_holders(stdout: &str) -> Vec<(u32, String)> {
     out
 }
 
+// ---------------------------------------------------------------------------
+// External terminal
+// ---------------------------------------------------------------------------
+
+/// A terminal emulator, and how it wants the command handed over.
+pub struct TerminalCmd {
+    pub program: String,
+    /// Flags that come before the command.
+    pub pre: Vec<String>,
+    /// True when the command must arrive as one argument rather than as an argv.
+    ///
+    /// ptyxis is the reason this exists: its `--tab` only combines with `-x`, which
+    /// takes the whole command line as a single string. Given a real argv after `--`
+    /// it ignores `--tab` and opens a *window* instead, which is what it was doing.
+    pub single_string: bool,
+}
+
+/// Finds a terminal emulator to hand an interactive script to.
+///
+/// Degrades to an error carrying the exact command, so the UI can offer "copy" —
+/// which is far better than piping canned menu answers into a script that pushes
+/// commits and publishes packages.
+pub fn find_terminal(tc: &crate::toolchain::Toolchain) -> Option<TerminalCmd> {
+    let _ = tc;
+    imp::find_terminal()
+}
+
+/// Whether handing a *script* to an external terminal can work at all here.
+///
+/// False on Windows, deliberately, and this is a feature reduction rather than a
+/// port. `wt.exe` splits its own command line on `;`, and every script this app
+/// generates is full of them — escaping through two layers of quoting is exactly the
+/// class of bug the `single_string` field above is a monument to. The integrated PTY
+/// already handles an interactive script well, so `commands` rewrites the request to
+/// use it instead of failing.
+///
+/// "Open a shell here" is unaffected: it has no script, so it still gets a real
+/// Windows Terminal tab. See `imp::find_terminal`.
+pub fn external_terminal_available(tc: &crate::toolchain::Toolchain) -> bool {
+    #[cfg(windows)]
+    {
+        let _ = tc;
+        false
+    }
+    #[cfg(not(windows))]
+    {
+        find_terminal(tc).is_some()
+    }
+}
+
+/// Pids listening on `port`, from `netstat -ano -p tcp`.
+///
+/// ```text
+///   Proto  Local Address      Foreign Address    State       PID
+///   TCP    0.0.0.0:3000       0.0.0.0:0          LISTENING   12345
+///   TCP    [::]:3000          [::]:0             LISTENING   12345
+/// ```
+///
+/// The address is matched on its `:port` suffix rather than parsed, because the local
+/// column is `0.0.0.0:3000`, `127.0.0.1:3000` or `[::]:3000` depending on the bind —
+/// and a suffix match handles all three without caring which.
+pub fn parse_netstat_holders(stdout: &str, port: u16) -> Vec<u32> {
+    let suffix = format!(":{port}");
+    let mut out: Vec<u32> = Vec::new();
+
+    for line in stdout.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        // Proto, local, foreign, state, pid.
+        if cols.len() < 5 {
+            continue;
+        }
+        if !cols[0].eq_ignore_ascii_case("tcp") {
+            continue;
+        }
+        // Only a listener holds the port; an outbound connection from an ephemeral
+        // port that happens to equal this one must not be reported.
+        if !cols[3].eq_ignore_ascii_case("LISTENING") {
+            continue;
+        }
+        if !cols[1].ends_with(&suffix) {
+            continue;
+        }
+        if let Ok(pid) = cols[4].parse::<u32>() {
+            // The same server appears once per bound address family.
+            if pid != 0 && !out.contains(&pid) {
+                out.push(pid);
+            }
+        }
+    }
+    out
+}
+
+/// The image name from one `tasklist /NH /FO CSV` row: `"node.exe","12345",…`.
+pub fn parse_tasklist_csv(stdout: &str) -> Option<String> {
+    let line = stdout.lines().find(|l| l.trim_start().starts_with('"'))?;
+    let name = line.split('"').nth(1)?.trim();
+    // "INFO: No tasks are running…" has no quotes at all, so reaching here means a
+    // real row — but an empty name is still not worth reporting as one.
+    (!name.is_empty()).then(|| name.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn netstat_reports_only_listeners_on_the_asked_for_port() {
+        let out = "\
+  Proto  Local Address          Foreign Address        State           PID
+  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       12345
+  TCP    [::]:3000              [::]:0                 LISTENING       12345
+  TCP    127.0.0.1:3001         0.0.0.0:0              LISTENING       999
+  TCP    192.168.1.5:53000      93.184.216.34:3000     ESTABLISHED     777
+  UDP    0.0.0.0:3000           *:*                                    555
+";
+        // Deduplicated across address families, which is one server, not two.
+        assert_eq!(parse_netstat_holders(out, 3000), vec![12345]);
+        assert_eq!(parse_netstat_holders(out, 3001), vec![999]);
+        // An outbound connection *to* :3000 does not hold :3000.
+        assert!(!parse_netstat_holders(out, 3000).contains(&777));
+        assert!(parse_netstat_holders(out, 9999).is_empty());
+    }
+
+    #[test]
+    fn netstat_does_not_confuse_a_port_with_its_suffix() {
+        let out = "  TCP    0.0.0.0:13000          0.0.0.0:0              LISTENING       42\n";
+        // `:13000` must not match a query for port 3000.
+        assert!(parse_netstat_holders(out, 3000).is_empty());
+        assert_eq!(parse_netstat_holders(out, 13000), vec![42]);
+    }
+
+    #[test]
+    fn tasklist_names_the_process_and_tolerates_no_match() {
+        assert_eq!(
+            parse_tasklist_csv("\"node.exe\",\"12345\",\"Console\",\"1\",\"52,000 K\"\n").as_deref(),
+            Some("node.exe")
+        );
+        assert!(parse_tasklist_csv("INFO: No tasks are running which match.\n").is_none());
+        assert!(parse_tasklist_csv("").is_none());
+    }
+
+    #[test]
+    fn freeing_a_port_is_one_command_per_pid() {
+        let argv = kill_pids_argv(&[10, 20]);
+        assert_eq!(argv.len(), 2, "taskkill takes a single /PID");
+        // And the verb note must match what actually happens to the process.
+        #[cfg(windows)]
+        assert!(kill_verb_note().contains("terminated"));
+        #[cfg(not(windows))]
+        assert!(kill_verb_note().contains("signalled"));
+    }
 
     #[test]
     fn posix_quoting_survives_an_apostrophe() {

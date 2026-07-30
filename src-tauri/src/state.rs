@@ -43,8 +43,9 @@ pub struct RunHandle {
     /// Ring buffer. On overflow the oldest lines are dropped and `truncated` is set.
     pub log: Mutex<VecDeque<LogLine>>,
     pub max_lines: usize,
-    /// Process group id, so `killpg` can take down the whole tree. 0 if unavailable.
-    pub pgid: Mutex<i32>,
+    /// The child and everything it spawns, so a stop can take down the whole tree.
+    /// `None` until the spawn succeeds.
+    pub group: Mutex<Option<crate::platform::Group>>,
     /// Set to request cancellation; the supervising task observes it.
     pub cancel: Arc<AtomicBool>,
     pub next_seq: Mutex<u64>,
@@ -217,9 +218,8 @@ impl AppState {
     fn hydrate_pid(&self, mut d: DevServer) -> DevServer {
         if d.pid == 0 {
             if let Some(h) = self.run(&d.run_id) {
-                let pgid = *h.pgid.lock().unwrap();
-                if pgid > 0 {
-                    d.pid = pgid as u32;
+                if let Some(g) = h.group.lock().unwrap().as_ref() {
+                    d.pid = g.pid();
                 }
             }
         }
@@ -300,14 +300,15 @@ impl AppState {
         self.runs.lock().unwrap().values().cloned().collect()
     }
 
-    pub fn running_pgids(&self) -> Vec<i32> {
+    /// The tree of every live run, for the shutdown sweep.
+    pub fn running_groups(&self) -> Vec<crate::platform::Group> {
         self.runs
             .lock()
             .unwrap()
             .values()
             .filter(|h| matches!(h.summary.lock().unwrap().status, RunStatus::Running))
-            .map(|h| *h.pgid.lock().unwrap())
-            .filter(|p| *p > 1)
+            .filter_map(|h| h.group.lock().unwrap().clone())
+            .filter(|g| g.is_tree())
             .collect()
     }
 
@@ -318,7 +319,6 @@ impl AppState {
         struct Rec {
             key: String,
             pid: u32,
-            pgid: i32,
             argv: Vec<String>,
             started_unix: i64,
         }
@@ -331,10 +331,6 @@ impl AppState {
             .map(|d| Rec {
                 key: task_key(&d.repo.key(), &d.task),
                 pid: d.pid,
-                pgid: self
-                    .run(&d.run_id)
-                    .map(|h| *h.pgid.lock().unwrap())
-                    .unwrap_or(0),
                 argv: d.command.clone(),
                 started_unix: d.started_unix,
             })

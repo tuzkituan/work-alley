@@ -1347,9 +1347,9 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                         format!("{name} (pid {pid}) is listening on :{port}")
                     });
                 }
-                warnings.push(
-                    "These are signalled directly. Anything unsaved in them is lost.".into(),
-                );
+                // Not hardcoded: on Windows there is no catchable signal, so these
+                // are terminated outright and the dialog must not claim otherwise.
+                warnings.push(crate::platform::kill_verb_note().to_string());
             }
 
             // If we started it ourselves, stopping it is the right move — that path
@@ -1365,8 +1365,34 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 }
             }
 
-            let mut argv = vec!["kill".to_string(), "-TERM".to_string()];
-            argv.extend(holders.iter().map(|(pid, _)| pid.to_string()));
+            // One command per pid — `taskkill` takes a single `/PID` — run as a
+            // sequence, which also gives this action the per-pid result markers the
+            // old single `kill -TERM a b c` never had.
+            let pids: Vec<u32> = holders.iter().map(|(pid, _)| *pid).collect();
+            let argv = if pids.is_empty() {
+                Vec::new()
+            } else {
+                let sh = require_shell()?;
+                let mut script = String::new();
+                for (cmd, (pid, name)) in
+                    crate::platform::kill_pids_argv(&pids).iter().zip(&holders)
+                {
+                    let who = if name.is_empty() {
+                        format!("pid {pid}")
+                    } else {
+                        format!("{name} (pid {pid})")
+                    };
+                    script.push_str(&sh.stmt(&[
+                        sh.echo(&format!("[..]   {who}")),
+                        sh.and_or(
+                            &sh.cmd(cmd),
+                            &format!("[OK]   {who}"),
+                            &format!("[FAIL] {who}"),
+                        ),
+                    ]));
+                }
+                sh.script_argv(&script)
+            };
 
             Ok(Built {
                 kind: "killPort".into(),
@@ -2668,6 +2694,11 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             external,
             size,
         } => {
+            // A script handed to an external terminal is the one case Windows cannot
+            // do: `wt.exe` splits its own command line on `;`, and these scripts are
+            // full of them. The integrated PTY handles an interactive script at least
+            // as well, so the request is rewritten rather than refused.
+            let external = external && crate::platform::external_terminal_available(&tc);
             let desc = crate::scripts::find(&root, &script)?;
             let path = script_path(&root, &desc.file)?;
             // fe-auto-create-pr.sh auto-detects the repo from $PWD and only shows
@@ -3172,6 +3203,7 @@ pub async fn list_pull_requests(
     };
 
     let mut cmd = tokio::process::Command::new(&gh);
+    crate::platform::hide_console(&mut cmd);
     cmd.args([
         "pr",
         "list",
@@ -3237,6 +3269,7 @@ async fn gh_current_user(gh: &std::path::Path, tc: &crate::toolchain::Toolchain)
     }
 
     let mut cmd = tokio::process::Command::new(gh);
+    crate::platform::hide_console(&mut cmd);
     cmd.args(["api", "user", "--jq", ".login"])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

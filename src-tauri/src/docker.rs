@@ -17,6 +17,7 @@ pub async fn status(tc: &Toolchain) -> DockerStatus {
     };
 
     let mut c = tokio::process::Command::new(bin);
+    crate::platform::hide_console(&mut c);
     c.args(["ps", "--all", "--format", "{{json .}}"])
         .stdin(Stdio::null())
         .stdout(Stdio::piped())

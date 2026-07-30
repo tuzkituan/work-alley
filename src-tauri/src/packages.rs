@@ -355,6 +355,7 @@ pub fn nvm_script() -> Option<PathBuf> {
 
 async fn version_of(path: &std::path::Path, path_env: &str) -> Option<String> {
     let mut cmd = tokio::process::Command::new(path);
+    crate::platform::hide_console(&mut cmd);
     cmd.arg("--version")
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -937,6 +938,7 @@ async fn capture_status(
     timeout: std::time::Duration,
 ) -> (String, Option<i32>) {
     let mut cmd = tokio::process::Command::new(program);
+    crate::platform::hide_console(&mut cmd);
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
@@ -963,6 +965,7 @@ async fn shell_capture(script: &str) -> String {
     };
     let (prog, args) = argv.split_first().expect("argv is never empty");
     let mut cmd = tokio::process::Command::new(prog);
+    crate::platform::hide_console(&mut cmd);
     cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())

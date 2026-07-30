@@ -73,7 +73,7 @@ pub fn spawn_run(app: &AppHandle, spec: SpawnSpec) -> AppResult<String> {
         summary: Mutex::new(summary.clone()),
         log: Mutex::new(VecDeque::new()),
         max_lines,
-        pgid: Mutex::new(0),
+        group: Mutex::new(None),
         cancel: Arc::new(AtomicBool::new(false)),
         next_seq: Mutex::new(0),
     });
@@ -156,22 +156,12 @@ async fn supervise(
     // zombies — kill_on_drop stops reaping once the runtime is gone.
     cmd.kill_on_drop(true);
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        unsafe {
-            // Own process group, so killpg can take down the whole tree. vite
-            // spawns esbuild; killing only the direct child orphans it and leaves
-            // the port bound, which makes the next start fail confusingly.
-            //
-            // pre_exec runs post-fork/pre-exec and must be async-signal-safe.
-            // setsid() is. Do not add anything else to this closure.
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
+    // Own group, so the whole tree can be torn down. vite spawns esbuild; killing
+    // only the direct child orphans it and leaves the port bound, which makes the
+    // next start fail confusingly. On Windows this also suppresses the console
+    // window; the tree itself is claimed by `platform::adopt` after the spawn,
+    // which is the earliest a pid exists.
+    crate::platform::new_group(&mut cmd);
 
     let mut child = match cmd.spawn() {
         Ok(c) => c,
@@ -204,10 +194,17 @@ async fn supervise(
     };
 
     let pid = child.id().unwrap_or(0);
-    #[cfg(unix)]
     {
-        // The child is its own group leader, so pgid == pid.
-        *handle.pgid.lock().unwrap() = pid as i32;
+        // On Windows the raw handle is what lets the job be assigned without
+        // reopening the process by pid, which could race pid reuse.
+        #[cfg(windows)]
+        let os_handle = {
+            use std::os::windows::io::AsRawHandle as _;
+            child.raw_handle().map(|h| h as isize)
+        };
+        #[cfg(not(windows))]
+        let os_handle = None;
+        *handle.group.lock().unwrap() = Some(crate::platform::adopt(pid, os_handle));
     }
 
     let (tx, mut rx) = mpsc::channel::<(Stream, String)>(1024);
@@ -466,48 +463,31 @@ async fn finish(
     );
 }
 
-/// SIGTERM the whole group, wait out the grace period, then SIGKILL.
+/// Asks the whole tree to stop, waits out the grace period, then kills it.
+///
+/// On Windows there is no request to make and the kill is immediate; see
+/// `platform::terminate`.
 pub async fn kill_tree(handle: &Arc<RunHandle>, pid: u32) {
-    #[cfg(unix)]
-    {
-        let pgid = *handle.pgid.lock().unwrap();
-        let target = if pgid > 1 { pgid } else { pid as i32 };
-        unsafe {
-            libc::killpg(target, libc::SIGTERM);
+    let group = handle.group.lock().unwrap().clone();
+    match group {
+        Some(g) => crate::platform::terminate(&g, KILL_GRACE).await,
+        // The spawn had not been recorded yet, so all we have is the pid.
+        None => {
+            if pid > 1 {
+                crate::platform::terminate(&crate::platform::adopt(pid, None), KILL_GRACE).await;
+            }
         }
-        tokio::time::sleep(KILL_GRACE).await;
-        unsafe {
-            libc::killpg(target, libc::SIGKILL);
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = (handle, pid);
     }
 }
 
 /// Synchronous best-effort teardown for app shutdown, where we cannot await.
 pub fn kill_all_now(state: &AppState) {
-    #[cfg(unix)]
-    {
-        let pgids = state.running_pgids();
-        for pgid in &pgids {
-            unsafe {
-                libc::killpg(*pgid, libc::SIGTERM);
-            }
-        }
-        if !pgids.is_empty() {
-            std::thread::sleep(Duration::from_millis(600));
-            for pgid in &pgids {
-                unsafe {
-                    libc::killpg(*pgid, libc::SIGKILL);
-                }
-            }
-        }
+    let groups = state.running_groups();
+    if groups.is_empty() {
+        return;
     }
-    #[cfg(not(unix))]
-    {
-        let _ = state;
+    for g in &groups {
+        crate::platform::terminate_now(g);
     }
 }
 
@@ -579,70 +559,9 @@ pub async fn port_in_use(port: u16) -> bool {
     .unwrap_or(false)
 }
 
-/// A terminal emulator, and how it wants the command handed over.
-pub struct TerminalCmd {
-    pub program: String,
-    /// Flags that come before the command.
-    pub pre: Vec<String>,
-    /// True when the command must arrive as one argument rather than as an argv.
-    ///
-    /// ptyxis is the reason this exists: its `--tab` only combines with `-x`, which
-    /// takes the whole command line as a single string. Given a real argv after `--`
-    /// it ignores `--tab` and opens a *window* instead, which is what it was doing.
-    pub single_string: bool,
-}
-
-/// Finds a terminal emulator to hand an interactive script to.
-///
-/// Degrades to an error carrying the exact command, so the UI can offer "copy" —
-/// which is far better than piping canned menu answers into a script that pushes
-/// commits and publishes packages.
-pub fn find_terminal(tc: &crate::toolchain::Toolchain) -> Option<TerminalCmd> {
-    let _ = tc;
-    if let Ok(t) = std::env::var("TERMINAL") {
-        if !t.trim().is_empty() {
-            // An unknown emulator: `-e cmd args` is the one convention nearly all of
-            // them share, and a tab flag would be a guess.
-            return Some(TerminalCmd {
-                program: t,
-                pre: vec!["-e".into()],
-                single_string: false,
-            });
-        }
-    }
-    // A tab in the terminal you already have open, wherever the emulator can do it:
-    // an install is something you watch and then leave, and a whole new window per
-    // step means five windows to close by the end of a setup. The three that support
-    // it fall back to opening a window themselves when none is open yet.
-    //
-    // `--`, not ptyxis's `-x`: `-x` takes the whole command as a single string, so
-    // `-x bash -lc '…'` consumed "bash", choked on the unknown `-lc` and exited — a
-    // click that opened nothing and said nothing. Fedora 42+ ships ptyxis as the
-    // default terminal, so it is the branch most users land on.
-    // (binary, flags, command-as-one-string)
-    let candidates: [(&str, &[&str], bool); 8] = [
-        ("ptyxis", &["--tab", "-x"], true),
-        ("gnome-terminal", &["--tab", "--"], false),
-        ("konsole", &["--new-tab", "-e"], false),
-        // The rest have no usable tab flag: kitty and wezterm need a running instance
-        // with remote control enabled, and alacritty and xterm have no tabs at all.
-        ("kitty", &[], false),
-        ("alacritty", &["-e"], false),
-        ("wezterm", &["start", "--"], false),
-        ("x-terminal-emulator", &["-e"], false),
-        ("xterm", &["-e"], false),
-    ];
-    for (bin, pre, single_string) in candidates {
-        if let Some(p) = which_path(bin) {
-            return Some(TerminalCmd {
-                program: p.display().to_string(),
-                pre: pre.iter().map(|s| s.to_string()).collect(),
-                single_string,
-            });
-        }
-    }
-    None
-}
+// Terminal-emulator discovery lives in `platform`: eight Linux emulators there,
+// `wt.exe` on Windows.
+pub use crate::platform::{external_terminal_available, find_terminal, TerminalCmd};
 
 // Both moved to `platform`, which owns every difference between the POSIX shells
 // and PowerShell. Re-exported rather than relocated at every call site, because
@@ -674,16 +593,7 @@ pub fn spawn_detached(
         cmd.env("PATH", &tc.path_env);
     }
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        unsafe {
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
+    crate::platform::detach(&mut cmd);
 
     cmd.spawn().map_err(|e| AppError::Spawn(e.to_string()))?;
     Ok(())
@@ -716,18 +626,9 @@ fn terminal_command(
         // not like our arguments. See `watch_terminal`.
         .stderr(Stdio::piped());
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt as _;
-        unsafe {
-            // Its own session, so the terminal outlives this app rather than dying
-            // with it — the same reasoning as for a GUI editor.
-            cmd.pre_exec(|| {
-                libc::setsid();
-                Ok(())
-            });
-        }
-    }
+    // Its own session, so the terminal outlives this app rather than dying with it —
+    // the same reasoning as for a GUI editor.
+    crate::platform::detach(&mut cmd);
 
     cmd
 }
@@ -846,52 +747,8 @@ pub fn open_terminal(
     Ok(())
 }
 
-/// Who is listening on a TCP port.
-///
-/// Uses `ss` where available, falling back to `lsof`. Returns pids with
-/// the process name where known, so the confirmation dialog can say *what* it is
-/// about to signal rather than just a number.
-pub async fn port_holders(
-    tc: &crate::toolchain::Toolchain,
-    port: u16,
-) -> Vec<(u32, String)> {
-    if let Some(ss) = tc.path("ss") {
-        let out = tokio::process::Command::new(ss)
-            // -H omits the header, -p includes the owning process.
-            .args(["-ltnpH", &format!("sport = :{port}")])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .await;
-        if let Ok(o) = out {
-            let holders = parse_ss_holders(&String::from_utf8_lossy(&o.stdout));
-            if !holders.is_empty() {
-                return holders;
-            }
-        }
-    }
-
-    if let Some(lsof) = tc.path("lsof") {
-        let out = tokio::process::Command::new(lsof)
-            .args(["-ti", &format!(":{port}"), "-sTCP:LISTEN"])
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output()
-            .await;
-        if let Ok(o) = out {
-            return String::from_utf8_lossy(&o.stdout)
-                .lines()
-                .filter_map(|l| l.trim().parse::<u32>().ok())
-                .map(|pid| (pid, String::new()))
-                .collect();
-        }
-    }
-
-    Vec::new()
-}
-
+// Port inspection lives in `platform`: `ss`/`lsof` on unix, `netstat` on Windows.
+pub use crate::platform::port_holders;
 // Moved to `platform::ports`, which parses the Windows equivalents beside it.
 pub use crate::platform::parse_ss_holders;
 

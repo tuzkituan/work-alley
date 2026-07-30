@@ -246,6 +246,11 @@ pub fn git_cmd(git: &Path, repo: &Path) -> tokio::process::Command {
 pub fn harden(c: &mut tokio::process::Command) {
     // No child can ever block on a prompt nobody is reading.
     c.stdin(Stdio::null());
+    // No console window. This app owns no console, so on Windows every child that
+    // does not say otherwise allocates one, paints it and destroys it — forty of
+    // them across a forty-repo scan. Applied here because every child in the app
+    // passes through this function, which makes coverage impossible to forget.
+    crate::platform::hide_console(c);
     // Fail fast instead of hanging forever on a passphrase prompt written into a
     // pipe with no reader.
     c.env("GIT_TERMINAL_PROMPT", "0");

@@ -105,9 +105,14 @@ pub struct PtySession {
     /// Split out because the `Child` itself is moved into the waiter thread —
     /// the only way to both block on `wait()` and kill from somewhere else.
     killer: Mutex<Box<dyn ChildKiller + Send + Sync>>,
-    /// pid == pgid == sid: portable-pty's unix child calls `setsid` and
-    /// `TIOCSCTTY` itself, so `killpg` reaches the whole tree.
-    pgid: i32,
+    /// The child and everything it spawns.
+    ///
+    /// On unix pid == pgid == sid, because portable-pty's unix child calls `setsid`
+    /// and `TIOCSCTTY` itself, so `killpg` reaches the whole tree for free. Windows
+    /// gives no such thing: `WinChildKiller::kill` is `TerminateProcess` on the
+    /// *direct child only*, so without a job object a shell's children survive the
+    /// tab being closed.
+    group: crate::platform::Group,
     alive: AtomicBool,
     /// Raw bytes, trimmed at a newline. Best-effort by construction — the
     /// frontend prepends a full reset before replaying it.
@@ -221,6 +226,15 @@ pub fn open<R: Runtime>(
     drop(pair.slave);
 
     let pid = child.process_id().unwrap_or(0);
+    // Read before the `Child` is moved into the waiter thread below, which is the
+    // only chance to get at it.
+    #[cfg(windows)]
+    let os_handle = {
+        use std::os::windows::io::AsRawHandle as _;
+        Some(child.as_raw_handle() as isize)
+    };
+    #[cfg(not(windows))]
+    let os_handle = None;
     let killer = child.clone_killer();
     let reader = pair
         .master
@@ -251,7 +265,7 @@ pub fn open<R: Runtime>(
         writer: Mutex::new(writer),
         master: Mutex::new(pair.master),
         killer: Mutex::new(killer),
-        pgid: pid as i32,
+        group: crate::platform::adopt(pid, os_handle),
         alive: AtomicBool::new(true),
         scrollback: Mutex::new(VecDeque::new()),
     });
@@ -462,30 +476,19 @@ pub fn close(state: &AppState, id: &str) -> AppResult<()> {
     Ok(())
 }
 
-/// SIGHUP the process group — the same signal closing a real terminal window
+/// Hangs up the shell — on unix the same SIGHUP closing a real terminal window
 /// sends. Dropping the master fd raises it too, so this is belt and braces for
 /// the same reason `procs` keeps `kill_on_drop`.
 fn hangup(s: &Arc<PtySession>) {
-    #[cfg(unix)]
-    if s.pgid > 1 {
-        unsafe {
-            libc::killpg(s.pgid, libc::SIGHUP);
-        }
-    }
+    crate::platform::hangup(&s.group);
+    // `WinChildKiller::kill` also has inverted error handling, so its Result means
+    // nothing on Windows — which is why it has always been discarded here.
     let _ = s.killer.lock().unwrap().kill();
 }
 
 fn force_kill(s: &Arc<PtySession>) {
-    #[cfg(unix)]
-    if s.pgid > 1 {
-        unsafe {
-            libc::killpg(s.pgid, libc::SIGKILL);
-        }
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = s.killer.lock().unwrap().kill();
-    }
+    crate::platform::terminate_now(&s.group);
+    let _ = s.killer.lock().unwrap().kill();
 }
 
 pub fn list(state: &AppState) -> Vec<TermInfo> {

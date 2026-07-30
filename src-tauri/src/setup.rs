@@ -445,22 +445,9 @@ fn manager_label(kind: &Kind, sys: Option<packages::SystemPm>) -> &'static str {
     }
 }
 
-/// `PRETTY_NAME` from os-release, which is the name the user recognises.
-fn os_label() -> String {
-    for path in ["/etc/os-release", "/usr/lib/os-release"] {
-        if let Ok(text) = std::fs::read_to_string(path) {
-            for line in text.lines() {
-                if let Some(v) = line.strip_prefix("PRETTY_NAME=") {
-                    let v = v.trim().trim_matches('"');
-                    if !v.is_empty() {
-                        return v.to_string();
-                    }
-                }
-            }
-        }
-    }
-    std::env::consts::OS.to_string()
-}
+// The name the user recognises: `PRETTY_NAME` from os-release on Linux, and the
+// version from `cmd /C ver` on Windows, which has no such file.
+use crate::platform::os_label;
 
 pub(crate) async fn git_identity(tc: &Toolchain) -> (Option<String>, Option<String>) {
     let Some(git) = tc.path("git") else {
@@ -473,6 +460,7 @@ pub(crate) async fn git_identity(tc: &Toolchain) -> (Option<String>, Option<Stri
 
 async fn git_config(git: &std::path::Path, path_env: &str, key: &str) -> Option<String> {
     let mut cmd = tokio::process::Command::new(git);
+    crate::platform::hide_console(&mut cmd);
     cmd.args(["config", "--global", "--get", key])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
