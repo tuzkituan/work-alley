@@ -1,0 +1,99 @@
+# Builds the Linux packages and attaches them to a GitHub release.
+#
+# Triggered by pushing a version tag, so the tag is the only thing that decides a
+# release exists — nothing publishes off a branch push by accident.
+#
+#   npm version patch --no-git-tag-version   # or edit both version fields by hand
+#   git commit -am 'release: v0.1.1' && git tag v0.1.1 && git push --follow-tags
+#
+# `workflow_dispatch` is there to prove the build works without minting a tag first.
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+# Least privilege: the job needs to create a release and upload assets, nothing else.
+permissions:
+  contents: write
+
+# A re-pushed tag should replace the in-flight run rather than race it to the same
+# release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux:
+    # Pinned to 22.04, not `ubuntu-latest`. A binary links against the glibc of the
+    # machine that built it, so building on 24.04 would produce packages that refuse
+    # to start on anything older — including current Debian stable.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Tauri v2's Linux prerequisites. `libxdo-dev` is easy to miss and the failure
+      # it causes is a linker error a long way into the build.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            build-essential \
+            file \
+            wget
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Keyed on src-tauri, so a frontend-only change still gets a warm cache. The
+      # Rust build is the whole cost of this job.
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - run: bun install --frozen-lockfile
+
+      # Tested before published, deliberately. A tag that ships a red build is worse
+      # than a tag that never appears, and both suites take seconds next to the
+      # release build itself.
+      - name: Test
+        run: |
+          bun test
+          bun run lint
+          cargo test --manifest-path src-tauri/Cargo.toml
+
+      # Builds the deb, rpm and AppImage listed in tauri.conf.json's bundle targets,
+      # then creates the release and uploads them.
+      #
+      # Left as a draft: a release is public the moment it is published, and a human
+      # confirming the three artifacts are present costs one click. Set
+      # `releaseDraft: false` to publish straight away.
+      - uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
+          releaseName: 'Work Alley v__VERSION__'
+          releaseBody: |
+            Linux packages, built on Ubuntu 22.04.
+
+            - `.deb` — Debian, Ubuntu and derivatives
+            - `.rpm` — Fedora, RHEL and openSUSE
+            - `.AppImage` — everything else, no install required
+
+            Both packages declare webkit2gtk 4.1 and GTK 3 as dependencies, so a
+            package manager will pull them in.
+          releaseDraft: true
+          prerelease: false
