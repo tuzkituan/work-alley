@@ -3,8 +3,11 @@ import { toast } from 'sonner'
 import { ensureBridge, on } from './events'
 import { api } from './commands'
 import { createFrameQueue } from '@/lib/frame-queue'
+import { b64ToBytes } from '@/lib/b64'
+import { writeToTerm } from '@/features/terminal/xterm-instance'
 import { useScanStore } from '@/stores/scan-store'
 import { useRunStore } from '@/stores/run-store'
+import { useTerminalStore } from '@/stores/terminal-store'
 import { useUiStore } from '@/stores/ui-store'
 import { keys } from '@/queries/keys'
 import { repoId, type LogLine, type RepoStatus } from '@/domain/types'
@@ -92,6 +95,9 @@ async function wire(qc: QueryClient) {
     // Point the output pane at the repo this run belongs to, so launching an
     // action shows that repo's terminal rather than whatever was open.
     if (run.ref) useUiStore.getState().setActiveRepo(repoId(run.ref))
+    // Swing the pane back to the log: you started a command to watch it, not to
+    // keep looking at a shell.
+    useTerminalStore.getState().setActive(null)
   })
   on('run:output', ({ runId, lines }) => queueFor(runId).pushAll(lines))
   on('run:exit', ({ runId, status, endedUnix }) => {
@@ -134,6 +140,20 @@ async function wire(qc: QueryClient) {
         .catch(() => {})
     }
   })
+
+  on('term:opened', ({ term }) => {
+    const store = useTerminalStore.getState()
+    store.open(term)
+    store.setActive(term.termId)
+    if (term.repo) useUiStore.getState().setActiveRepo(repoId(term.repo))
+  })
+  // Deliberately NOT through createFrameQueue, unlike run:output right above.
+  // That helper exists to collapse store writes and React renders; terminal
+  // bytes must never touch React state at all. They go straight into the xterm
+  // instance, whose own write buffer already flushes on its own schedule and is
+  // a far better coalescer than anything written here would be.
+  on('term:output', ({ termId, data }) => writeToTerm(termId, b64ToBytes(data)))
+  on('term:exit', ({ termId, code }) => useTerminalStore.getState().exit(termId, code))
 
   // Patch, never invalidate: invalidating means an IPC round trip and a flicker
   // through a loading state on every container or dev-server event.

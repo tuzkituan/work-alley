@@ -715,6 +715,11 @@ pub enum ActionSpec {
         script: String,
         #[serde(rename = "ref")]
         repo: Option<RepoRef>,
+        /// Force the system terminal emulator instead of the integrated one.
+        #[serde(default)]
+        external: bool,
+        #[serde(default)]
+        size: Option<TermSize>,
     },
     /// Switch repos to a branch, applying `dirty` where needed.
     Checkout {
@@ -724,10 +729,15 @@ pub enum ActionSpec {
         branch: Option<String>,
         dirty: DirtyPolicy,
     },
-    /// Opens the system terminal emulator in a repo, or at the workspace root.
+    /// Opens a shell in a repo, or at the workspace root — in the integrated
+    /// terminal by default, in the system emulator when `external`.
     OpenShell {
         #[serde(rename = "ref")]
         repo: Option<RepoRef>,
+        #[serde(default)]
+        external: bool,
+        #[serde(default)]
+        size: Option<TermSize>,
     },
     /// One step of the first-run setup. The id is opaque and resolved against the
     /// step table, so the command is never caller-supplied.
@@ -776,6 +786,18 @@ pub enum ActionSpec {
         repo: RepoRef,
     },
     PrList,
+}
+
+/// Initial terminal geometry, measured by the pane that will host it.
+///
+/// The one caller-supplied field the terminal path adds. It is numeric and
+/// clamped in Rust, so it can influence how wide a session is but never *what*
+/// runs in it — which is the invariant the gate exists to hold.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TermSize {
+    pub cols: u16,
+    pub rows: u16,
 }
 
 #[derive(Debug, Clone, Serialize)]

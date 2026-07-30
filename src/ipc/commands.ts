@@ -21,6 +21,7 @@ import type {
   RunSummary,
   ScanOptions,
   SetupPlan,
+  TermInfo,
   WorkspaceSnapshot,
 } from '@/domain/types'
 
@@ -82,4 +83,16 @@ export const api = {
   runAction: (intentId: string, typedConfirm?: string) =>
     call<string>('run_action', { intentId, typedConfirm: typedConfirm ?? null }),
   cancelAction: (intentId: string) => call<void>('cancel_action', { intentId }),
+
+  // Integrated terminal. Note what is missing: there is no `termOpen`. A session
+  // can only be created by running an openShell/openInTerminal action through the
+  // gate above, so the argv is always built in Rust. See src-tauri/src/pty.rs.
+  /** Keystrokes. Plain string: xterm's onData is already valid UTF-8. */
+  termWrite: (termId: string, data: string) => call<void>('term_write', { termId, data }),
+  termResize: (termId: string, cols: number, rows: number) =>
+    call<void>('term_resize', { termId, cols, rows }),
+  termClose: (termId: string) => call<void>('term_close', { termId }),
+  termList: () => call<TermInfo[]>('term_list'),
+  /** Base64 of everything the session printed, for restoring after a reload. */
+  termScrollback: (termId: string) => call<string>('term_scrollback', { termId }),
 }

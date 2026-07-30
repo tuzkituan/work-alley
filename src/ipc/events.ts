@@ -9,6 +9,9 @@ import type {
   ScanFinished,
   ScanRepo,
   ScanStarted,
+  TermExit,
+  TermInfo,
+  TermOutput,
 } from '@/domain/types'
 
 export interface WaEvents {
@@ -20,6 +23,9 @@ export interface WaEvents {
   'run:started': { run: RunSummary }
   'run:output': RunOutput
   'run:exit': RunExit
+  'term:opened': { term: TermInfo }
+  'term:output': TermOutput
+  'term:exit': TermExit
   'dev:changed': { servers: DevServer[] }
   'docker:changed': { status: DockerStatus }
   'app:toast': { level: string; message: string; runId: string | null }
@@ -44,6 +50,9 @@ export function ensureBridge(): Promise<void> {
   if (bridge) return bridge
 
   bridge = (async () => {
+    // This literal — not the interface above — is the actual subscription list.
+    // A key added to `WaEvents` and forgotten here type-checks perfectly and
+    // then silently never fires. Keep the two in step.
     const names = Object.keys({
       'scan:started': 0,
       'scan:repo': 0,
@@ -53,6 +62,9 @@ export function ensureBridge(): Promise<void> {
       'run:started': 0,
       'run:output': 0,
       'run:exit': 0,
+      'term:opened': 0,
+      'term:output': 0,
+      'term:exit': 0,
       'dev:changed': 0,
       'docker:changed': 0,
       'app:toast': 0,

@@ -11,6 +11,12 @@ pub const RUN_STARTED: &str = "run:started";
 pub const RUN_OUTPUT: &str = "run:output";
 pub const RUN_EXIT: &str = "run:exit";
 
+/// Integrated terminal. `term:output` carries base64 of the raw pty bytes — see
+/// `pty::flush` for why it is not a String.
+pub const TERM_OPENED: &str = "term:opened";
+pub const TERM_OUTPUT: &str = "term:output";
+pub const TERM_EXIT: &str = "term:exit";
+
 pub const DEV_CHANGED: &str = "dev:changed";
 pub const DOCKER_CHANGED: &str = "docker:changed";
 pub const APP_TOAST: &str = "app:toast";
@@ -72,6 +78,28 @@ pub struct RunExit {
     pub duration_ms: u64,
     pub line_count: u64,
     pub truncated: bool,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TermOpened {
+    pub term: crate::pty::TermInfo,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TermOutput {
+    pub term_id: String,
+    /// Base64 of the raw bytes, decoded straight into xterm.
+    pub data: String,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct TermExit {
+    pub term_id: String,
+    pub code: i32,
+    pub ended_unix: i64,
 }
 
 #[derive(Serialize, Clone)]

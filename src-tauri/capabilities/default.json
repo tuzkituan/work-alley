@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Main window: core IPC plus scoped opener. Custom commands are gated by the closed ActionSpec enum and the intent token, not by capabilities.",
+  "description": "Main window: core IPC plus scoped opener. Custom commands are gated by the closed ActionSpec enum and the intent token, not by capabilities. Exception, deliberate: term_write is ungated. It cannot spawn a process — only run_action can create a pty, from an argv built in Rust — it only writes keystrokes into a shell that gate already authorised. The residual risk is that a compromised webview could type into an open shell invisibly, bounded by the unguessable session id, the session cap, the tab lifetime, and a CSP with no remote origin. Never add a term_exec(argv) command; that would be the actual bypass.",
   "windows": [
     "main"
   ],

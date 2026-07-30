@@ -735,6 +735,7 @@ pub async fn prepare_action(
             typed_confirm: built.typed_confirm,
             danger: built.danger,
             task: built.task,
+            size: built.size,
         },
     );
 
@@ -786,6 +787,35 @@ pub async fn run_action(
             procs::cancel_run(state.inner(), &run_id)?;
             Ok(run_id)
         }
+        // The integrated terminal. This is the *only* path to `pty::open`, which
+        // is what keeps a free-form shell inside the gate: the argv was built in
+        // Rust from the closed ActionSpec enum, not supplied by the caller. See
+        // the module doc in pty.rs.
+        "termShell" | "termScript" => {
+            let size = pending.size.unwrap_or(TermSize {
+                cols: crate::pty::DEFAULT_COLS,
+                rows: crate::pty::DEFAULT_ROWS,
+            });
+            let info = crate::pty::open(
+                &app,
+                state.inner(),
+                crate::pty::OpenSpec {
+                    argv: pending.argv,
+                    cwd: pending.cwd,
+                    env: pending.env,
+                    login_shell: pending.kind == "termShell",
+                    title: pending.intent.title.clone(),
+                    repo: pending.repo.clone(),
+                    cols: size.cols,
+                    rows: size.rows,
+                },
+            )?;
+            // A term id, not a run id. Harmless: callers learn about the new tab
+            // from `term:opened`, exactly as they learn about a run from
+            // `run:started` rather than from this return value.
+            Ok(info.term_id)
+        }
+        // Reached only when the caller asked for `external: true`.
         "openShell" => {
             procs::open_shell(&app, &state.toolchain(), &pending.cwd)?;
             Ok(String::new())
@@ -852,6 +882,52 @@ pub async fn run_action(
 pub async fn cancel_action(intent_id: String, state: State<'_, Arc<AppState>>) -> AppResult<()> {
     state.intents.lock().unwrap().remove(&intent_id);
     Ok(())
+}
+
+// ------------------------------------------------------------------ terminal --
+//
+// Thin wrappers; all the logic is in pty.rs, the same way `cancel_run` delegates
+// to `procs`. Note what is *not* here: there is no command that opens a terminal.
+// A session can only be created by `run_action` dispatching a termShell/termScript
+// intent, so the argv is never caller-supplied. See the module doc in pty.rs.
+
+#[tauri::command]
+pub async fn term_write(
+    term_id: String,
+    data: String,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<()> {
+    crate::pty::write(state.inner(), &term_id, &data)
+}
+
+#[tauri::command]
+pub async fn term_resize(
+    term_id: String,
+    cols: u16,
+    rows: u16,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<()> {
+    crate::pty::resize(state.inner(), &term_id, cols, rows)
+}
+
+#[tauri::command]
+pub async fn term_close(term_id: String, state: State<'_, Arc<AppState>>) -> AppResult<()> {
+    crate::pty::close(state.inner(), &term_id)
+}
+
+#[tauri::command]
+pub async fn term_list(state: State<'_, Arc<AppState>>) -> AppResult<Vec<crate::pty::TermInfo>> {
+    Ok(crate::pty::list(state.inner()))
+}
+
+/// Base64 of everything the session has printed, for restoring a tab after a
+/// webview reload.
+#[tauri::command]
+pub async fn term_scrollback(
+    term_id: String,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<String> {
+    crate::pty::scrollback(state.inner(), &term_id)
 }
 
 async fn register_dev(
@@ -965,6 +1041,8 @@ struct Built {
     repo: Option<RepoRef>,
     targets: Vec<RepoRef>,
     read_only: bool,
+    /// Initial PTY geometry. Only ever Some for termShell/termScript.
+    size: Option<TermSize>,
 }
 
 async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Built> {
@@ -995,6 +1073,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 preview: None,
                 task: None,
                 read_only: true,
+                size: None,
             })
         }
 
@@ -1021,6 +1100,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 preview: None,
                 task: None,
                 read_only: true,
+                size: None,
             })
         }
 
@@ -1047,6 +1127,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 preview: None,
                 task: None,
                 read_only: true,
+                size: None,
             })
         }
 
@@ -1079,6 +1160,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 targets: vec![],
                 task: None,
                 read_only: false,
+                size: None,
             })
         }
 
@@ -1102,6 +1184,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 targets: vec![],
                 task: None,
                 read_only: false,
+                size: None,
             })
         }
 
@@ -1141,6 +1224,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 targets: vec![],
                 task: None,
                 read_only: false,
+                size: None,
             })
         }
 
@@ -1170,6 +1254,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 // Opening an editor does not touch the repo, so it runs without a
                 // confirmation dialog like the other read-only inspections.
                 read_only: true,
+                size: None,
             })
         }
 
@@ -1197,6 +1282,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 preview: None,
                 task: None,
                 read_only: true,
+                size: None,
             })
         }
 
@@ -1266,6 +1352,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 preview: None,
                 task: None,
                 read_only: false,
+                size: None,
             })
         }
 
@@ -1327,6 +1414,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 preview: None,
                 task: None,
                 read_only: false,
+                size: None,
             })
         }
 
@@ -1416,6 +1504,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 targets: vec![],
                 task: None,
                 read_only: false,
+                size: None,
             })
         }
 
@@ -1467,6 +1556,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 targets: refs,
                 task: None,
                 read_only: false,
+                size: None,
             })
         }
 
@@ -1495,6 +1585,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                         preview: None,
                 task: None,
                         read_only: false,
+                        size: None,
                     })
                 }
                 None => {
@@ -1529,6 +1620,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                         targets: all,
                         task: None,
                         read_only: false,
+                        size: None,
                     })
                 }
             }
@@ -1564,6 +1656,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 targets: refs,
                 task: None,
                 read_only: false,
+                size: None,
             })
         }
 
@@ -1648,6 +1741,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 targets: vec![repo],
                 preview: None,
                 read_only: false,
+                size: None,
                 task: Some(task),
             })
         }
@@ -1695,6 +1789,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 preview: None,
                 task: Some(task),
                 read_only: false,
+                size: None,
             })
         }
 
@@ -1735,6 +1830,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 preview: None,
                 task: None,
                 read_only: false,
+                size: None,
             })
         }
 
@@ -1887,10 +1983,15 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 targets: plans.iter().map(|(r, _, _, _)| r.clone()).collect(),
                 task: None,
                 read_only: false,
+                size: None,
             })
         }
 
-        ActionSpec::OpenShell { repo } => {
+        ActionSpec::OpenShell {
+            repo,
+            external,
+            size,
+        } => {
             let cwd = match &repo {
                 Some(r) => crate::paths::resolve_repo(&root, r)?,
                 None => root.clone(),
@@ -1899,13 +2000,29 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 .as_ref()
                 .map(|r| r.key())
                 .unwrap_or_else(|| "the workspace".to_string());
+            // Resolved here, in the phase with no side effects, so the preview can
+            // name the shell that will actually run. Same fallback as
+            // `procs::open_shell`: $SHELL can be unset when launched from a
+            // .desktop file.
+            let shell = std::env::var("SHELL")
+                .ok()
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or_else(|| "/bin/bash".to_string());
             Ok(Built {
-                kind: "openShell".into(),
+                kind: if external { "openShell".into() } else { "termShell".into() },
                 title: format!("Terminal in {where_}"),
-                description: format!("Opens your terminal emulator in {}.", cwd.display()),
-                // The emulator is resolved at dispatch, so there is nothing to show
-                // here beyond where it will start.
-                argv: vec![],
+                description: if external {
+                    format!("Opens your terminal emulator in {}.", cwd.display())
+                } else {
+                    format!("Opens a terminal tab in {}.", cwd.display())
+                },
+                // For the external path the emulator is resolved at dispatch, so
+                // there is nothing to show beyond where it will start.
+                argv: if external {
+                    vec![]
+                } else {
+                    vec![shell, "-l".into()]
+                },
                 preview: None,
                 cwd,
                 env: vec![],
@@ -1920,10 +2037,16 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 // What the user then types is their own business, exactly as it is
                 // in any other terminal.
                 read_only: true,
+                size,
             })
         }
 
-        ActionSpec::OpenInTerminal { script, repo } => {
+        ActionSpec::OpenInTerminal {
+            script,
+            repo,
+            external,
+            size,
+        } => {
             let desc = crate::scripts::find(&root, &script)?;
             let path = script_path(&root, &desc.file)?;
             // fe-auto-create-pr.sh auto-detects the repo from $PWD and only shows
@@ -1934,23 +2057,34 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 None => root.clone(),
             };
             Ok(Built {
-                kind: "openInTerminal".into(),
+                kind: if external {
+                    "openInTerminal".into()
+                } else {
+                    "termScript".into()
+                },
                 title: format!("{} — in a terminal", desc.title),
-                description: "This script prompts interactively, so it opens in a real terminal."
+                description: "This script prompts interactively, so it needs a real terminal."
                     .into(),
                 argv: vec!["bash".to_string(), path.display().to_string()],
                 cwd,
                 env: vec![],
                 danger: desc.danger,
-                warnings: vec![
-                    "It runs in its own terminal window, not in the output pane.".into(),
-                ],
+                warnings: vec![if external {
+                    "It runs in its own terminal window, not in the output pane.".into()
+                } else {
+                    "It runs interactively in a terminal tab in the output pane.".to_string()
+                }],
                 typed_confirm: None,
                 repo: repo.clone(),
                 targets: repo.map(|r| vec![r]).unwrap_or_default(),
                 preview: None,
                 task: None,
+                // Stays false even though OpenShell is true, and the asymmetry is
+                // the point: opening an empty shell is not an action, but these
+                // scripts push commits and publish packages, so the confirmation
+                // dialog still has to fire.
                 read_only: false,
+                size,
             })
         }
     }

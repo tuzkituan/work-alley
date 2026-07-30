@@ -440,6 +440,38 @@ export interface ParsedUrls {
   rejected: RejectedUrlLine[]
 }
 
+/** Initial terminal geometry, measured by the pane that will host the session. */
+export interface TermSize {
+  cols: number
+  rows: number
+}
+
+/** One integrated terminal session, as Rust reports it. */
+export interface TermInfo {
+  termId: string
+  title: string
+  argv: string[]
+  cwd: string
+  repo: RepoRef | null
+  startedUnix: number
+  pid: number
+  alive: boolean
+  cols: number
+  rows: number
+}
+
+export interface TermOutput {
+  termId: string
+  /** Base64 of the raw pty bytes. Decoded straight into xterm, never into state. */
+  data: string
+}
+
+export interface TermExit {
+  termId: string
+  code: number
+  endedUnix: number
+}
+
 export type ActionSpec =
   | { kind: 'pull'; ref: RepoRef }
   | { kind: 'pullMany'; refs: RepoRef[] }
@@ -448,9 +480,16 @@ export type ActionSpec =
   | { kind: 'devStart'; ref: RepoRef; task?: string }
   | { kind: 'devStop'; ref: RepoRef; task?: string }
   | { kind: 'script'; script: string; args: string[] }
-  | { kind: 'openInTerminal'; script: string; ref: RepoRef | null }
-  /** Opens the system terminal emulator. Read-only: skips the confirm dialog. */
-  | { kind: 'openShell'; ref: RepoRef | null }
+  | {
+      kind: 'openInTerminal'
+      script: string
+      ref: RepoRef | null
+      /** Force the system terminal emulator instead of an integrated tab. */
+      external?: boolean
+      size?: TermSize
+    }
+  /** Opens a shell. Read-only: skips the confirm dialog. */
+  | { kind: 'openShell'; ref: RepoRef | null; external?: boolean; size?: TermSize }
   /** `branch` omitted means each repo's own default, from origin/HEAD. */
   | { kind: 'checkout'; refs: RepoRef[]; branch?: string; dirty: DirtyPolicy }
   | { kind: 'openInEditor'; ref: RepoRef; editor: string }

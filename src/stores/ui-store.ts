@@ -35,9 +35,16 @@ interface UiState {
   /** Which top-level page the centre panel shows. */
   page: Page
   paletteOpen: boolean
+  /**
+   * Integrated terminal font size. The manual escape hatch for a narrow output
+   * pane: at 12px the default width is only ~44 columns and curses apps assume
+   * 80, so being able to shrink the type is how you fit one without resizing.
+   */
+  termFontSize: number
 
   toggleTheme(): void
   setTheme(theme: ThemeMode): void
+  setTermFontSize(size: number): void
   toggleCategory(category: Category): void
   setCategory(category: Category | null): void
   setActiveRepo(id: RepoId | null): void
@@ -63,9 +70,11 @@ export const useUiStore = create<UiState>()(
       view: 'list',
       page: 'repos',
       paletteOpen: false,
+      termFontSize: 12,
 
       toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
       setTheme: (theme) => set({ theme }),
+      setTermFontSize: (size) => set({ termFontSize: Math.min(20, Math.max(8, size)) }),
 
       toggleCategory: (category) =>
         set((s) => ({
@@ -97,23 +106,29 @@ export const useUiStore = create<UiState>()(
         theme: s.theme,
         view: s.view,
         expandedCategory: s.expandedCategory,
+        termFontSize: s.termFontSize,
       }),
       // `partialize` decides what is *written*, not what is read: a blob saved by
       // an older build is still merged over the defaults on load, keys and all. So
       // the version is bumped whenever the shape changes, and `migrate` rebuilds the
       // state from scratch rather than trusting whatever was stored.
-      version: 5,
+      version: 6,
       migrate: (persisted) => {
         const p = (persisted ?? {}) as {
           theme?: unknown
           view?: unknown
           expandedCategory?: unknown
+          termFontSize?: unknown
         }
         return {
           theme: p.theme === 'light' || p.theme === 'dark' ? p.theme : 'light',
           view: p.view === 'cards' || p.view === 'list' ? p.view : 'list',
           expandedCategory:
             typeof p.expandedCategory === 'string' ? p.expandedCategory : null,
+          termFontSize:
+            typeof p.termFontSize === 'number' && p.termFontSize >= 8 && p.termFontSize <= 20
+              ? p.termFontSize
+              : 12,
         } as never
       },
     }

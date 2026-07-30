@@ -1,5 +1,6 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import type { PanelImperativeHandle } from 'react-resizable-panels'
 import {
   ResizableHandle,
   ResizablePanel,
@@ -20,6 +21,7 @@ import { WorkspaceWelcome } from '@/features/workspace/WorkspacePicker'
 import { Toolbox } from '@/features/toolbox/Toolbox'
 import { SetupPage } from '@/features/setup/SetupPage'
 import { useUiStore } from '@/stores/ui-store'
+import { useTerminalStore } from '@/stores/terminal-store'
 import { cn } from '@/lib/utils'
 import { api } from '@/ipc/commands'
 import { connectBridge } from '@/ipc/bridge'
@@ -58,6 +60,33 @@ function saveLayout(layout: Record<string, number>) {
   }
 }
 
+/** Below this the output pane is under ~50 columns, and vim assumes 80. */
+const TERMINAL_MIN_PX = 720
+const TERMINAL_OPEN_PX = 760
+
+/**
+ * Widens the output pane the first time a terminal opens.
+ *
+ * At the design's 372px default the pane is roughly 44 columns of JetBrains Mono
+ * 12 — fine for a log, cramped to the point of uselessness for htop or vim. The
+ * resize is imperative, so `onLayoutChanged` reports `isUserInteraction: false`
+ * and `saveLayout` correctly does not persist it: the user's own chosen width
+ * survives, and dragging it back narrower sticks.
+ */
+function useGrowForTerminals(panelRef: React.RefObject<PanelImperativeHandle | null>) {
+  useEffect(
+    () =>
+      useTerminalStore.subscribe((state, prev) => {
+        if (state.order.length === 0 || state.order.length <= prev.order.length) return
+        const panel = panelRef.current
+        if (!panel) return
+        if (panel.getSize().inPixels >= TERMINAL_MIN_PX) return
+        panel.resize(`${TERMINAL_OPEN_PX}px`)
+      }),
+    [panelRef]
+  )
+}
+
 function Dashboard() {
   const qc = useQueryClient()
   // Read once: re-reading on every render would fight the drag.
@@ -66,6 +95,8 @@ function Dashboard() {
   const detailRepoId = useUiStore((s) => s.detailRepoId)
   const { theme } = useTheme()
   const [setupMode, setSetupMode] = useState(false)
+  const outputPanelRef = useRef<PanelImperativeHandle | null>(null)
+  useGrowForTerminals(outputPanelRef)
 
   // get_bootstrap paints the entire chrome — real counts, every folder, the
   // real scripts list — before a single git process has run.
@@ -212,7 +243,13 @@ function Dashboard() {
 
           <ResizableHandle className="hover:bg-primary data-[dragging]:bg-primary" />
 
-          <ResizablePanel id="output" defaultSize="372px" minSize="260px" maxSize="900px">
+          <ResizablePanel
+            id="output"
+            panelRef={outputPanelRef}
+            defaultSize="372px"
+            minSize="260px"
+            maxSize="900px"
+          >
             <OutputPane />
           </ResizablePanel>
         </ResizablePanelGroup>

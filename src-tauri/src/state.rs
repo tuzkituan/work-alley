@@ -28,6 +28,9 @@ pub struct PendingIntent {
     pub danger: Danger,
     /// For devStart/devStop: which task ("dev" / "storybook").
     pub task: Option<String>,
+    /// Initial PTY geometry for termShell/termScript. Must survive prepare→run,
+    /// because the pane that measured it is not in scope at dispatch.
+    pub size: Option<crate::model::TermSize>,
 }
 
 /// `"libs/design-system#storybook"`.
@@ -85,6 +88,8 @@ pub struct AppState {
     pub dev_meta: Mutex<HashMap<String, DevServer>>,
     pub last_scan: RwLock<Option<WorkspaceSnapshot>>,
     pub scan_cancel: Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Integrated terminal sessions, keyed by term id.
+    pub ptys: Mutex<HashMap<String, Arc<crate::pty::PtySession>>>,
     tools_ready: AtomicBool,
 }
 
@@ -101,6 +106,7 @@ impl AppState {
             dev_meta: Mutex::new(HashMap::new()),
             last_scan: RwLock::new(None),
             scan_cancel: Mutex::new(HashMap::new()),
+            ptys: Mutex::new(HashMap::new()),
             tools_ready: AtomicBool::new(false),
         }
     }
@@ -120,6 +126,10 @@ impl AppState {
         self.dev.lock().unwrap().clear();
         self.dev_meta.lock().unwrap().clear();
         self.intents.lock().unwrap().clear();
+        // `ptys` is deliberately *not* cleared. A shell you are halfway through a
+        // command in is still a valid shell, and killing it because you switched
+        // folders is hostile; each tab shows its own cwd, so nothing is
+        // misleading. The omission only looks like one next to the clears above.
     }
 
     pub fn app_dir(&self) -> PathBuf {

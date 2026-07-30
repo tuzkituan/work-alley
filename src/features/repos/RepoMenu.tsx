@@ -83,6 +83,12 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
         <DropdownMenuItem onClick={() => run({ kind: 'openShell', ref: repo })}>
           Open terminal here
         </DropdownMenuItem>
+        {/* The escape hatch, for when a 372px pane is not enough room. */}
+        <DropdownMenuItem
+          onClick={() => run({ kind: 'openShell', ref: repo, external: true })}
+        >
+          Open in system terminal
+        </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuItem onClick={() => run({ kind: 'branchList', ref: repo })}>
           Branches…

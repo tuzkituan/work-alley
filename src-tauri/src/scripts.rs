@@ -8,7 +8,12 @@
 //! by *menu index*, and they push commits, open PRs and publish npm packages. Add
 //! a repo to fe/ — or reorder a menu — and a hardcoded `printf '2\n1\n'` silently
 //! acts on a different repo. The failure would be silent, remote and irreversible.
-//! Interactive scripts are launched in a real terminal instead.
+//!
+//! Interactive scripts run in a real pty instead — since the integrated terminal
+//! (see pty.rs) that pty is a tab in the output pane rather than a separate
+//! emulator window. That makes the rule above *easier* to keep, not weaker: there
+//! is now a real terminal to prompt in, so there is no excuse left for canned
+//! stdin.
 
 use crate::error::{AppError, AppResult};
 use crate::model::{Danger, ScriptArg, ScriptDescriptor, ScriptMode};

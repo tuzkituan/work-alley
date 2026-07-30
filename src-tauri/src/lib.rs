@@ -13,6 +13,7 @@ mod packages;
 mod paths;
 mod pkg;
 mod procs;
+mod pty;
 mod scripts;
 mod setup;
 mod state;
@@ -222,6 +223,11 @@ pub fn run() {
             commands::prepare_action,
             commands::run_action,
             commands::cancel_action,
+            commands::term_write,
+            commands::term_resize,
+            commands::term_close,
+            commands::term_list,
+            commands::term_scrollback,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the Work Alley window")
@@ -232,6 +238,9 @@ pub fn run() {
             if matches!(event, RunEvent::ExitRequested { .. } | RunEvent::Exit) {
                 if let Some(state) = app.try_state::<Arc<AppState>>() {
                     procs::kill_all_now(state.inner());
+                    // Terminal shells too, for the same reason: without this every
+                    // integrated terminal outlives the app that opened it.
+                    pty::kill_all_now(state.inner());
                 }
             }
         });

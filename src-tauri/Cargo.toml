@@ -35,9 +35,20 @@ tokio = { version = "1", features = [
   "net",
 ] }
 tauri-plugin-dialog = "2.7.2"
+# The integrated terminal. wezterm's; its unix backend already does setsid +
+# TIOCSCTTY, so the child is a session leader and killpg reaches its whole tree.
+portable-pty = "0.9"
+# Terminal output is raw bytes and Tauri events are JSON. See pty::flush for why
+# this is base64 and not from_utf8_lossy.
+base64 = "0.22"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[dev-dependencies]
+# `tauri::test::mock_app` gives a real AppHandle, which is what lets the pty
+# tests drive `pty::open` itself rather than a reimplementation of it.
+tauri = { version = "2", features = ["test"] }
 
 [profile.dev]
 incremental = true
