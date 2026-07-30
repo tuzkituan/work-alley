@@ -127,10 +127,9 @@ pub fn parse_ssh_add(text: &str) -> Vec<String> {
 
 /// `~/.ssh/*.pub`, by name only. Never reads a private key.
 fn public_key_files() -> Vec<String> {
-    let Some(home) = std::env::var_os("HOME") else {
+    let Some(dir) = crate::platform::ssh_dir() else {
         return Vec::new();
     };
-    let dir = PathBuf::from(home).join(".ssh");
     let Ok(entries) = std::fs::read_dir(dir) else {
         return Vec::new();
     };
@@ -150,8 +149,10 @@ fn public_key_files() -> Vec<String> {
 /// trip — that would put a multi-second hang into readiness, which is computed on every
 /// bootstrap.
 fn gh_account() -> Option<String> {
-    let home = std::env::var_os("HOME")?;
-    let path = PathBuf::from(home).join(".config/gh/hosts.yml");
+    // Not `~/.config/gh` unconditionally: on Windows gh keeps this under
+    // `%AppData%\GitHub CLI`, so reading the unix path there reports "not signed
+    // in" for a user who is.
+    let path = crate::platform::gh_config_path()?;
     let text = std::fs::read_to_string(path).ok()?;
     parse_gh_hosts(&text)
 }

@@ -15,7 +15,6 @@
 
 use crate::model::{PackageOp, PackageStatus, SetupItem, SetupPlan, SetupStepStatus};
 use crate::packages;
-use crate::procs::sh_quote;
 use crate::toolchain::Toolchain;
 
 /// What a step runs.
@@ -528,7 +527,7 @@ fn plan_for(
         Kind::NpmGlobal(ids) => packages::plan_npm_group(tc, &missing_of(ids, pkgs))?,
 
         Kind::Script { script, .. } => packages::Plan {
-            argv: vec![packages::shell_path(), "-lc".to_string(), (*script).to_string()],
+            argv: packages::login_shell_script(script)?,
             // No root anywhere in these: both installers write under $HOME.
             in_terminal: false,
             danger: crate::model::Danger::Medium,
@@ -614,17 +613,23 @@ pub fn clean_identity(field: &str, value: &str) -> Result<String, String> {
 ///
 /// One command rather than two so it is a single run with a single result: a setup
 /// step that half-succeeded is worse than one that failed.
-pub fn git_identity_argv(git: &std::path::Path, name: &str, email: &str) -> Vec<String> {
-    let g = sh_quote(&git.display().to_string());
-    vec![
-        packages::shell_path(),
-        "-lc".to_string(),
-        format!(
-            "{g} config --global user.name {} && {g} config --global user.email {}",
-            sh_quote(name),
-            sh_quote(email)
-        ),
-    ]
+pub fn git_identity_argv(
+    sh: &crate::platform::Shell,
+    git: &std::path::Path,
+    name: &str,
+    email: &str,
+) -> Vec<String> {
+    let g = git.display().to_string();
+    let set = |key: &str, value: &str| {
+        sh.cmd(&[
+            g.clone(),
+            "config".into(),
+            "--global".into(),
+            key.into(),
+            value.into(),
+        ])
+    };
+    sh.login_script_argv(&sh.both(&set("user.name", name), &set("user.email", email)))
 }
 
 // --- helpers ----------------------------------------------------------------
@@ -650,6 +655,7 @@ impl PackageStatusExt for [crate::model::PackageStatus] {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::procs::sh_quote;
 
     #[test]
     fn every_step_id_is_unique() {
@@ -797,7 +803,9 @@ mod tests {
 
     #[test]
     fn the_identity_command_writes_both_keys_in_one_run() {
+        let sh = crate::platform::test_shell(crate::platform::ShellKind::Posix);
         let argv = git_identity_argv(
+            sh,
             std::path::Path::new("/usr/bin/git"),
             "O'Brien",
             "o@example.com",
@@ -806,6 +814,28 @@ mod tests {
         assert!(script.contains("user.name"));
         assert!(script.contains("user.email"));
         assert!(script.contains(r"'O'\''Brien'"), "got: {script}");
+        // One run, so the step cannot half-succeed.
+        assert!(script.contains("&&"), "got: {script}");
+    }
+
+    #[test]
+    fn the_identity_command_is_also_correct_under_powershell() {
+        // The Windows fallback when Git Bash is absent. PowerShell has no `&&`, so a
+        // naive translation would write the name and silently skip the email.
+        let sh = crate::platform::test_shell(crate::platform::ShellKind::PowerShell);
+        let argv = git_identity_argv(
+            sh,
+            std::path::Path::new(r"C:\Program Files\Git\cmd\git.exe"),
+            "O'Brien",
+            "o@example.com",
+        );
+        let script = argv.last().unwrap();
+        assert!(script.contains("$LASTEXITCODE"), "got: {script}");
+        assert!(!script.contains("&&"), "got: {script}");
+        // Doubled apostrophe, which is how PowerShell escapes one.
+        assert!(script.contains("'O''Brien'"), "got: {script}");
+        // A program path with a space in it must be quoted; the old code left it bare.
+        assert!(script.contains(r"'C:\Program Files\Git\cmd\git.exe'"), "got: {script}");
     }
 
     #[test]

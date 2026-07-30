@@ -155,7 +155,10 @@ pub fn open<R: Runtime>(
             spec.cwd.display()
         )));
     }
-    let Some((program, args)) = spec.argv.split_first() else {
+    // Rewritten before the split, because on Windows a `.cmd` shim — which is what
+    // `npm` and `yarn` are there — cannot be handed to ConPTY directly. No-op on unix.
+    let argv = crate::platform::pty_argv(&spec.argv);
+    let Some((program, args)) = argv.split_first() else {
         return Err(AppError::Invalid("empty command".into()));
     };
 

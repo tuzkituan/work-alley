@@ -113,14 +113,10 @@ fn onboarding_completed(cfg: &crate::config::Config) -> bool {
     cfg.onboarding_done_unix.is_some()
 }
 
-/// The user's home directory, for abbreviating paths in the UI.
-fn dirs_home() -> Option<PathBuf> {
-    #[cfg(windows)]
-    let var = "USERPROFILE";
-    #[cfg(not(windows))]
-    let var = "HOME";
-    std::env::var_os(var).map(PathBuf::from).filter(|p| p.is_dir())
-}
+// The user's home directory, for abbreviating paths in the UI. Lives in
+// `platform` because Windows keeps it in USERPROFILE, not HOME.
+use crate::platform::home_dir as dirs_home;
+use crate::platform::Shell;
 
 /// The workspace's shared package, whose version drift is worth a column.
 ///
@@ -242,14 +238,17 @@ fn picker_start_dir(state: &Arc<AppState>) -> Option<PathBuf> {
             continue;
         }
         if let Some(parent) = root.parent() {
-            if parent.is_dir() && parent != std::path::Path::new("/") {
+            // `parent.parent().is_some()` rather than a comparison against "/":
+            // it rejects a filesystem root on both platforms, where the literal
+            // would miss `C:\`.
+            if parent.is_dir() && parent.parent().is_some() {
                 return Some(parent.to_path_buf());
             }
         }
     }
 
     // Prefer a common projects directory over the bare home folder.
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let home = crate::platform::home_dir()?;
     for guess in ["Projects", "projects", "dev", "Developer", "code", "src", "work"] {
         let p = home.join(guess);
         if p.is_dir() {
@@ -1213,7 +1212,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 kind: "gitIdentity".into(),
                 title: "Set your git identity".into(),
                 description: format!("Every commit you make will record {name} <{email}>."),
-                argv: crate::setup::git_identity_argv(&git, &name, &email),
+                argv: crate::setup::git_identity_argv(require_shell()?, &git, &name, &email),
                 preview: None,
                 cwd: crate::paths::neutral_cwd(&root),
                 env: vec![],
@@ -1905,14 +1904,13 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 description: "Reset tracked files and delete untracked ones.".into(),
                 // Two commands, because neither half does the other's job: reset
                 // --hard leaves untracked files, clean -fd leaves modifications.
-                argv: vec![
-                    "bash".to_string(),
-                    "-c".into(),
-                    format!(
-                        "{g} reset --hard && {g} clean -fd",
-                        g = shell_single_quote(&git.display().to_string())
-                    ),
-                ],
+                argv: {
+                    let sh = require_shell()?;
+                    let g = git.display().to_string();
+                    let reset = sh.cmd(&[g.clone(), "reset".into(), "--hard".into()]);
+                    let clean = sh.cmd(&[g, "clean".into(), "-fd".into()]);
+                    sh.script_argv(&sh.both(&reset, &clean))
+                },
                 cwd,
                 env: vec![],
                 danger: Danger::High,
@@ -2097,7 +2095,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 kind: "cloneUrls".into(),
                 title: format!("Clone {} repositories", parsed.repos.len()),
                 description: format!("Set up a new workspace in {}.", target.display()),
-                argv: clone_all_argv(&git, &target, &parsed.repos),
+                argv: clone_all_argv(require_shell()?, &git, &target, &parsed.repos),
                 preview: Some(vec![
                     git.display().to_string(),
                     "clone".into(),
@@ -2152,7 +2150,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 description: "Rebase each selected repo onto its upstream.".into(),
                 // The runner executes one argv; for bulk we drive git through a
                 // loop in bash -c using only absolute, validated paths.
-                argv: bulk_pull_argv(&git, &root, &refs),
+                argv: bulk_pull_argv(require_shell()?, &git, &root, &refs),
                 preview: Some(vec![
                     git.display().to_string(),
                     "pull".into(),
@@ -2213,7 +2211,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                         kind: "fetchAll".into(),
                         title: format!("Fetch all {} repos", all.len()),
                         description: "Update remote refs across the workspace.".into(),
-                        argv: bulk_fetch_argv(&git, &root, &all),
+                        argv: bulk_fetch_argv(require_shell()?, &git, &root, &all),
                         preview: Some(vec![
                             git.display().to_string(),
                             "fetch".into(),
@@ -2252,7 +2250,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 kind: "fetchAll".into(),
                 title: format!("Fetch {} repos", refs.len()),
                 description: "Update remote refs and prune deleted branches.".into(),
-                argv: bulk_fetch_argv(&git, &root, &refs),
+                argv: bulk_fetch_argv(require_shell()?, &git, &root, &refs),
                 preview: Some(vec![
                     git.display().to_string(),
                     "fetch".into(),
@@ -2438,8 +2436,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 warnings.push(format!("A non-zero exit here means: {meaning}."));
             }
 
-            let mut argv = vec!["bash".to_string(), path.display().to_string()];
-            argv.extend(args.clone());
+            let argv = script_file_argv(&path, &args)?;
 
             Ok(Built {
                 kind: "script".into(),
@@ -2592,7 +2589,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                     Some(b) => format!("Switches each repo to {b}."),
                     None => "Switches each repo to the branch origin/HEAD points at.".into(),
                 },
-                argv: checkout_default_argv(&git, &plans, dirty),
+                argv: checkout_default_argv(require_shell()?, &git, &plans, dirty),
                 preview: Some(vec![
                     git.display().to_string(),
                     "checkout".into(),
@@ -2627,13 +2624,11 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 .map(|r| r.key())
                 .unwrap_or_else(|| "the workspace".to_string());
             // Resolved here, in the phase with no side effects, so the preview can
-            // name the shell that will actually run. Same fallback as
-            // `procs::open_shell`: $SHELL can be unset when launched from a
-            // .desktop file.
-            let shell = std::env::var("SHELL")
-                .ok()
-                .filter(|s| !s.trim().is_empty())
-                .unwrap_or_else(|| "/bin/bash".to_string());
+            // name the shell that will actually run — and resolved by `platform`, so
+            // the preview and the dispatch cannot disagree about which shell that is.
+            // $SHELL can be unset when launched from a .desktop file, and on Windows
+            // it is never set at all.
+            let login = crate::platform::login_shell_argv();
             Ok(Built {
                 kind: if external { "openShell".into() } else { "termShell".into() },
                 title: format!("Terminal in {where_}"),
@@ -2647,7 +2642,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 argv: if external {
                     vec![]
                 } else {
-                    vec![shell, "-l".into()]
+                    login
                 },
                 preview: None,
                 cwd,
@@ -2691,7 +2686,7 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 title: format!("{} — in a terminal", desc.title),
                 description: "This script prompts interactively, so it needs a real terminal."
                     .into(),
-                argv: vec!["bash".to_string(), path.display().to_string()],
+                argv: script_file_argv(&path, &[])?,
                 cwd,
                 env: vec![],
                 danger: desc.danger,
@@ -2726,21 +2721,61 @@ fn script_path(root: &std::path::Path, file: &str) -> AppResult<PathBuf> {
     crate::paths::ensure_inside(root, &p)
 }
 
+/// The shell every generated script runs under.
+///
+/// An error rather than a silent fallback, and the message names the fix: on Windows
+/// the whole shell layer rests on Git for Windows shipping `bash.exe`, and "nothing
+/// happened" is the worst way to learn that it is missing.
+fn require_shell() -> AppResult<&'static Shell> {
+    crate::platform::shell().ok_or_else(|| {
+        AppError::ToolMissing(
+            "a shell — install Git for Windows, which provides Git Bash".into(),
+        )
+    })
+}
+
+/// The argv to run a `.sh` file, or a clear reason why it cannot be run.
+///
+/// The one genuine feature gap on Windows. PowerShell cannot execute a shell script
+/// and rewriting a user's own scripts is out of the question, so the honest outcome
+/// is to name the missing piece. A `.sh` in the workspace is still *listed* — see
+/// `scripts::discover` — because the user should see that it exists.
+fn script_file_argv(path: &std::path::Path, args: &[String]) -> AppResult<Vec<String>> {
+    require_shell()?.file_argv(path, args).ok_or_else(|| {
+        AppError::ToolMissing(
+            "bash — this is a shell script, and PowerShell cannot run one. Install Git for \
+             Windows, which provides Git Bash."
+                .into(),
+        )
+    })
+}
+
 /// Bulk git over N repos, with every path absolute and pre-validated.
-fn bulk_pull_argv(git: &std::path::Path, root: &std::path::Path, refs: &[RepoRef]) -> Vec<String> {
+fn bulk_pull_argv(
+    sh: &Shell,
+    git: &std::path::Path,
+    root: &std::path::Path,
+    refs: &[RepoRef],
+) -> Vec<String> {
     let mut script = String::new();
     for r in refs {
         let p = crate::paths::repo_path(root, r);
-        script.push_str(&format!(
-            "echo \"[..]   {key}\"; {git} -C {path} pull --rebase --autostash || echo \"[FAIL] {key}\";\n",
-            key = r.key(),
-            git = git.display(),
-            // Quoted: a workspace path containing a space would otherwise split.
-            path = shell_single_quote(&p.display().to_string()),
-        ));
+        let key = r.key();
+        let pull = sh.cmd(&[
+            git.display().to_string(),
+            "-C".into(),
+            p.display().to_string(),
+            "pull".into(),
+            "--rebase".into(),
+            "--autostash".into(),
+        ]);
+        script.push_str(&sh.stmt(&[
+            sh.echo(&format!("[..]   {key}")),
+            sh.or_fail(&pull, &format!("[FAIL] {key}")),
+        ]));
     }
-    script.push_str("echo \"[OK]   bulk pull finished\";\n");
-    vec!["bash".into(), "-c".into(), script]
+    script.push_str(&sh.stmt(&[sh.echo("[OK]   bulk pull finished")]));
+    sh.script_argv(&script)
 }
 
 /// One `git clone` per repo, sequentially, with per-repo result markers.
@@ -2751,6 +2786,7 @@ fn bulk_pull_argv(git: &std::path::Path, root: &std::path::Path, refs: &[RepoRef
 /// `-d` guards every clone: an existing directory is skipped rather than written
 /// into, so re-running this after a partial failure cannot damage what worked.
 fn clone_all_argv(
+    sh: &Shell,
     git: &std::path::Path,
     root: &std::path::Path,
     repos: &[crate::clone::RepoUrl],
@@ -2758,30 +2794,31 @@ fn clone_all_argv(
     let mut script = String::new();
     for r in repos {
         let dir = root.join(&r.name);
-        script.push_str(&format!(
-            // `rmdir` after a failure, never `rm -rf`: it only succeeds on an
-            // empty directory, so it can clear the husk an interrupted clone
-            // leaves behind — making a retry possible — and can never delete
-            // anything that has content in it.
-            "if [ -d {dir} ]; then echo \"[SKIP] {name} — folder already exists\"; \
-             else echo \"[..]   {name}\"; \
-             if {git} clone --progress {url} {dir}; then echo \"[OK]   {name}\"; \
-             else rmdir {dir} 2>/dev/null; echo \"[FAIL] {name}\"; fi; fi\n",
-            // Safe bare: clone::repo_name allows only [A-Za-z0-9._-].
-            name = r.name,
-            url = shell_single_quote(&r.url),
-            dir = shell_single_quote(&dir.display().to_string()),
-            git = git.display(),
-        ));
+        // Safe bare in the marker text: clone::repo_name allows only [A-Za-z0-9._-].
+        let name = &r.name;
+        let clone = sh.cmd(&[
+            git.display().to_string(),
+            "clone".into(),
+            "--progress".into(),
+            r.url.clone(),
+            dir.display().to_string(),
+        ]);
+        // `rmdir` after a failure, never `rm -rf`: it only succeeds on an empty
+        // directory, so it can clear the husk an interrupted clone leaves behind —
+        // making a retry possible — and can never delete anything with content in it.
+        let attempt = sh.if_ok(
+            &clone,
+            &[sh.echo(&format!("[OK]   {name}"))],
+            &[sh.rmdir_quiet(&dir), sh.echo(&format!("[FAIL] {name}"))],
+        );
+        script.push_str(&sh.line(&sh.if_dir(
+            &dir,
+            &[sh.echo(&format!("[SKIP] {name} — folder already exists"))],
+            &[sh.echo(&format!("[..]   {name}")), attempt],
+        )));
     }
-    script.push_str("echo \"[OK]   clone finished\";\n");
-    vec!["bash".into(), "-c".into(), script]
-}
-
-/// Wraps a value for `bash -c`. URLs and names are user input, so they can never
-/// be interpolated bare — a `;` in a URL would otherwise be a second command.
-fn shell_single_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "'\\''"))
+    script.push_str(&sh.stmt(&[sh.echo("[OK]   clone finished")]));
+    sh.script_argv(&script)
 }
 
 /// One checkout per repo, with the dirty policy applied first.
@@ -2795,6 +2832,7 @@ fn shell_single_quote(s: &str) -> String {
 /// abandoned every remaining repo — the worst possible failure for a bulk action,
 /// because the summary line still said it had finished.
 fn checkout_default_argv(
+    sh: &Shell,
     git: &std::path::Path,
     plans: &[(RepoRef, PathBuf, String, u32)],
     dirty: crate::model::DirtyPolicy,
@@ -2804,73 +2842,107 @@ fn checkout_default_argv(
 
     for (repo, path, target, dirty_count) in plans {
         let key = repo.key();
-        let p = shell_single_quote(&path.display().to_string());
         let g = git.display().to_string();
-        let t = shell_single_quote(target);
+        let p = path.display().to_string();
+        // Every git invocation in this loop is `git -C <repo>`, so build the prefix once.
+        let git_c = |args: &[&str]| {
+            let mut argv = vec![g.clone(), "-C".into(), p.clone()];
+            argv.extend(args.iter().map(|s| (*s).to_string()));
+            sh.cmd(&argv)
+        };
 
         // The checkout itself, reused by every branch below.
-        let checkout = format!(
-            "{g} -C {p} checkout {t} -q && echo \"[OK]   {key} -> {target}\" \
-             || echo \"[FAIL] {key} — checkout {target} failed\""
+        let checkout = sh.and_or(
+            &git_c(&["checkout", target, "-q"]),
+            &format!("[OK]   {key} -> {target}"),
+            &format!("[FAIL] {key} — checkout {target} failed"),
         );
 
         if *dirty_count == 0 {
             // The policy applies only to repos with local changes; a clean repo is
             // always a plain checkout, even under "discard".
-            script.push_str(&format!("{checkout};\n"));
+            script.push_str(&sh.stmt(&[checkout]));
             continue;
         }
 
         match dirty {
             DirtyPolicy::Skip => {
-                script.push_str(&format!(
-                    "echo \"[SKIP] {key} — {dirty_count} local change(s)\";\n"
-                ));
+                script.push_str(&sh.stmt(&[
+                    sh.echo(&format!("[SKIP] {key} — {dirty_count} local change(s)")),
+                ]));
             }
             DirtyPolicy::Stash => {
                 // -u includes untracked files, which is what the change count on the
                 // card means. The checkout only runs if the stash actually worked.
-                script.push_str(&format!(
-                    "echo \"[..]   {key} — stashing {dirty_count} change(s)\"; \
-                     if {g} -C {p} stash push -u -q -m 'work-alley: before checkout {target}'; \
-                     then {checkout}; \
-                     else echo \"[FAIL] {key} — stash failed, left on its current branch\"; fi;\n"
-                ));
+                let stash = git_c(&[
+                    "stash",
+                    "push",
+                    "-u",
+                    "-q",
+                    "-m",
+                    &format!("work-alley: before checkout {target}"),
+                ]);
+                script.push_str(&sh.stmt(&[
+                    sh.echo(&format!("[..]   {key} — stashing {dirty_count} change(s)")),
+                    sh.if_ok(
+                        &stash,
+                        &[checkout],
+                        &[sh.echo(&format!(
+                            "[FAIL] {key} — stash failed, left on its current branch"
+                        ))],
+                    ),
+                ]));
             }
             DirtyPolicy::Discard => {
                 // Both halves are needed: reset drops tracked modifications, clean
                 // drops untracked files, and an untracked file left behind can still
                 // block the checkout.
-                script.push_str(&format!(
-                    "echo \"[..]   {key} — discarding {dirty_count} change(s)\"; \
-                     if {g} -C {p} reset --hard -q && {g} -C {p} clean -fdq; \
-                     then {checkout}; \
-                     else echo \"[FAIL] {key} — could not clean, left alone\"; fi;\n"
-                ));
+                let reset = git_c(&["reset", "--hard", "-q"]);
+                let clean = git_c(&["clean", "-fdq"]);
+                script.push_str(&sh.stmt(&[
+                    sh.echo(&format!("[..]   {key} — discarding {dirty_count} change(s)")),
+                    sh.if_ok(
+                        &sh.both(&reset, &clean),
+                        &[checkout],
+                        &[sh.echo(&format!("[FAIL] {key} — could not clean, left alone"))],
+                    ),
+                ]));
             }
         }
     }
 
-    script.push_str("echo \"[OK]   checkout finished\";\n");
-    vec!["bash".into(), "-c".into(), script]
+    script.push_str(&sh.stmt(&[sh.echo("[OK]   checkout finished")]));
+    sh.script_argv(&script)
 }
 
-fn bulk_fetch_argv(git: &std::path::Path, root: &std::path::Path, refs: &[RepoRef]) -> Vec<String> {
+fn bulk_fetch_argv(
+    sh: &Shell,
+    git: &std::path::Path,
+    root: &std::path::Path,
+    refs: &[RepoRef],
+) -> Vec<String> {
     let mut script = String::new();
     for r in refs {
         let p = crate::paths::repo_path(root, r);
+        let key = r.key();
+        let fetch = sh.cmd(&[
+            git.display().to_string(),
+            "-C".into(),
+            p.display().to_string(),
+            "fetch".into(),
+            "--all".into(),
+            "--prune".into(),
+            "-q".into(),
+        ]);
         // The `[..]` opener exists so the UI has an in-flight state per repo, the
         // same as pull. Without it a fetch of 40 repos showed 40 queued rows that
         // each flipped straight to done, and you could not see where it had got to.
-        script.push_str(&format!(
-            "echo \"[..]   {key}\"; {git} -C {path} fetch --all --prune -q \
-             && echo \"[OK]   {key}\" || echo \"[FAIL] {key}\";\n",
-            key = r.key(),
-            git = git.display(),
-            path = shell_single_quote(&p.display().to_string()),
-        ));
+        script.push_str(&sh.stmt(&[
+            sh.echo(&format!("[..]   {key}")),
+            sh.and_or(&fetch, &format!("[OK]   {key}"), &format!("[FAIL] {key}")),
+        ]));
     }
-    vec!["bash".into(), "-c".into(), script]
+    sh.script_argv(&script)
 }
 
 /// The toolbox listing. Read-only.
@@ -3496,6 +3568,11 @@ pub async fn repo_commits(
 mod tests {
     use super::*;
 
+    /// A fixed POSIX shell, so these assertions do not depend on `$SHELL`.
+    fn posix() -> &'static Shell {
+        crate::platform::test_shell(crate::platform::ShellKind::Posix)
+    }
+
     fn plan(name: &str, branch: &str, dirty: u32) -> (RepoRef, PathBuf, String, u32) {
         (
             RepoRef {
@@ -3514,19 +3591,21 @@ mod tests {
         // assumed.
         let plans = vec![plan("web", "main", 0), plan("api", "develop", 0)];
         let argv = checkout_default_argv(
+            posix(),
             std::path::Path::new("/usr/bin/git"),
             &plans,
             crate::model::DirtyPolicy::Skip,
         );
         let script = argv.last().unwrap();
-        assert!(script.contains("checkout 'main'"));
-        assert!(script.contains("checkout 'develop'"));
+        assert!(script.contains("checkout main"));
+        assert!(script.contains("checkout develop"));
     }
 
     #[test]
     fn skip_leaves_a_dirty_repo_completely_untouched() {
         let plans = vec![plan("web", "main", 3)];
         let script = checkout_default_argv(
+            posix(),
             std::path::Path::new("/usr/bin/git"),
             &plans,
             crate::model::DirtyPolicy::Skip,
@@ -3547,6 +3626,7 @@ mod tests {
     fn stash_includes_untracked_files_and_never_resets() {
         let plans = vec![plan("web", "main", 3)];
         let script = checkout_default_argv(
+            posix(),
             std::path::Path::new("/usr/bin/git"),
             &plans,
             crate::model::DirtyPolicy::Stash,
@@ -3558,13 +3638,14 @@ mod tests {
         assert!(script.contains("stash push -u"));
         assert!(!script.contains("reset --hard"), "stash must not destroy anything");
         assert!(!script.contains("clean -fd"));
-        assert!(script.contains("checkout 'main'"));
+        assert!(script.contains("checkout main"));
     }
 
     #[test]
     fn discard_resets_and_cleans_because_either_alone_is_not_enough() {
         let plans = vec![plan("web", "main", 3)];
         let script = checkout_default_argv(
+            posix(),
             std::path::Path::new("/usr/bin/git"),
             &plans,
             crate::model::DirtyPolicy::Discard,
@@ -3576,7 +3657,7 @@ mod tests {
         // checkout can still fail on an untracked file in the way.
         assert!(script.contains("reset --hard"));
         assert!(script.contains("clean -fdq"));
-        assert!(script.contains("checkout 'main'"));
+        assert!(script.contains("checkout main"));
     }
 
     #[test]
@@ -3589,14 +3670,14 @@ mod tests {
             crate::model::DirtyPolicy::Stash,
             crate::model::DirtyPolicy::Discard,
         ] {
-            let script = checkout_default_argv(std::path::Path::new("/usr/bin/git"), &plans, policy)
+            let script = checkout_default_argv(posix(), std::path::Path::new("/usr/bin/git"), &plans, policy)
                 .last()
                 .unwrap()
                 .clone();
             assert!(!script.contains("reset"), "{policy:?}: {script}");
             assert!(!script.contains("stash"), "{policy:?}: {script}");
             assert!(!script.contains("[SKIP]"), "{policy:?}: {script}");
-            assert!(script.contains("checkout 'main'"), "{policy:?}");
+            assert!(script.contains("checkout main"), "{policy:?}");
         }
     }
 
@@ -3608,6 +3689,7 @@ mod tests {
         // "finished".
         let plans = vec![plan("web", "main", 3), plan("api", "main", 3), plan("docs", "main", 0)];
         let script = checkout_default_argv(
+            posix(),
             std::path::Path::new("/usr/bin/git"),
             &plans,
             crate::model::DirtyPolicy::Stash,
@@ -3624,34 +3706,49 @@ mod tests {
         for name in ["fe/web", "fe/api", "fe/docs"] {
             assert!(script.contains(name), "{name} missing from: {script}");
         }
-        assert_eq!(script.matches("checkout 'main'").count(), 3);
+        assert_eq!(script.matches("checkout main -q").count(), 3);
         // And a failed stash is reported per repo rather than aborting.
         assert_eq!(script.matches("stash failed").count(), 2);
     }
 
     #[test]
-    fn paths_and_branches_are_quoted() {
-        // A workspace under "~/My Projects" or a branch like release/2026.1 must not
-        // split the generated command.
-        let plans = vec![(
-            RepoRef {
-                category: "fe".into(),
-                name: "web".into(),
-            },
-            PathBuf::from("/w/My Projects/web"),
-            "release/2026.1".to_string(),
-            0,
-        )];
-        let script = checkout_default_argv(
-            std::path::Path::new("/usr/bin/git"),
-            &plans,
-            crate::model::DirtyPolicy::Skip,
-        )
-        .last()
-        .unwrap()
-        .clone();
-        assert!(script.contains("'/w/My Projects/web'"));
-        assert!(script.contains("'release/2026.1'"));
+    fn a_value_that_would_split_or_inject_is_quoted() {
+        // Quoting is decided per value now, so the invariant to hold is "nothing can
+        // split or inject", not "everything is quoted" — a safe value is written bare
+        // because the preview in the confirmation dialog is also read by a human.
+        let script = |path: &str, branch: &str| {
+            let plans = vec![(
+                RepoRef {
+                    category: "fe".into(),
+                    name: "web".into(),
+                },
+                PathBuf::from(path),
+                branch.to_string(),
+                0,
+            )];
+            checkout_default_argv(
+                posix(),
+                std::path::Path::new("/usr/bin/git"),
+                &plans,
+                crate::model::DirtyPolicy::Skip,
+            )
+            .last()
+            .unwrap()
+            .clone()
+        };
+
+        // A workspace under "My Projects" must not split into two arguments.
+        let s = script("/w/My Projects/web", "main");
+        assert!(s.contains("-C '/w/My Projects/web'"), "{s}");
+
+        // A `;` is legal in a git ref name and would otherwise start a second
+        // command. This is the case the quoting exists for.
+        let s = script("/w/web", "feat;whoami");
+        assert!(s.contains("checkout 'feat;whoami'"), "{s}");
+
+        // And a value with nothing in it to interpret stays legible.
+        let s = script("/w/web", "release/2026.1");
+        assert!(s.contains("checkout release/2026.1"), "{s}");
     }
 
     #[test]
@@ -3683,5 +3780,241 @@ mod tests {
         // Epoch itself, as a sanity anchor.
         assert_eq!(parse_iso8601("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(parse_iso8601("garbage"), None);
+    }
+}
+
+/// Golden snapshots of the four bulk-action script builders.
+///
+/// These exist for exactly one reason: `ansi::marker` and the emitter in
+/// `procs::stream` parse the `[..]`/`[OK]`/`[FAIL]`/`[SKIP]` prefixes out of this
+/// generated text, so the POSIX output is a wire format and not an implementation
+/// detail. Refactoring these builders to emit PowerShell as well as sh must not
+/// change a byte of the sh side, and a full-string comparison is the only check
+/// that actually proves it.
+#[cfg(test)]
+mod golden {
+    use super::*;
+    use crate::model::DirtyPolicy;
+
+    /// A fixed POSIX shell, so these assertions do not depend on `$SHELL`.
+    fn posix() -> &'static Shell {
+        crate::platform::test_shell(crate::platform::ShellKind::Posix)
+    }
+
+    fn git() -> &'static std::path::Path {
+        std::path::Path::new("/usr/bin/git")
+    }
+
+    fn rf(category: &str, name: &str) -> RepoRef {
+        RepoRef {
+            category: category.into(),
+            name: name.into(),
+        }
+    }
+
+    #[test]
+    fn golden_bulk_pull() {
+        let refs = vec![rf("fe", "web"), rf("be", "api")];
+        let argv = bulk_pull_argv(posix(), git(), std::path::Path::new("/w"), &refs);
+        assert_eq!(argv[0], "bash");
+        assert_eq!(argv[1], "-c");
+        assert_eq!(
+            argv[2],
+            concat!(
+                "echo \"[..]   fe/web\"; /usr/bin/git -C /w/web pull --rebase --autostash || echo \"[FAIL] fe/web\";\n",
+                "echo \"[..]   be/api\"; /usr/bin/git -C /w/api pull --rebase --autostash || echo \"[FAIL] be/api\";\n",
+                "echo \"[OK]   bulk pull finished\";\n",
+            )
+        );
+    }
+
+    #[test]
+    fn golden_bulk_fetch() {
+        let refs = vec![rf("fe", "web")];
+        let argv = bulk_fetch_argv(posix(), git(), std::path::Path::new("/w"), &refs);
+        assert_eq!(
+            argv[2],
+            "echo \"[..]   fe/web\"; /usr/bin/git -C /w/web fetch --all --prune -q \
+             && echo \"[OK]   fe/web\" || echo \"[FAIL] fe/web\";\n"
+        );
+    }
+
+    #[test]
+    fn golden_clone_all() {
+        let repos = vec![crate::clone::RepoUrl {
+            name: "web".into(),
+            url: "git@github.com:x/web.git".into(),
+            host: "github.com".into(),
+        }];
+        let argv = clone_all_argv(posix(), git(), std::path::Path::new("/w"), &repos);
+        assert_eq!(
+            argv[2],
+            concat!(
+                "if [ -d /w/web ]; then echo \"[SKIP] web — folder already exists\"; ",
+                "else echo \"[..]   web\"; ",
+                "if /usr/bin/git clone --progress git@github.com:x/web.git /w/web; then echo \"[OK]   web\"; ",
+                "else rmdir /w/web 2>/dev/null; echo \"[FAIL] web\"; fi; fi\n",
+                "echo \"[OK]   clone finished\";\n",
+            )
+        );
+    }
+
+    fn plan(name: &str, branch: &str, dirty: u32) -> (RepoRef, PathBuf, String, u32) {
+        (
+            rf("fe", name),
+            PathBuf::from(format!("/w/fe/{name}")),
+            branch.to_string(),
+            dirty,
+        )
+    }
+
+    #[test]
+    fn golden_checkout_clean() {
+        let argv = checkout_default_argv(posix(), git(), &[plan("web", "main", 0)], DirtyPolicy::Skip);
+        assert_eq!(
+            argv[2],
+            concat!(
+                "/usr/bin/git -C /w/fe/web checkout main -q && echo \"[OK]   fe/web -> main\" ",
+                "|| echo \"[FAIL] fe/web — checkout main failed\";\n",
+                "echo \"[OK]   checkout finished\";\n",
+            )
+        );
+    }
+
+    #[test]
+    fn golden_checkout_skip() {
+        let argv = checkout_default_argv(posix(), git(), &[plan("web", "main", 3)], DirtyPolicy::Skip);
+        assert_eq!(
+            argv[2],
+            concat!(
+                "echo \"[SKIP] fe/web — 3 local change(s)\";\n",
+                "echo \"[OK]   checkout finished\";\n",
+            )
+        );
+    }
+
+    #[test]
+    fn golden_checkout_stash() {
+        let argv = checkout_default_argv(posix(), git(), &[plan("web", "main", 2)], DirtyPolicy::Stash);
+        assert_eq!(
+            argv[2],
+            concat!(
+                "echo \"[..]   fe/web — stashing 2 change(s)\"; ",
+                "if /usr/bin/git -C /w/fe/web stash push -u -q -m 'work-alley: before checkout main'; ",
+                "then /usr/bin/git -C /w/fe/web checkout main -q && echo \"[OK]   fe/web -> main\" ",
+                "|| echo \"[FAIL] fe/web — checkout main failed\"; ",
+                "else echo \"[FAIL] fe/web — stash failed, left on its current branch\"; fi;\n",
+                "echo \"[OK]   checkout finished\";\n",
+            )
+        );
+    }
+
+    #[test]
+    fn golden_checkout_discard() {
+        let argv = checkout_default_argv(posix(), git(), &[plan("web", "main", 1)], DirtyPolicy::Discard);
+        assert_eq!(
+            argv[2],
+            concat!(
+                "echo \"[..]   fe/web — discarding 1 change(s)\"; ",
+                "if /usr/bin/git -C /w/fe/web reset --hard -q && /usr/bin/git -C /w/fe/web clean -fdq; ",
+                "then /usr/bin/git -C /w/fe/web checkout main -q && echo \"[OK]   fe/web -> main\" ",
+                "|| echo \"[FAIL] fe/web — checkout main failed\"; ",
+                "else echo \"[FAIL] fe/web — could not clean, left alone\"; fi;\n",
+                "echo \"[OK]   checkout finished\";\n",
+            )
+        );
+    }
+
+    /// A fixed PowerShell, for the twins below.
+    fn pwsh() -> &'static Shell {
+        crate::platform::test_shell(crate::platform::ShellKind::PowerShell)
+    }
+
+    /// The PowerShell emitter, exercised on the Linux dev box.
+    ///
+    /// This is the reason every builder takes a `&Shell` instead of calling
+    /// `platform::shell()` itself. The single most dangerous difference is that
+    /// PowerShell has no `&&` or `||` and `if (cmd)` tests a command's *output*
+    /// rather than its exit status — so a naive translation marks every step as
+    /// succeeded, silently, including the ones that failed.
+    #[test]
+    fn powershell_branches_on_the_exit_code_and_never_on_output() {
+        let refs = vec![rf("fe", "web")];
+        let argv = bulk_fetch_argv(pwsh(), git(), std::path::Path::new("/w"), &refs);
+
+        // The shell is invoked non-interactively with no profile, so a user's
+        // PowerShell profile cannot change what this script means.
+        assert_eq!(
+            &argv[..argv.len() - 1],
+            &[
+                "powershell.exe",
+                "-NoLogo",
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command"
+            ]
+        );
+
+        let script = argv.last().unwrap();
+        assert_eq!(
+            script,
+            concat!(
+                "Write-Output '[..]   fe/web'; ",
+                "& /usr/bin/git -C /w/web fetch --all --prune -q; ",
+                "if ($LASTEXITCODE -eq 0) { Write-Output '[OK]   fe/web' } ",
+                "else { Write-Output '[FAIL] fe/web' }\n",
+            )
+        );
+        // The trap this test exists for.
+        assert!(!script.contains("&&"), "PowerShell has no && : {script}");
+        assert!(!script.contains("||"), "PowerShell has no || : {script}");
+    }
+
+    #[test]
+    fn powershell_tests_a_directory_with_test_path_not_with_brackets() {
+        let repos = vec![crate::clone::RepoUrl {
+            name: "web".into(),
+            url: "git@github.com:x/web.git".into(),
+            host: "github.com".into(),
+        }];
+        let script = clone_all_argv(pwsh(), git(), std::path::Path::new("/w"), &repos)
+            .last()
+            .unwrap()
+            .clone();
+        assert!(script.contains("Test-Path -LiteralPath /w/web -PathType Container"), "{script}");
+        // `rmdir` has no PowerShell spelling, and Remove-Item without -Recurse is
+        // the equivalent: it refuses a directory that has anything in it.
+        assert!(script.contains("Remove-Item -LiteralPath /w/web"), "{script}");
+        assert!(!script.contains("-Recurse"), "must not be able to delete content: {script}");
+        assert!(!script.contains("[ -d"), "{script}");
+    }
+
+    #[test]
+    fn powershell_quotes_with_doubled_apostrophes_and_keeps_backslash_paths() {
+        let plans = vec![(
+            rf("fe", "web"),
+            PathBuf::from(r"C:\w\My Projects\web"),
+            "main".to_string(),
+            0u32,
+        )];
+        let script = checkout_default_argv(pwsh(), git(), &plans, DirtyPolicy::Skip)
+            .last()
+            .unwrap()
+            .clone();
+        // Backslashes are left alone for PowerShell — translating them, which is
+        // required for Git Bash, would be wrong here.
+        assert!(script.contains(r"'C:\w\My Projects\web'"), "{script}");
+    }
+
+    #[test]
+    fn a_powershell_shell_cannot_run_a_dot_sh_file() {
+        // The one thing the fallback genuinely cannot do. Returning None makes the
+        // caller report "install Git for Windows" instead of running the wrong thing.
+        assert!(pwsh()
+            .file_argv(std::path::Path::new("/w/scripts/deploy.sh"), &[])
+            .is_none());
+        assert!(posix()
+            .file_argv(std::path::Path::new("/w/scripts/deploy.sh"), &[])
+            .is_some());
     }
 }

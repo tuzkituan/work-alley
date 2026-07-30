@@ -4,21 +4,41 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 /// The tools we resolve once at startup and then only ever invoke by absolute path.
-pub const TOOLS: &[&str] = &[
+///
+/// A function rather than a constant because the list is not the same everywhere:
+/// `ss` and `lsof` have no Windows equivalent — port inspection there goes through
+/// `netstat`, which is always present and so never needs resolving. Leaving them in
+/// would put two rows in the Toolbox that can never be anything but missing.
+pub fn tools() -> &'static [&'static str] {
     // pnpm belongs here even though `preferred_package_manager` lists it: without a
     // resolved path, `require("pnpm")` fails for every repo whose lockfile or
     // `packageManager` field asks for it, and no script in it can be run at all.
-    "git", "bun", "npm", "pnpm", "yarn", "node", "gh", "docker", "podman", "jq", "ss", "lsof",
-    // The non-JS runners `runner` builds argv for. A repo can be a Rust service or
-    // a Django app, and without these resolved there is no way to start one — the
-    // same reason the package managers are here rather than left to PATH.
-    "cargo", "go", "python3", "python", "flutter", "dart",
-    // The programs `chores` builds one-shot commands from. A repo can be a Gradle
-    // module or a CocoaPods project, and the menu entry has to resolve to a real
-    // path for the same reason every other tool here does.
-    "gradle", "swift", "xcodebuild", "pod", "mvn", "composer", "php", "bundle", "mix", "dotnet",
-    "cmake", "ctest",
-];
+    const COMMON: &[&str] = &[
+        "git", "bun", "npm", "pnpm", "yarn", "node", "gh", "docker", "podman", "jq",
+        // The non-JS runners `runner` builds argv for. A repo can be a Rust service or
+        // a Django app, and without these resolved there is no way to start one — the
+        // same reason the package managers are here rather than left to PATH.
+        "cargo", "go", "python3", "python", "flutter", "dart",
+        // The programs `chores` builds one-shot commands from. A repo can be a Gradle
+        // module or a CocoaPods project, and the menu entry has to resolve to a real
+        // path for the same reason every other tool here does.
+        "gradle", "swift", "xcodebuild", "pod", "mvn", "composer", "php", "bundle", "mix",
+        "dotnet", "cmake", "ctest",
+    ];
+
+    #[cfg(windows)]
+    {
+        COMMON
+    }
+    #[cfg(not(windows))]
+    {
+        // `ss` first, `lsof` as the fallback — see `platform::port_holders`.
+        const UNIX: &[&str] = &["ss", "lsof"];
+        static ALL: std::sync::OnceLock<Vec<&'static str>> = std::sync::OnceLock::new();
+        ALL.get_or_init(|| COMMON.iter().chain(UNIX).copied().collect())
+            .as_slice()
+    }
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct Toolchain {
@@ -81,7 +101,7 @@ impl Toolchain {
     }
 
     pub fn to_infos(&self) -> Vec<ToolInfo> {
-        TOOLS
+        tools()
             .iter()
             .map(|t| ToolInfo {
                 name: (*t).to_string(),
@@ -106,18 +126,28 @@ impl Toolchain {
 ///   3. known install directories, which depend on no shell rc at all
 pub async fn probe() -> Toolchain {
     let mut tc = Toolchain::default();
-    let script = format!("command -v {} 2>/dev/null || true", TOOLS.join(" "));
+    let script = format!("command -v {} 2>/dev/null || true", tools().join(" "));
 
     // 1. The user's shell. `-i` as well as `-l`, because nvm is usually
     //    initialised in .zshrc / .bashrc — files a *non-interactive* login shell
     //    never reads. Using $SHELL matters: probing bash when the user runs zsh
     //    finds nothing at all.
+    //
+    //    Unix only, and not merely because Windows has no login shell. Under Git
+    //    Bash this stage is actively *wrong*: `command -v git` answers
+    //    `/mingw64/bin/git`, an MSYS path that `is_executable` rejects and
+    //    `Command::new` cannot exec. Making it work would mean piping every result
+    //    through `cygpath -m`, to recover paths that stages 2 and 3 already find
+    //    correctly. Do not "fix" this by removing the gate.
+    #[cfg(unix)]
     for sh in login_shells() {
         collect_from_shell(&mut tc, &sh, &script).await;
     }
+    #[cfg(not(unix))]
+    let _ = &script;
 
     // 2. Whatever we inherited.
-    for &t in TOOLS {
+    for &t in tools() {
         if !tc.paths.contains_key(t) {
             if let Some(p) = which(t) {
                 tc.paths.insert(t.to_string(), p);
@@ -127,13 +157,15 @@ pub async fn probe() -> Toolchain {
 
     // 3. Well-known locations. This is the path that survives a desktop launcher
     //    with no shell involvement whatsoever.
-    for dir in candidate_dirs() {
-        for &t in TOOLS {
+    let dirs = crate::platform::tool_search_dirs();
+    for dir in &dirs {
+        for &t in tools() {
             if tc.paths.contains_key(t) {
                 continue;
             }
-            let cand = dir.join(t);
-            if is_executable(&cand) {
+            // `which_in` rather than `dir.join(t)`, so `git` finds `git.exe` and
+            // `npm` finds `npm.cmd`.
+            if let Some(cand) = crate::platform::which_in(std::slice::from_ref(dir), t) {
                 tc.paths.insert(t.to_string(), cand);
             }
         }
@@ -153,7 +185,7 @@ pub async fn probe() -> Toolchain {
     // slow tool — and `flutter --version` alone can spend seconds rebuilding a
     // snapshot. Now the whole pass costs about as much as the slowest single tool.
     let mut probes = Vec::new();
-    for &t in TOOLS {
+    for &t in tools() {
         if let Some(p) = tc.paths.get(t).cloned() {
             let path_env = tc.path_env.clone();
             probes.push(tokio::spawn(async move {
@@ -181,6 +213,11 @@ pub async fn probe() -> Toolchain {
         tc.warnings
             .push("neither docker nor podman found — the services panel will be empty.".into());
     }
+    // Unix only. On Windows the OpenSSH agent is a *service* reached over a named
+    // pipe, and SSH_AUTH_SOCK is never set even when the agent is running and loaded
+    // — so this would be a permanent, unactionable warning. `creds::status` probes
+    // the agent properly there, by running `ssh-add -l` and reading the exit code.
+    #[cfg(unix)]
     if std::env::var_os("SSH_AUTH_SOCK").is_none() {
         tc.warnings.push(
             "SSH_AUTH_SOCK is not set — git operations over SSH will fail. Start an ssh-agent and \
@@ -239,6 +276,10 @@ fn build_path_env(paths: &BTreeMap<String, PathBuf>) -> String {
 }
 
 /// $SHELL first, then bash as a backstop.
+///
+/// Unix only; see the gate on stage 1 of `probe` for why Git Bash must not stand in
+/// for this on Windows.
+#[cfg(unix)]
 fn login_shells() -> Vec<PathBuf> {
     let mut out = Vec::new();
     if let Some(sh) = std::env::var_os("SHELL") {
@@ -256,6 +297,7 @@ fn login_shells() -> Vec<PathBuf> {
     out
 }
 
+#[cfg(unix)]
 async fn collect_from_shell(tc: &mut Toolchain, shell: &std::path::Path, script: &str) {
     // -lic: login so profile files apply, interactive so rc files do too. Both are
     // needed in practice — nvm lives in .zshrc, asdf often in .bash_profile.
@@ -281,7 +323,7 @@ async fn collect_from_shell(tc: &mut Toolchain, shell: &std::path::Path, script:
                 continue;
             }
             if let Some(name) = p.file_name().and_then(|s| s.to_str()) {
-                if TOOLS.contains(&name) {
+                if tools().contains(&name) {
                     tc.paths.entry(name.to_string()).or_insert(p);
                     found_any = true;
                 }
@@ -293,58 +335,8 @@ async fn collect_from_shell(tc: &mut Toolchain, shell: &std::path::Path, script:
     }
 }
 
-/// Install locations that exist independently of any shell configuration.
-fn candidate_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-
-    if let Some(h) = &home {
-        // nvm: newest version first, so a stale old install does not win.
-        dirs.extend(nvm_bin_dirs(h));
-        dirs.push(h.join(".bun/bin"));
-        dirs.push(h.join(".local/share/fnm/aliases/default/bin"));
-        dirs.push(h.join(".asdf/shims"));
-        dirs.push(h.join(".volta/bin"));
-        dirs.push(h.join(".local/bin"));
-        dirs.push(h.join(".cargo/bin"));
-    }
-
-    dirs.push(PathBuf::from("/usr/local/bin"));
-    dirs.push(PathBuf::from("/usr/bin"));
-    dirs.push(PathBuf::from("/opt/homebrew/bin"));
-    dirs.push(PathBuf::from("/snap/bin"));
-
-    dirs.into_iter().filter(|d| d.is_dir()).collect()
-}
-
-/// `~/.nvm/versions/node/*/bin`, newest version first.
-fn nvm_bin_dirs(home: &std::path::Path) -> Vec<PathBuf> {
-    let root = home.join(".nvm/versions/node");
-    let Ok(entries) = std::fs::read_dir(&root) else {
-        return Vec::new();
-    };
-
-    let mut versions: Vec<(Vec<u32>, PathBuf)> = entries
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| p.join("bin").is_dir())
-        .map(|p| {
-            let name = p
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or_default()
-                .trim_start_matches('v')
-                .to_string();
-            (parse_version(&name), p.join("bin"))
-        })
-        .collect();
-
-    versions.sort_by(|a, b| b.0.cmp(&a.0));
-    versions.into_iter().map(|(_, p)| p).collect()
-}
-
 /// Numeric comparison, so v9 does not sort above v24.
-fn parse_version(name: &str) -> Vec<u32> {
+pub(crate) fn parse_version(name: &str) -> Vec<u32> {
     name.split('.').map(|x| x.parse().unwrap_or(0)).collect()
 }
 
@@ -366,26 +358,10 @@ mod tests {
     }
 }
 
-fn which(tool: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|d| d.join(tool))
-        .find(|c| is_executable(c))
-}
-
-fn is_executable(p: &std::path::Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p)
-            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        p.is_file()
-    }
-}
+// Both live in `platform` now: resolving a name to a program is the one thing
+// Windows does completely differently, because the name on disk is `git.exe` and a
+// bare `dir.join("git")` finds nothing at all.
+use crate::platform::{is_executable, which};
 
 async fn version_of(path: &std::path::Path, tool: &str, path_env: &str) -> Option<String> {
     let mut cmd = tokio::process::Command::new(path);
@@ -419,7 +395,7 @@ async fn version_of(path: &std::path::Path, tool: &str, path_env: &str) -> Optio
 
 /// Editors we offer an "open repo in…" action for.
 ///
-/// Detected separately from TOOLS: these are user-facing choices, not things the
+/// Detected separately from `tools()`: these are user-facing choices, not things the
 /// app depends on, and the list is intentionally broad.
 pub const EDITORS: [(&str, &str); 11] = [
     ("code", "VS Code"),
@@ -440,9 +416,8 @@ pub fn detect_editors(path_env: &str) -> Vec<crate::model::EditorInfo> {
     // Search the augmented PATH, plus the places GUI installers use that are often
     // missing from a login shell's PATH.
     let mut dirs: Vec<PathBuf> = std::env::split_paths(path_env).collect();
-    for extra in ["/usr/local/bin", "/usr/bin", "/opt/homebrew/bin", "/snap/bin"] {
-        let p = PathBuf::from(extra);
-        if p.is_dir() && !dirs.contains(&p) {
+    for p in crate::platform::gui_install_dirs() {
+        if !dirs.contains(&p) {
             dirs.push(p);
         }
     }
@@ -450,12 +425,12 @@ pub fn detect_editors(path_env: &str) -> Vec<crate::model::EditorInfo> {
     EDITORS
         .iter()
         .filter_map(|(bin, label)| {
-            dirs.iter().map(|d| d.join(bin)).find(|c| is_executable(c)).map(|p| {
-                crate::model::EditorInfo {
-                    id: (*bin).to_string(),
-                    label: (*label).to_string(),
-                    path: p.display().to_string(),
-                }
+            // On Windows most of these are `code.cmd` or `<name>64.exe`, so the
+            // extension search is what finds them at all.
+            crate::platform::which_in(&dirs, bin).map(|p| crate::model::EditorInfo {
+                id: (*bin).to_string(),
+                label: (*label).to_string(),
+                path: p.display().to_string(),
             })
         })
         .collect()

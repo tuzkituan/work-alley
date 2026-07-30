@@ -293,11 +293,7 @@ pub async fn list(tc: &Toolchain) -> Vec<PackageStatus> {
     let mut out = Vec::with_capacity(CATALOG.len());
 
     for e in CATALOG {
-        let path = dirs
-            .iter()
-            .map(|d| d.join(e.bin))
-            .find(|c| is_exec(c))
-            .or_else(|| tc.path(e.bin).cloned());
+        let path = which_in(&dirs, e.bin).or_else(|| tc.path(e.bin).cloned());
 
         let version = match &path {
             Some(p) => version_of(p, &tc.path_env).await,
@@ -329,7 +325,7 @@ pub async fn list(tc: &Toolchain) -> Vec<PackageStatus> {
 
 pub(crate) fn search_dirs(tc: &Toolchain) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::split_paths(&tc.path_env).collect();
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+    if let Some(home) = crate::platform::home_dir() {
         for extra in [".local/bin", ".cargo/bin", ".bun/bin"] {
             let p = home.join(extra);
             if p.is_dir() && !dirs.contains(&p) {
@@ -337,35 +333,22 @@ pub(crate) fn search_dirs(tc: &Toolchain) -> Vec<PathBuf> {
             }
         }
     }
-    for extra in ["/usr/local/bin", "/usr/bin", "/snap/bin"] {
-        let p = PathBuf::from(extra);
-        if p.is_dir() && !dirs.contains(&p) {
+    // The places an installer writes to that a login shell's PATH often misses —
+    // on Windows that includes the WindowsApps aliases, which is where winget
+    // itself lives.
+    for p in crate::platform::gui_install_dirs() {
+        if !dirs.contains(&p) {
             dirs.push(p);
         }
     }
     dirs
 }
 
-pub(crate) fn which_in(dirs: &[PathBuf], bin: &str) -> Option<PathBuf> {
-    dirs.iter().map(|d| d.join(bin)).find(|c| is_exec(c))
-}
-
-fn is_exec(p: &std::path::Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p)
-            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        p.is_file()
-    }
-}
+// Extension-aware, so `winget` resolves to `winget.exe` and `npm` to `npm.cmd`.
+pub(crate) use crate::platform::which_in;
 
 pub fn nvm_script() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from)?;
+    let home = crate::platform::home_dir()?;
     let p = home.join(".nvm/nvm.sh");
     p.is_file().then_some(p)
 }
@@ -975,10 +958,12 @@ async fn capture_status(
 
 /// For nvm, which only exists inside a shell that has sourced nvm.sh.
 async fn shell_capture(script: &str) -> String {
-    let shell = shell_path();
-    let mut cmd = tokio::process::Command::new(shell);
-    cmd.arg("-lc")
-        .arg(script)
+    let Ok(argv) = login_shell_script(script) else {
+        return String::new();
+    };
+    let (prog, args) = argv.split_first().expect("argv is never empty");
+    let mut cmd = tokio::process::Command::new(prog);
+    cmd.args(args)
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null());
@@ -1128,13 +1113,8 @@ pub fn plan_with_version(
                         .into())
                 }
             };
-            let shell = shell_path();
             (
-                vec![
-                    shell,
-                    "-lc".to_string(),
-                    format!(". {} && {}", script.display(), inner),
-                ],
+                login_shell_script(&format!(". {} && {}", script.display(), inner))?,
                 false,
                 "Node LTS via nvm, kept as the default version.".to_string(),
             )
@@ -1342,8 +1322,17 @@ pub fn plan_npm_group(tc: &Toolchain, ids: &[&str]) -> Result<Plan, String> {
     })
 }
 
-pub fn shell_path() -> String {
-    std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())
+/// The argv to run `script` in the user's login shell.
+///
+/// An error rather than a `/bin/bash` fallback: on Windows there is no such path,
+/// and a plan whose argv[0] does not exist fails at spawn time with an ENOENT that
+/// names nothing the user can act on.
+pub fn login_shell_script(script: &str) -> Result<Vec<String>, String> {
+    crate::platform::shell()
+        .map(|sh| sh.login_script_argv(script))
+        .ok_or_else(|| {
+            "no shell was found — install Git for Windows, which provides Git Bash".to_string()
+        })
 }
 
 #[cfg(test)]

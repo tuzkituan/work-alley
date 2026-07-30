@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test'
 import { toolFix } from './tool-fix'
 
 /**
- * `toolchain::TOOLS`, mirrored.
+ * `toolchain::tools()`, mirrored.
  *
  * Kept in the test rather than shipped, because its only job is to fail when the two
  * lists drift — a tool added to the Rust probe with no step that installs it produces a

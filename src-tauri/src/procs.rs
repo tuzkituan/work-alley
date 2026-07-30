@@ -644,18 +644,12 @@ pub fn find_terminal(tc: &crate::toolchain::Toolchain) -> Option<TerminalCmd> {
     None
 }
 
-/// POSIX single-quoting, so a path or a command can be embedded in a shell string
-/// without the shell finding anything in it to interpret.
-pub fn sh_quote(s: &str) -> String {
-    format!("'{}'", s.replace('\'', r"'\''"))
-}
-
-fn which_path(tool: &str) -> Option<PathBuf> {
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|d| d.join(tool))
-        .find(|c| c.is_file())
-}
+// Both moved to `platform`, which owns every difference between the POSIX shells
+// and PowerShell. Re-exported rather than relocated at every call site, because
+// `sh_quote` is still exactly the right quoter for a POSIX script — it is just no
+// longer the *only* quoter.
+pub use crate::platform::sh_quote;
+use crate::platform::which as which_path;
 
 /// Launches a GUI program and forgets about it.
 ///
@@ -700,14 +694,19 @@ pub fn spawn_detached(
 /// Shared by both terminal entry points so the tab handling, the quoting and the
 /// detachment are decided once. Not tracked as a run: the terminal has its own
 /// window and outlives this app.
-fn terminal_command(term: &TerminalCmd, script: &str, cwd: &Path) -> std::process::Command {
+fn terminal_command(
+    term: &TerminalCmd,
+    sh: &crate::platform::Shell,
+    script: &str,
+    cwd: &Path,
+) -> std::process::Command {
     let mut cmd = std::process::Command::new(&term.program);
     cmd.args(&term.pre);
     if term.single_string {
         // One argument, so the emulator's own parser sees a single command line.
-        cmd.arg(format!("bash -lc {}", sh_quote(script)));
+        cmd.arg(sh.login_script_line(script));
     } else {
-        cmd.arg("bash").arg("-lc").arg(script);
+        cmd.args(sh.login_script_argv(script));
     }
 
     cmd.current_dir(cwd)
@@ -751,14 +750,10 @@ pub fn open_shell(app: &AppHandle, tc: &crate::toolchain::Toolchain, cwd: &Path)
         )));
     }
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string());
-    let script = format!(
-        "cd {} || exit 1; exec {} -l",
-        sh_quote(&cwd.display().to_string()),
-        sh_quote(&shell)
-    );
+    let sh = crate::platform::shell().ok_or_else(|| AppError::NoTerminal(pretty.clone()))?;
+    let script = format!("{}; {}", sh.cd_or_exit(cwd), sh.exec_login());
 
-    let child = terminal_command(&term, &script, cwd)
+    let child = terminal_command(&term, sh, &script, cwd)
         .spawn()
         .map_err(|e| AppError::Spawn(e.to_string()))?;
     watch_terminal(app, child, pretty);
@@ -837,12 +832,14 @@ pub fn open_terminal(
     // and exits — the tab is created by that instance and inherits *its* directory,
     // not ours. A script that must run inside a repo would silently run somewhere
     // else. Saying it in the command works whichever way the emulator goes.
+    let sh = crate::platform::shell().ok_or_else(|| AppError::NoTerminal(pretty.clone()))?;
     let script = format!(
-        "cd {} || exit 1; {pretty}; echo; read -n1 -r -p 'Press any key to close…'",
-        sh_quote(&cwd.display().to_string())
+        "{}; {pretty}; {}",
+        sh.cd_or_exit(cwd),
+        sh.pause_tail()
     );
 
-    let child = terminal_command(&term, &script, cwd)
+    let child = terminal_command(&term, sh, &script, cwd)
         .spawn()
         .map_err(|e| AppError::Spawn(e.to_string()))?;
     watch_terminal(app, child, pretty);
@@ -895,34 +892,8 @@ pub async fn port_holders(
     Vec::new()
 }
 
-/// Parses the `users:(("node",pid=12345,fd=20))` tail of an `ss -p` line.
-pub fn parse_ss_holders(stdout: &str) -> Vec<(u32, String)> {
-    let mut out: Vec<(u32, String)> = Vec::new();
-
-    for line in stdout.lines() {
-        let Some(users) = line.split("users:(").nth(1) else {
-            continue;
-        };
-        // Each entry looks like ("name",pid=N,fd=M)
-        for entry in users.split("),(") {
-            let name = entry
-                .split('"')
-                .nth(1)
-                .unwrap_or_default()
-                .to_string();
-            if let Some(rest) = entry.split("pid=").nth(1) {
-                let digits: String = rest.chars().take_while(|c| c.is_ascii_digit()).collect();
-                if let Ok(pid) = digits.parse::<u32>() {
-                    if !out.iter().any(|(p, _)| *p == pid) {
-                        out.push((pid, name));
-                    }
-                }
-            }
-        }
-    }
-
-    out
-}
+// Moved to `platform::ports`, which parses the Windows equivalents beside it.
+pub use crate::platform::parse_ss_holders;
 
 #[cfg(test)]
 mod tests {
@@ -930,7 +901,8 @@ mod tests {
 
     /// The command a terminal receives, as it would be spawned.
     fn built(term: &TerminalCmd, script: &str) -> Vec<String> {
-        let cmd = terminal_command(term, script, Path::new("/"));
+        let sh = crate::platform::test_shell(crate::platform::ShellKind::Posix);
+        let cmd = terminal_command(term, sh, script, Path::new("/"));
         cmd.get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect()

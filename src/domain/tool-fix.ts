@@ -6,7 +6,7 @@
  * that the app has a page which installs exactly that — and the control that produced
  * it stayed enabled, so it did the same nothing every time.
  *
- * Keyed by the ids `toolchain::TOOLS` resolves and `Toolchain::require` reports, which
+ * Keyed by the ids `toolchain::tools()` resolves and `Toolchain::require` reports, which
  * is what arrives in `IpcError.detail`.
  */
 const STEP_FOR: Record<string, string> = {

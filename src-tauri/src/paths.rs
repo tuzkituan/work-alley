@@ -14,13 +14,12 @@ pub fn neutral_cwd(root: &Path) -> PathBuf {
     if root.is_dir() {
         return root.to_path_buf();
     }
-    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
-        if home.is_dir() {
-            return home;
-        }
+    if let Some(home) = crate::platform::home_dir() {
+        return home;
     }
-    // Guaranteed to exist, and nothing here writes to its cwd.
-    PathBuf::from("/")
+    // Guaranteed to exist, and nothing here writes to its cwd. Not a literal "/":
+    // Windows has no such path, so `platform` supplies the system drive's root.
+    crate::platform::fallback_dir()
 }
 
 /// Best-effort guess at a workspace, used only when nothing is saved yet.
@@ -218,12 +217,20 @@ pub fn scripts_dir(root: &Path) -> PathBuf {
 /// pointing out, or an absolute path from a compromised frontend cannot escape.
 /// The repo name itself is also rejected if it contains a separator.
 pub fn ensure_inside(root: &Path, candidate: &Path) -> AppResult<PathBuf> {
-    let root_c = root
-        .canonicalize()
-        .map_err(|e| AppError::PathEscape(format!("workspace root unreadable: {e}")))?;
-    let cand_c = candidate
-        .canonicalize()
-        .map_err(|e| AppError::PathEscape(format!("{}: {e}", candidate.display())))?;
+    // `strip_verbatim`, because on Windows `canonicalize` returns the `\\?\C:\…`
+    // extended-length form. That is a fine `current_dir`, but this function's result
+    // also reaches generated shell text and UI strings, and `git -C \\?\C:\w\api`
+    // fails.
+    let root_c = crate::platform::strip_verbatim(
+        &root
+            .canonicalize()
+            .map_err(|e| AppError::PathEscape(format!("workspace root unreadable: {e}")))?,
+    );
+    let cand_c = crate::platform::strip_verbatim(
+        &candidate
+            .canonicalize()
+            .map_err(|e| AppError::PathEscape(format!("{}: {e}", candidate.display())))?,
+    );
     if !cand_c.starts_with(&root_c) {
         return Err(AppError::PathEscape(cand_c.display().to_string()));
     }

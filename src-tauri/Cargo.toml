@@ -45,6 +45,18 @@ base64 = "0.22"
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
 
+# Job objects, which are the only real analogue of `killpg` on Windows: a child's
+# descendants join automatically, so `TerminateJobObject` reaches the whole tree.
+# `taskkill /T` walks the *live* parent chain instead and therefore misses the
+# orphan case this app exists to handle — vite spawning esbuild. Already in
+# Cargo.lock via tokio and tauri, so this costs no new crate.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
 [dev-dependencies]
 # `tauri::test::mock_app` gives a real AppHandle, which is what lets the pty
 # tests drive `pty::open` itself rather than a reimplementation of it.

@@ -15,6 +15,7 @@ mod model;
 mod packages;
 mod paths;
 mod pkg;
+mod platform;
 mod procs;
 mod pty;
 mod readiness;

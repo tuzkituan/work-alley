@@ -70,19 +70,12 @@ fn is_script(p: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn is_executable(p: &Path) -> bool {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(p)
-            .map(|m| m.permissions().mode() & 0o111 != 0)
-            .unwrap_or(false)
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
-}
+// Deliberately `exec_bit_set` and not `is_executable`: the question here is "did the
+// author mean this to be runnable", and on Windows there is no bit to answer it
+// with — so every file qualifies and the shebang check below does the real work.
+// Routing this through `is_executable` would reject every `.sh` file on Windows,
+// since `.sh` is not in PATHEXT.
+use crate::platform::exec_bit_set as is_executable;
 
 fn describe(path: &Path, file: &str) -> ScriptDescriptor {
     let body = std::fs::read_to_string(path).unwrap_or_default();
