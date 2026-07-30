@@ -1,4 +1,5 @@
 import type { LogLine } from '@/domain/types'
+import { parseBulkLog, type BulkResult } from '@/features/output/bulk-log'
 
 export type CloneState = 'cloning' | 'ok' | 'skipped' | 'failed'
 
@@ -11,12 +12,6 @@ export interface CloneResult {
   hint: string | null
 }
 
-/** Markers the generated clone script emits, one per repo. */
-const START = '[..]   '
-const OK = '[OK]   '
-const FAIL = '[FAIL] '
-const SKIP = '[SKIP] '
-
 /**
  * Turns a flat clone log into a per-repo result list.
  *
@@ -24,58 +19,36 @@ const SKIP = '[SKIP] '
  * progress noise. Attributing each line to the repo that was being cloned at the
  * time is what makes "3 failed" answer *which three, and why* rather than sending
  * the user to scroll a thousand lines of progress output.
+ *
+ * Now a thin adapter over `parseBulkLog`, which is the same machine generalised to
+ * pull, fetch and checkout. Clone keeps its own vocabulary — `cloning` rather than
+ * `active`, and `failureHint`, which is specific to git transport errors — so the
+ * wizard is unaffected.
  */
 export function parseCloneLog(lines: LogLine[]): CloneResult[] {
-  const results: CloneResult[] = []
-  let current: CloneResult | null = null
+  // No `expected`: the clone script prints bare folder names and there are no
+  // `targets` to check them against, so the parser falls back to its own key
+  // extraction. No `implicitOk` either — the clone script does emit a per-repo [OK].
+  return parseBulkLog(lines).map(toCloneResult)
+}
 
-  const finish = (name: string, state: CloneState) => {
-    // Normally the repo being closed is the open one; be tolerant if not.
-    const target = current?.name === name ? current : results.find((r) => r.name === name)
-    if (target) target.state = state
-    else results.push({ name, state, detail: [], hint: null })
-    if (current?.name === name) current = null
+function toCloneResult(r: BulkResult): CloneResult {
+  const state: CloneState =
+    r.state === 'ok'
+      ? 'ok'
+      : r.state === 'failed'
+        ? 'failed'
+        : r.state === 'skipped'
+          ? 'skipped'
+          // `queued` cannot occur without `expected`, and `unknown` only when a run
+          // ends mid-repo — which for the wizard reads as still going.
+          : 'cloning'
+  return {
+    name: r.name,
+    state,
+    detail: r.detail,
+    hint: state === 'failed' ? failureHint(r.detail) : null,
   }
-
-  for (const l of lines) {
-    const t = l.text
-    if (t.startsWith(START)) {
-      current = { name: t.slice(START.length).trim(), state: 'cloning', detail: [], hint: null }
-      results.push(current)
-      continue
-    }
-    if (t.startsWith(OK)) {
-      const name = t.slice(OK.length).trim()
-      // The script's own closing line is not a repo.
-      if (name !== 'clone finished') finish(name, 'ok')
-      continue
-    }
-    if (t.startsWith(FAIL)) {
-      finish(t.slice(FAIL.length).trim(), 'failed')
-      continue
-    }
-    if (t.startsWith(SKIP)) {
-      // "name — folder already exists": keep the reason as the detail.
-      const rest = t.slice(SKIP.length).trim()
-      const parts = rest.split(' — ')
-      const name = parts[0] ?? rest
-      const why = parts.slice(1)
-      results.push({
-        name: name.trim(),
-        state: 'skipped',
-        detail: why.length ? [why.join(' — ')] : [],
-        hint: null,
-      })
-      continue
-    }
-    // Ordinary output belongs to whichever repo is in flight.
-    if (current && t.trim()) current.detail.push(t)
-  }
-
-  for (const r of results) {
-    if (r.state === 'failed') r.hint = failureHint(r.detail)
-  }
-  return results
 }
 
 /**

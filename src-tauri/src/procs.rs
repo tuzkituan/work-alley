@@ -35,9 +35,14 @@ pub struct SpawnSpec {
     pub repo: Option<RepoRef>,
     /// Every repo the run touches, including for bulk runs where `repo` is None.
     pub targets: Vec<RepoRef>,
-    /// Tags every line, so a bulk run over many repos can be rendered grouped
-    /// instead of as one unreadable interleaved stream.
-    pub line_repo: Option<String>,
+    /// Repo keys this run may attribute lines to, so a bulk run over many repos can
+    /// be rendered grouped instead of as one unreadable interleaved stream.
+    ///
+    /// A *set*, not one string: the previous field was a single value stamped on
+    /// every line, so no value it could hold was right for more than one line and
+    /// the field was always left unset. The emitter tracks which of these is in
+    /// flight by watching the script's own `[..]/[OK]/[FAIL]` markers.
+    pub target_keys: Vec<String>,
 }
 
 /// Spawns a child, streams its output in batches, and always reaps it.
@@ -89,7 +94,7 @@ pub fn spawn_run(app: &AppHandle, spec: SpawnSpec) -> AppResult<String> {
         Stream::Meta,
         Severity::Cmd,
         format!("$ {}", shell_join(&spec.argv)),
-        spec.line_repo.clone(),
+        None,
     );
 
     let app2 = app.clone();
@@ -183,7 +188,7 @@ async fn supervise(
                 Stream::Meta,
                 Severity::Err,
                 msg.clone(),
-                spec.line_repo.clone(),
+                None,
             );
             finish(
                 &app,
@@ -235,12 +240,18 @@ async fn supervise(
     let app_e = app.clone();
     let handle_e = handle.clone();
     let run_id_e = run_id.clone();
-    let line_repo = spec.line_repo.clone();
+    // Longest first, so `fe/web-admin` wins over `fe/web` on a line naming the
+    // former — the same rule the TS parser uses.
+    let mut target_keys = spec.target_keys.clone();
+    target_keys.sort_by_key(|k| std::cmp::Reverse(k.len()));
     let dev_key = spec.dev_key.clone();
     let state_e = state.clone();
 
     let emitter = tokio::spawn(async move {
         let mut pending: Vec<LogLine> = Vec::new();
+        // The repo currently in flight, from the markers the script prints. Only
+        // meaningful for a bulk run; a single-repo run has nothing to disambiguate.
+        let mut current_repo: Option<String> = None;
         let mut ticker = tokio::time::interval(FLUSH_INTERVAL);
         ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
 
@@ -253,6 +264,48 @@ async fn supervise(
                             continue;
                         }
                         let severity = ansi::classify(stream, &text);
+
+                        // Which repo this line belongs to, tracked across lines from
+                        // the script's own markers.
+                        //
+                        // Done here rather than in the frontend because lines are
+                        // stored and replayed through `get_run_log`, and the log body
+                        // is virtualized over up to 20k lines — attribution has to be
+                        // a property of the line, not recomputed on every render.
+                        //
+                        // Only for a bulk run: on a single-repo run the prefix would
+                        // be on every line and say nothing.
+                        let line_repo = if target_keys.len() > 1 {
+                            match ansi::marker(&text) {
+                                Some((kind, rest)) => {
+                                    let named = target_keys
+                                        .iter()
+                                        .find(|k| {
+                                            rest == k.as_str()
+                                                || rest.starts_with(&format!("{k} "))
+                                        })
+                                        .cloned();
+                                    match (kind, &named) {
+                                        // A repo opens: everything up to the next
+                                        // marker is its output.
+                                        (ansi::Marker::Start, Some(k)) => {
+                                            current_repo = Some(k.clone())
+                                        }
+                                        // A result closes it, but the marker line
+                                        // itself is still attributed below so the
+                                        // row keeps its reason.
+                                        (_, Some(_)) => current_repo = None,
+                                        // A line naming no repo ("bulk pull
+                                        // finished") belongs to the run, not a repo.
+                                        (_, None) => current_repo = None,
+                                    }
+                                    named
+                                }
+                                None => current_repo.clone(),
+                            }
+                        } else {
+                            None
+                        };
 
                         // Correct a wrong static port guess from vite's own banner.
                         if let Some(key) = &dev_key {

@@ -5,8 +5,14 @@ import { cn } from '@/lib/utils'
 import { Skeleton } from '@/components/ui/skeleton'
 import { repoId, type RepoRef } from '@/domain/types'
 
-/** How many lines to render before cutting it off. */
-const MAX_LINES = 600
+/**
+ * How many lines to render before cutting it off.
+ *
+ * Deliberately high now that the patch is no longer boxed: the cap exists only to
+ * stop a 200k-line lockfile diff from stalling the webview, not to keep the diff
+ * small. Anything a person actually reads fits well under it.
+ */
+const MAX_LINES = 4000
 
 /**
  * One file's patch, inline under its row.
@@ -70,10 +76,29 @@ export function DiffView({
 
   return (
     <div className="border-b border-adaptive-200 bg-adaptive-100/40">
-      <div className="wa-scroll max-h-[26rem] overflow-auto px-3 py-2">
+      {/* No inner scrollport, and no height cap.
+       *
+       * This used to be `max-h-[26rem] overflow-auto`, which put a second
+       * scrollbar inside the panel's own: the patch ended mid-hunk with empty
+       * panel below it, and reaching the rest meant scrolling a box while the
+       * page it sat in also scrolled. The patch now takes whatever height it
+       * needs and the panel scrolls it, which is how an expanded row should
+       * behave — the file list stays above it, unchanged. */}
+      <div className="px-3 py-2">
         <pre className="font-mono text-[11px] leading-[1.5]">
           {lines.map((line, i) => (
-            <div key={i} className={cn('whitespace-pre', lineClass(line))}>
+            <div
+              key={i}
+              // Soft-wrapped rather than clipped, with a hanging indent so a
+              // wrapped continuation is visibly subordinate to its own +/- marker
+              // and cannot be misread as a separate line. `anywhere` because the
+              // long lines in real diffs are single unbroken tokens — a class
+              // string or a minified bundle — which `break-words` will not break.
+              className={cn(
+                'pl-[2ch] -indent-[2ch] whitespace-pre-wrap [overflow-wrap:anywhere]',
+                lineClass(line)
+              )}
+            >
               {line || ' '}
             </div>
           ))}
@@ -81,7 +106,8 @@ export function DiffView({
       </div>
       {cut > 0 && (
         <div className="border-t border-adaptive-200 px-3 py-1 text-[10.5px] text-adaptive-400">
-          {cut.toLocaleString()} more lines not shown — use “Diff…” for the whole patch.
+          {cut.toLocaleString()} more lines not shown — “Diff…” prints the whole patch
+          into the output pane.
         </div>
       )}
     </div>

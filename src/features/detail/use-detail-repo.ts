@@ -2,8 +2,8 @@ import { useEffect, useRef } from 'react'
 import { derive, taskOf } from '@/domain/severity'
 import { repoRefOf, type RepoId } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
-import { useRunStore } from '@/stores/run-store'
 import { useTrackedPackage } from '@/hooks/use-tracked-package'
+import { useBusy } from '@/hooks/use-busy'
 import { useRescanRepo } from '@/hooks/use-rescan-repo'
 
 /**
@@ -18,7 +18,7 @@ export function useDetailRepo(id: RepoId) {
   const status = useScanStore((s) => s.repos.get(id))
   const trackedLatest = useScanStore((s) => s.trackedLatest)
   const trackedPackage = useTrackedPackage()
-  const running = useRunStore((s) => s.runningByScope[id] ?? 0)
+  const busy = useBusy(id)
 
   // Prefer the ref the backend sent. Parsing the id is only a fallback for a repo
   // that has not been scanned yet, and it is genuinely ambiguous: a category can
@@ -63,6 +63,6 @@ export function useDetailRepo(id: RepoId) {
     behind: status?.sync.kind === 'diverged' ? status.sync.behind : 0,
     trackedPackage,
     trackedLatest,
-    running,
+    busy,
   }
 }

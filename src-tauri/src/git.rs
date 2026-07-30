@@ -766,6 +766,31 @@ pub async fn changed_files(
     Ok(files)
 }
 
+/// Whether git knows who the user is, in this repo.
+///
+/// Checked before a commit rather than left to git, whose own failure for this is a
+/// twelve-line lecture about `--global` that buries the one thing to do about it.
+/// `--get` sees the local value or the global one, which is exactly the question.
+pub async fn has_identity(git: &Path, repo: &Path) -> bool {
+    let name = git_output(git, repo, &["config", "--get", "user.name"]).await;
+    let email = git_output(git, repo, &["config", "--get", "user.email"]).await;
+    matches!((name, email), (Ok(n), Ok(e)) if !n.trim().is_empty() && !e.trim().is_empty())
+}
+
+/// The branch a commit would land on, for the confirmation dialog.
+///
+/// `--abbrev-ref HEAD` rather than the scan's branch field: this runs at
+/// confirmation time, and the scan may be minutes old. Returns None on an unborn
+/// HEAD — a repo with no commits yet — which is a state a first commit is allowed
+/// to be in.
+pub async fn current_branch(git: &Path, repo: &Path) -> Option<String> {
+    let out = git_output(git, repo, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .await
+        .ok()?;
+    let name = out.trim();
+    (!name.is_empty() && name != "HEAD").then(|| name.to_string())
+}
+
 /// `12\t3\tsrc/main.rs` per line. A binary file reports `-`, which is not a count.
 pub fn parse_numstat(text: &str) -> Vec<(String, u32, u32)> {
     let mut out = Vec::new();

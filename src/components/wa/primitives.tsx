@@ -1,4 +1,4 @@
-import type { ReactNode, Ref } from 'react'
+import type { CSSProperties, ReactNode, Ref } from 'react'
 import { cn } from '@/lib/utils'
 import { TONE_BG, TONE_TEXT, TONE_TINT, type Tone } from '@/domain/severity'
 
@@ -17,16 +17,19 @@ export function StatusDot({
   tone,
   size = 7,
   className,
+  style,
 }: {
   tone: Tone
   size?: number
   className?: string
+  /** Merged over the size, so a caller can add the `wa-blink` animation. */
+  style?: CSSProperties
 }) {
   return (
     <span
       data-slot="status-dot"
       className={cn('flex-none rounded-full', TONE_BG[tone], className)}
-      style={{ width: size, height: size }}
+      style={{ width: size, height: size, ...style }}
     />
   )
 }

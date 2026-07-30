@@ -41,6 +41,36 @@ pub fn strip(input: &str) -> String {
     out.trim_end().to_string()
 }
 
+/// The per-repo markers every generated bulk script emits.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Marker {
+    /// `[..] key` — this repo is now in flight.
+    Start,
+    Ok,
+    Fail,
+    Skip,
+}
+
+/// Splits a bulk marker line into its kind and the text after it.
+///
+/// Extracted so that severity colouring and per-line repo attribution read the same
+/// prefixes from one place. They used to be known only here, which is why the
+/// emitter could not tell which repo a line belonged to.
+pub fn marker(text: &str) -> Option<(Marker, &str)> {
+    let t = text.trim_start();
+    for (prefix, kind) in [
+        ("[OK]", Marker::Ok),
+        ("[FAIL]", Marker::Fail),
+        ("[SKIP]", Marker::Skip),
+        ("[..]", Marker::Start),
+    ] {
+        if let Some(rest) = t.strip_prefix(prefix) {
+            return Some((kind, rest.trim()));
+        }
+    }
+    None
+}
+
 /// Classifies a line's severity from its *content*.
 ///
 /// `stream` and `severity` are deliberately independent. git writes ordinary
@@ -51,16 +81,25 @@ pub fn classify(stream: Stream, text: &str) -> Severity {
     let lower = t.to_lowercase();
 
     // Markers the workspace scripts actually emit.
-    if t.starts_with("[OK]") || t.starts_with('✓') || t.starts_with("✔") {
+    if let Some((kind, _)) = marker(t) {
+        return match kind {
+            Marker::Ok => Severity::Ok,
+            Marker::Fail => Severity::Err,
+            Marker::Skip => Severity::Warn,
+            Marker::Start => Severity::Info,
+        };
+    }
+    // The same four states, written by the scripts that use glyphs instead.
+    if t.starts_with('✓') || t.starts_with("✔") {
         return Severity::Ok;
     }
-    if t.starts_with("[FAIL]") || t.starts_with('✗') || t.starts_with("✘") {
+    if t.starts_with('✗') || t.starts_with("✘") {
         return Severity::Err;
     }
-    if t.starts_with("[SKIP]") || t.starts_with("! ") {
+    if t.starts_with("! ") {
         return Severity::Warn;
     }
-    if t.starts_with("[..]") || t.starts_with('▸') {
+    if t.starts_with('▸') {
         return Severity::Info;
     }
 
@@ -147,5 +186,43 @@ mod tests {
     fn sniffs_vite_port() {
         assert_eq!(sniff_port("  ➜  Local:   http://localhost:5015/"), Some(5015));
         assert_eq!(sniff_port("no port here"), None);
+    }
+}
+
+#[cfg(test)]
+mod marker_tests {
+    use super::*;
+
+    #[test]
+    fn splits_every_marker_kind() {
+        assert_eq!(marker("[..]   fe/web"), Some((Marker::Start, "fe/web")));
+        assert_eq!(marker("[OK]   fe/web"), Some((Marker::Ok, "fe/web")));
+        assert_eq!(marker("[FAIL] fe/web"), Some((Marker::Fail, "fe/web")));
+        assert_eq!(marker("[SKIP] fe/web"), Some((Marker::Skip, "fe/web")));
+        assert_eq!(marker("Already up to date."), None);
+    }
+
+    #[test]
+    fn keeps_the_suffix_checkout_emits() {
+        // The emitter needs the whole remainder so it can prefix-match a repo key
+        // against it; splitting on a delimiter would break a name containing one.
+        assert_eq!(marker("[OK]   fe/web -> main"), Some((Marker::Ok, "fe/web -> main")));
+        assert_eq!(
+            marker("[SKIP] fe/web — 3 local change(s)"),
+            Some((Marker::Skip, "fe/web — 3 local change(s)"))
+        );
+    }
+
+    #[test]
+    fn classify_still_agrees_with_the_markers() {
+        // classify now reads its prefixes through `marker`, so this pins that the
+        // extraction did not change any severity.
+        assert_eq!(classify(Stream::Stdout, "[OK]   done"), Severity::Ok);
+        assert_eq!(classify(Stream::Stdout, "[FAIL] nope"), Severity::Err);
+        assert_eq!(classify(Stream::Stdout, "[SKIP] later"), Severity::Warn);
+        assert_eq!(classify(Stream::Stdout, "[..]   starting"), Severity::Info);
+        // The glyph forms are unaffected.
+        assert_eq!(classify(Stream::Stdout, "✓ fine"), Severity::Ok);
+        assert_eq!(classify(Stream::Stdout, "✗ broken"), Severity::Err);
     }
 }

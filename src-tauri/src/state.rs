@@ -91,6 +91,17 @@ pub struct AppState {
     /// Integrated terminal sessions, keyed by term id.
     pub ptys: Mutex<HashMap<String, Arc<crate::pty::PtySession>>>,
     tools_ready: AtomicBool,
+    /// The last computed readiness snapshot.
+    ///
+    /// Cached because the alternative is computing it inside `get_bootstrap`, which
+    /// every invalidation calls — and the probe behind it is not free.
+    readiness: RwLock<crate::readiness::Readiness>,
+    /// A toolchain probe is in flight.
+    ///
+    /// The probe runs two `-lic` login shells at a 6s timeout each, so a
+    /// double-click on "Re-check" — or two package installs finishing together —
+    /// must not launch two of them.
+    probing: AtomicBool,
 }
 
 impl AppState {
@@ -108,6 +119,10 @@ impl AppState {
             scan_cancel: Mutex::new(HashMap::new()),
             ptys: Mutex::new(HashMap::new()),
             tools_ready: AtomicBool::new(false),
+            // Nothing is known until the first probe, and `tools_ready: false` is what
+            // stops the UI treating that as a broken machine.
+            readiness: RwLock::new(crate::readiness::unknown()),
+            probing: AtomicBool::new(false),
         }
     }
 
@@ -159,6 +174,34 @@ impl AppState {
     /// before this, or they fail spuriously with "tool not available".
     pub fn tools_ready(&self) -> bool {
         self.tools_ready.load(std::sync::atomic::Ordering::Acquire)
+    }
+
+    pub fn readiness(&self) -> crate::readiness::Readiness {
+        self.readiness.read().unwrap().clone()
+    }
+
+    pub fn set_readiness(&self, r: crate::readiness::Readiness) {
+        *self.readiness.write().unwrap() = r;
+    }
+
+    /// Claims the right to run a probe, or reports that someone else already has.
+    ///
+    /// `compare_exchange`, not a read-then-write: two installs finishing in the same
+    /// frame would both see `false` and both probe.
+    pub fn begin_probe(&self) -> bool {
+        self.probing
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .is_ok()
+    }
+
+    pub fn end_probe(&self) {
+        self.probing
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 
     pub fn run(&self, run_id: &str) -> Option<Arc<RunHandle>> {

@@ -2,7 +2,9 @@ import { create } from 'zustand'
 import { toast } from 'sonner'
 import { api } from '@/ipc/commands'
 import { IpcError } from '@/ipc/errors'
+import { toolFix } from '@/domain/tool-fix'
 import { useRunStore } from '@/stores/run-store'
+import { useUiStore } from '@/stores/ui-store'
 import type { ActionIntent, ActionSpec } from '@/domain/types'
 
 /**
@@ -121,9 +123,25 @@ function reportError(e: unknown) {
       case 'SCRIPT_INTERACTIVE':
         toast.error('This script needs a terminal', { description: e.message })
         return
-      case 'TOOL_MISSING':
-        toast.error('Missing tool', { description: e.message })
+      case 'TOOL_MISSING': {
+        // The button that produced this stays enabled and will fail identically next
+        // time, so the toast is the only place a fix can be offered. Before this it
+        // was a bare message that did not even name the page which installs the tool.
+        const fix = toolFix(e.detail)
+        toast.error(`${e.detail ?? 'A tool'} is not installed`, {
+          description: fix
+            ? 'Work Alley can install it — the setup page has a step for it.'
+            : e.message,
+          duration: 12_000,
+          action: fix
+            ? {
+                label: 'Set it up',
+                onClick: () => useUiStore.getState().openSetupAt(fix.stepId),
+              }
+            : undefined,
+        })
         return
+      }
       case 'NOT_READY':
         toast.info('Still starting up — try again in a moment.')
         return

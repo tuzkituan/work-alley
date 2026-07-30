@@ -1,9 +1,10 @@
-import { useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useEffect, useRef, useState } from 'react'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   ArrowLeft,
   ArrowRight,
   Check,
+  Copy,
   Download,
   RefreshCw,
   Terminal,
@@ -48,8 +49,20 @@ function isRunning(lastRan: ActionSpec | null, step: SetupStepStatus): boolean {
  * Machine-scoped, like the Toolbox: a full-window page that works before any
  * workspace exists, which is exactly when it is needed.
  */
-export function SetupPage({ toolsReady }: { toolsReady: boolean }) {
+export function SetupPage({
+  toolsReady,
+  firstRun = false,
+}: {
+  toolsReady: boolean
+  /**
+   * This is a brand-new machine and the page is a takeover, not a place the user
+   * navigated to. Changes the headline, drops the back arrow — there is nothing
+   * behind it yet — and offers Skip instead.
+   */
+  firstRun?: boolean
+}) {
   const setPage = useUiStore((s) => s.setPage)
+  const qc = useQueryClient()
   const { data, isPending, isFetching, refetch } = useQuery({
     queryKey: keys.setupPlan,
     queryFn: () => api.listSetupPlan(),
@@ -71,6 +84,48 @@ export function SetupPage({ toolsReady }: { toolsReady: boolean }) {
   // become "current" — nothing is waiting on them.
   const currentId = required.find((s) => !s.done)?.id ?? null
 
+  // Re-probe, then refetch. Its own pending flag because the probe runs two login
+  // shells and `isFetching` only covers the query that follows it.
+  const [rechecking, setRechecking] = useState(false)
+  const recheck = async () => {
+    setRechecking(true)
+    try {
+      await api.refreshToolchain()
+    } catch {
+      // Keep going: a failed probe leaves the last good one in place, and the
+      // refetch below is still worth doing.
+    } finally {
+      setRechecking(false)
+    }
+    await refetch()
+  }
+
+  /**
+   * Leaving setup for the app.
+   *
+   * Records onboarding as over on the way out, so a machine that is now set up does not
+   * get asked again on the next launch — the routing predicate reads that flag.
+   */
+  const finish = async () => {
+    try {
+      const b = await api.completeOnboarding()
+      qc.setQueryData(keys.bootstrap, b)
+    } catch {
+      // Worst case is being asked once more; not worth blocking the exit.
+    }
+    setPage('repos')
+  }
+
+  const skip = async () => {
+    try {
+      const b = await api.completeOnboarding()
+      qc.setQueryData(keys.bootstrap, b)
+    } catch {
+      // Nothing to recover: the worst case is being asked again next launch.
+    }
+    setPage('repos')
+  }
+
   // Which step's output to show, derived from the action that actually started
   // rather than from a click: pressing Install only opens the confirmation dialog,
   // and cancelling it must leave no trace. Also keeps one step from claiming
@@ -81,21 +136,40 @@ export function SetupPage({ toolsReady }: { toolsReady: boolean }) {
     <div className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
       <div className="mx-auto flex w-full max-w-[104rem] flex-col gap-3.5">
         <div className="flex items-center gap-2">
-          <Button
-            variant="waGhost"
-            size="waIcon"
-            onClick={() => setPage('repos')}
-            title="Back to the workspace"
-          >
-            <ArrowLeft className="size-4" />
-          </Button>
-          <h1 className="text-base font-semibold tracking-[-0.01em]">Set up this machine</h1>
+          {/* No back arrow on a first run: there is nothing behind this screen, and a
+              dead control is worse than none. */}
+          {!firstRun && (
+            <Button
+              variant="waGhost"
+              size="waIcon"
+              onClick={() => setPage('repos')}
+              title="Back to the workspace"
+            >
+              <ArrowLeft className="size-4" />
+            </Button>
+          )}
+          <h1 className="text-base font-semibold tracking-[-0.01em]">
+            {firstRun ? 'Welcome — let’s set this machine up' : 'Set up this machine'}
+          </h1>
           {required.length > 0 && (
             <span className="wa-num font-mono text-[11px] text-adaptive-400">
               {doneCount}/{required.length} required
             </span>
           )}
           <div className="flex-1" />
+          {/* Skipping counts as done: a takeover that returns tomorrow is one you
+              learn to dismiss rather than read. The warning bar on the dashboard is
+              the ongoing signal instead. */}
+          {firstRun && (
+            <Button
+              variant="waGhost"
+              size="waXs"
+              title="Go to the app. Anything still missing shows in a bar at the bottom."
+              onClick={() => void skip()}
+            >
+              Skip for now
+            </Button>
+          )}
           <Button
             variant="waOutline"
             size="waXs"
@@ -108,10 +182,13 @@ export function SetupPage({ toolsReady }: { toolsReady: boolean }) {
           <Button
             variant="waOutline"
             size="waXs"
-            disabled={isFetching}
-            onClick={() => void refetch()}
+            disabled={isFetching || rechecking}
+            // Re-probes *before* refetching. Without that this button refetched a
+            // plan built from the toolchain as it was at launch, so pressing it after
+            // installing Node changed nothing and the next step stayed blocked.
+            onClick={() => void recheck()}
           >
-            <RefreshCw className={cn('size-3', isFetching && 'animate-spin')} />
+            <RefreshCw className={cn('size-3', (isFetching || rechecking) && 'animate-spin')} />
             Re-check
           </Button>
         </div>
@@ -136,7 +213,7 @@ export function SetupPage({ toolsReady }: { toolsReady: boolean }) {
               plan={data}
               lastRan={lastRan}
             />
-            {allRequiredDone && <Finished onOpen={() => setPage('repos')} />}
+            {allRequiredDone && <Finished onOpen={() => void finish()} />}
           </>
         )}
       </div>
@@ -162,8 +239,8 @@ function Intro({ plan }: { plan: SetupPlan | undefined }) {
           )
         )}
       </div>
-      {/* The two things that surprise people, said once here rather than on every
-          step: where the output goes, and why nvm needs a restart. */}
+      {/* The thing that surprises people, said once here rather than on every step:
+          where the output goes, and that the password prompt is in there. */}
       <p className="max-w-prose text-xs text-adaptive-500">
         Work through these in order — each one assumes the ones above it. Every step
         runs in a terminal at the bottom of this page, which is also where you type
@@ -225,13 +302,26 @@ function StepCard({
   const blocked = step.blocked !== null
   const command = step.commandPreview.join(' ')
 
+  // Arrived here from a missing-tool toast: scroll to the step that installs it and
+  // ring it, once. Cleared immediately so it does not fire again on the next render or
+  // survive into a later visit.
+  const focused = useUiStore((s) => s.setupFocusStepId) === step.id
+  const clearFocus = useUiStore((s) => s.clearSetupFocus)
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    if (!focused) return
+    ref.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
+    clearFocus()
+  }, [focused, clearFocus])
+
   return (
     <div
+      ref={ref}
       className={cn(
         // mb + break-inside-avoid: this card is a multi-column item in StepList,
         // and a step split across a column boundary is unreadable.
         'mb-2 flex break-inside-avoid flex-col gap-2.5 rounded-lg border bg-card p-3.5',
-        current ? 'border-adaptive-950 shadow-focus-ring' : 'border-adaptive-200'
+        current || focused ? 'border-adaptive-950 shadow-focus-ring' : 'border-adaptive-200'
       )}
     >
       <div className="flex items-start gap-3">
@@ -263,7 +353,9 @@ function StepCard({
           </p>
         </div>
 
-        {step.kind !== 'gitIdentity' && (
+        {/* Neither of these has a command of its own — identity is a form, and
+            credentials are two alternative routes the user picks between. */}
+        {step.kind !== 'gitIdentity' && step.kind !== 'credentials' && (
           <StepButton
             step={step}
             blocked={blocked}
@@ -274,9 +366,8 @@ function StepCard({
 
       <Items items={step.items} manager={step.manager} />
 
-      {step.kind === 'gitIdentity' ? (
-        <GitIdentityForm step={step} plan={plan} />
-      ) : null}
+      {step.kind === 'gitIdentity' && <GitIdentityForm step={step} plan={plan} />}
+      {step.kind === 'credentials' && <CredentialsCard step={step} plan={plan} />}
 
       {blocked && (
         <div className="rounded-md border border-adaptive-200 bg-adaptive-100 px-2.5 py-1.5 text-[11px] text-sev-warn">
@@ -341,6 +432,16 @@ function StepButton({
     )
   }
 
+  // What is actually left, so a part-finished group says so. A step called "GitHub
+  // CLI" with gh already installed showed a bare "Install", which reads as "gh is
+  // missing" when the only outstanding item is something else in the group.
+  const missing = step.items.filter((i) => !i.installed && i.available)
+  const label = step.done
+    ? 'Re-run'
+    : missing.length > 0 && missing.length < step.items.length
+      ? `Install ${missing.map((i) => i.label).join(', ')}`
+      : 'Install'
+
   return (
     <Button
       variant={step.done ? 'waOutline' : 'waPrimary'}
@@ -355,7 +456,7 @@ function StepButton({
       ) : (
         <Download className="size-3" />
       )}
-      {step.done ? 'Re-run' : 'Install'}
+      <span className="max-w-40 truncate">{label}</span>
     </Button>
   )
 }
@@ -394,6 +495,121 @@ function Items({ items, manager }: { items: SetupStepStatus['items']; manager: s
           )}
         </span>
       ))}
+    </div>
+  )
+}
+
+/**
+ * The one step with two routes and no command of its own.
+ *
+ * Detection plus instructions, deliberately: running `ssh-keygen` would mean owning a
+ * passphrase prompt and `gh auth login` a browser handoff, and neither belongs in this
+ * app. What it *does* do is tell you which of the two you already have, which is the
+ * part nothing did before — the old signal was a warning saying "start an ssh-agent and
+ * relaunch", which is not something a new user can act on.
+ */
+function CredentialsCard({
+  step,
+  plan,
+}: {
+  step: SetupStepStatus
+  plan: SetupPlan | undefined
+}) {
+  const ssh = step.items.find((i) => i.id === 'ssh')
+  const gh = step.items.find((i) => i.id === 'gh')
+  const done = step.done
+
+  // The email git already knows about, so the key comment matches the commits.
+  const email = plan?.gitEmail?.trim() || 'you@example.com'
+  // A key on disk that the agent is not holding: the fix is `ssh-add`, not keygen.
+  const stranded = ssh?.label.includes('not in the agent') ?? false
+
+  if (done) {
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-success-500/40 bg-green-500/[0.08] px-2.5 py-1.5 text-[11.5px] text-sev-ok">
+        <Check className="size-3 flex-none" />
+        {gh?.installed ? gh.label : (ssh?.label ?? 'ready')} — cloning will authenticate.
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-2">
+      <span className="text-[11px] text-adaptive-500">
+        Either one is enough. Run it in a terminal — the app does not do this for you,
+        because both prompt for things a window cannot ask for.
+      </span>
+      <div className="grid gap-2 [grid-template-columns:repeat(auto-fit,minmax(min(20rem,100%),1fr))]">
+        <CommandRoute
+          title={stranded ? 'Load your existing key' : 'Create an SSH key'}
+          commands={
+            stranded
+              ? ['ssh-add ~/.ssh/id_ed25519']
+              : [
+                  `ssh-keygen -t ed25519 -C "${email}"`,
+                  'ssh-add ~/.ssh/id_ed25519',
+                  'cat ~/.ssh/id_ed25519.pub',
+                ]
+          }
+          hint={
+            stranded
+              ? 'The key exists; the agent just is not holding it.'
+              : 'Then paste the printed key at github.com/settings/keys.'
+          }
+        />
+        <CommandRoute
+          title="Or sign in with the GitHub CLI"
+          commands={['gh auth login']}
+          hint={
+            step.blocked
+              ? 'Needs the GitHub CLI from the step above.'
+              : 'Opens a browser, and covers HTTPS clones and the pull-request list.'
+          }
+        />
+      </div>
+    </div>
+  )
+}
+
+/** One route: a copyable command block and a line saying what it gets you. */
+function CommandRoute({
+  title,
+  commands,
+  hint,
+}: {
+  title: string
+  commands: string[]
+  hint: string
+}) {
+  const [copied, setCopied] = useState(false)
+  const text = commands.join('\n')
+
+  return (
+    <div className="flex flex-col gap-1 rounded-md border border-adaptive-200 bg-adaptive-100 p-2">
+      <div className="flex items-center gap-2">
+        <span className="flex-1 text-[11.5px] font-semibold">{title}</span>
+        <button
+          type="button"
+          title="Copy to the clipboard"
+          onClick={() => {
+            void navigator.clipboard
+              .writeText(text)
+              .then(() => {
+                setCopied(true)
+                setTimeout(() => setCopied(false), 1500)
+              })
+              .catch(() => {})
+          }}
+          className="flex flex-none items-center gap-1 text-[10.5px] text-adaptive-500 hover:text-adaptive-900"
+        >
+          {copied ? <Check className="size-2.5" /> : <Copy className="size-2.5" />}
+          {copied ? 'copied' : 'copy'}
+        </button>
+      </div>
+      <pre className="overflow-x-auto font-mono text-[11px] whitespace-pre text-adaptive-800">
+        {text}
+      </pre>
+      <span className="text-[10.5px] leading-[1.4] text-adaptive-500">{hint}</span>
     </div>
   )
 }
@@ -560,8 +776,7 @@ function Finished({ onOpen }: { onOpen: () => void }) {
       <div className="flex min-w-[14rem] flex-1 flex-col gap-0.5">
         <span className="text-[13px] font-semibold">Everything required is installed</span>
         <span className="text-[11.5px] text-adaptive-500">
-          Restart Work Alley if you just installed nvm or Bun — both live in your shell
-          profile, and the toolchain is resolved at launch.
+          Nothing to restart — the toolchain is re-resolved after every step.
         </span>
       </div>
       <Button variant="waPrimary" size="wa" onClick={onOpen}>

@@ -1,8 +1,6 @@
 export const keys = {
   bootstrap: ['bootstrap'] as const,
   commits: ['commits'] as const,
-  docker: ['docker'] as const,
-  devServers: ['devServers'] as const,
   runs: ['runs'] as const,
   packages: ['packages'] as const,
   packageUpdates: ['packageUpdates'] as const,

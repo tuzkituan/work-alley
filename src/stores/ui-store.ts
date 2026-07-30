@@ -24,8 +24,12 @@ export type Skin = (typeof SKINS)[number]
 /**
  * Top-level views. `toolbox` and `setup` describe the machine rather than the open
  * folder, so both take the whole window and work with no workspace at all.
+ *
+ * `repos` no longer has a sibling tab: the old `activity` page held a commit list the
+ * detail page already shows per repo, and a container list a `docker ps` already
+ * answers, so the strip that switched between them was two clicks to nothing.
  */
-export type Page = 'repos' | 'activity' | 'toolbox' | 'setup'
+export type Page = 'repos' | 'toolbox' | 'setup'
 
 /**
  * The repo detail page's tabs. Exported as a list so the persisted value can be
@@ -71,6 +75,25 @@ interface UiState {
    * page to read a file list.
    */
   detailHeaderCollapsed: boolean
+  /**
+   * A setup step to scroll to and highlight, set by the "Set it up" action on a
+   * missing-tool toast.
+   *
+   * Deliberately **not** persisted: a focus target lives for a few seconds, and
+   * putting it in `partialize` would force a version bump and a migrate branch for
+   * something meaningless on the next launch.
+   */
+  setupFocusStepId: string | null
+  /**
+   * Which scope the output pane shows: a repo id, or null for the workspace.
+   *
+   * In the store rather than in the pane because the *bridge* has to move it — a run
+   * or a terminal that has just spawned should be what you are looking at, and a
+   * workspace-level one lives in a scope the pane may not be on. Doing that through
+   * `activeRepoId` was not an option: setting it to null to reach the workspace scope
+   * would also clear the repo table's selection.
+   */
+  outputScope: RepoId | null
   filterText: string
   filterChip: NeedsYouKind | null
   view: ViewMode
@@ -96,6 +119,10 @@ interface UiState {
   closeDetail(): void
   setDetailTab(tab: DetailTab): void
   toggleDetailHeader(): void
+  setOutputScope(scope: RepoId | null): void
+  /** Opens the setup page focused on one step. */
+  openSetupAt(stepId: string): void
+  clearSetupFocus(): void
   setFilterText(text: string): void
   toggleFilterChip(kind: NeedsYouKind): void
   clearFilters(): void
@@ -153,6 +180,8 @@ export const useUiStore = create<UiState>()(
       detailRepoId: null,
       detailTab: 'changes',
       detailHeaderCollapsed: false,
+      outputScope: null,
+      setupFocusStepId: null,
       filterText: '',
       filterChip: null,
       view: 'list',
@@ -176,13 +205,18 @@ export const useUiStore = create<UiState>()(
         })),
 
       setCategory: (expandedCategory) => set({ expandedCategory, activeRepoId: null }),
-      setActiveRepo: (activeRepoId) => set({ activeRepoId }),
+      // Selecting a repo also points the pane at it: the two disagreeing is what made
+      // "where did my run go" a question.
+      setActiveRepo: (activeRepoId) => set({ activeRepoId, outputScope: activeRepoId }),
       // Opening a detail page also selects the repo, so the output pane follows.
       openDetail: (id) => set({ detailRepoId: id, activeRepoId: id }),
       closeDetail: () => set({ detailRepoId: null }),
       setDetailTab: (detailTab) => set({ detailTab }),
       toggleDetailHeader: () =>
         set((s) => ({ detailHeaderCollapsed: !s.detailHeaderCollapsed })),
+      setOutputScope: (outputScope) => set({ outputScope }),
+      openSetupAt: (stepId) => set({ page: 'setup', setupFocusStepId: stepId }),
+      clearSetupFocus: () => set({ setupFocusStepId: null }),
       setFilterText: (filterText) => set({ filterText }),
       toggleFilterChip: (kind) => set((s) => ({ filterChip: s.filterChip === kind ? null : kind })),
       clearFilters: () => set({ filterText: '', filterChip: null }),

@@ -4,6 +4,15 @@ import { repoId, type LogLine, type RunStatus, type RunSummary } from '@/domain/
 /** Head-dropped past this. An unbounded array eventually OOMs the webview. */
 const MAX_LINES = 20_000
 
+/**
+ * The busy-map key for anything not scoped to one repo.
+ *
+ * Exported because there are two conventions for "no repo" in play — `''` here and
+ * `null` from `runScope`/`termScope` — and this is the single documented bridge
+ * between them. Do not inline the empty string anywhere else.
+ */
+export const WORKSPACE_KEY = ''
+
 export interface Run {
   runId: string
   summary: RunSummary
@@ -13,6 +22,51 @@ export interface Run {
   /** Tail mode. Disabled the moment the user scrolls away from the bottom. */
   follow: boolean
   scrollTop: number
+  /**
+   * Every busy-map key this run occupies, captured at start.
+   *
+   * Stored rather than recomputed so `exit` decrements exactly what `start`
+   * incremented, even though `exit` replaces the summary.
+   */
+  scopeKeys: string[]
+  /**
+   * The log was explicitly cleared, as opposed to simply having no lines yet.
+   *
+   * Without this, Clear did nothing durable: the view refills an empty log from the
+   * backend ring buffer on remount, so the lines came straight back.
+   */
+  cleared: boolean
+  /**
+   * A cancel has been asked for and the process has not exited yet.
+   *
+   * Its own flag rather than a `RunStatus` kind, because the status is the backend's
+   * to report: cancelling is a *request*, and the run is still genuinely running —
+   * it may still print, and it may still exit 0 if it finished before the signal
+   * landed. Without this, Ctrl+C or the Cancel button looked like it did nothing for
+   * however long the tree took to die.
+   */
+  cancelling: boolean
+}
+
+/**
+ * Every scope a run makes busy: its own repo, plus every repo it touches.
+ *
+ * `targets` is the whole point. A bulk pull sets `ref: null` and lists 40 repos, so
+ * keying on `ref` alone counted it once against the workspace and left all 40 repo
+ * rows reporting nothing running — during a pull of those exact repos.
+ */
+export function runScopeKeys(summary: RunSummary): string[] {
+  const keys = new Set<string>()
+  keys.add(summary.ref ? repoId(summary.ref) : WORKSPACE_KEY)
+  for (const t of summary.targets ?? []) keys.add(repoId(t))
+  return [...keys]
+}
+
+export interface RunExitFields {
+  status: RunStatus
+  endedUnix: number
+  lineCount?: number
+  truncated?: boolean
 }
 
 interface RunState {
@@ -23,8 +77,9 @@ interface RunState {
    * scope key -> number of runs currently going, maintained incrementally.
    *
    * A row can subscribe to one number instead of deriving it from the whole run
-   * map, so only the affected rows re-render. Keyed by repo id, or "" for
-   * workspace-level runs.
+   * map, so only the affected rows re-render. Keyed by repo id, or `WORKSPACE_KEY`.
+   *
+   * One run can occupy several keys — see `runScopeKeys`.
    */
   runningByScope: Record<string, number>
 
@@ -39,8 +94,19 @@ interface RunState {
    */
   hydrate(summary: RunSummary, lines: LogLine[]): void
   append(runId: string, lines: LogLine[]): void
-  exit(runId: string, status: RunStatus, endedUnix: number): void
+  /**
+   * `lineCount`/`truncated` come from the exit event and were previously discarded,
+   * so a finished run's summary still claimed the count it had at start.
+   * `durationMs` is deliberately not stored — `endedUnix - startedUnix` is the same
+   * number, and two sources for one fact eventually disagree.
+   */
+  exit(runId: string, e: RunExitFields): void
   setActive(runId: string | null): void
+  /**
+   * Marks a cancel as requested (or un-requests it, when the IPC call itself failed
+   * and nothing is going to arrive to clear the flag).
+   */
+  setCancelling(runId: string, cancelling: boolean): void
   setFollow(runId: string, follow: boolean): void
   setScrollTop(runId: string, scrollTop: number): void
   clear(runId: string): void
@@ -64,8 +130,14 @@ export const useRunStore = create<RunState>()((set) => ({
         droppedHead: 0,
         follow: true,
         scrollTop: 0,
+        scopeKeys: runScopeKeys(summary),
+        cleared: false,
+        cancelling: false,
       })
-      const key = summary.ref ? repoId(summary.ref) : ''
+      const runningByScope = { ...s.runningByScope }
+      for (const key of runScopeKeys(summary)) {
+        runningByScope[key] = (runningByScope[key] ?? 0) + 1
+      }
       return {
         runs,
         // Idempotent: a run must never appear twice, whether from a duplicated
@@ -73,10 +145,7 @@ export const useRunStore = create<RunState>()((set) => ({
         // produce duplicate React keys, which renders two chips for one run.
         order: s.order.includes(summary.runId) ? s.order : [...s.order, summary.runId],
         activeRunId: summary.runId,
-        runningByScope: {
-          ...s.runningByScope,
-          [key]: (s.runningByScope[key] ?? 0) + 1,
-        },
+        runningByScope,
       }
     }),
 
@@ -93,6 +162,11 @@ export const useRunStore = create<RunState>()((set) => ({
         // and jumping to the bottom of a 5000-line log hides why it failed.
         follow: false,
         scrollTop: 0,
+        // Nothing is running, so this run occupies no busy keys — see the note on
+        // `hydrate` above.
+        scopeKeys: [],
+        cleared: false,
+        cancelling: false,
       })
       return {
         runs,
@@ -128,29 +202,56 @@ export const useRunStore = create<RunState>()((set) => ({
       return { runs }
     }),
 
-  exit: (runId, status, endedUnix) =>
+  exit: (runId, e) =>
     set((s) => {
       const run = s.runs.get(runId)
       if (!run) return s
       const runs = new Map(s.runs)
       runs.set(runId, {
         ...run,
-        summary: { ...run.summary, status, endedUnix },
+        // The request is over either way — the process is gone, whether or not it
+        // went because of the cancel.
+        cancelling: false,
+        summary: {
+          ...run.summary,
+          status: e.status,
+          endedUnix: e.endedUnix,
+          lineCount: e.lineCount ?? run.summary.lineCount,
+          truncated: e.truncated ?? run.summary.truncated,
+        },
       })
 
       // Only decrement if this run was still counted as running, so a duplicate
       // exit event cannot drive the count negative.
       if (run.summary.status.kind !== 'running') return { runs }
-      const key = run.summary.ref ? repoId(run.summary.ref) : ''
-      const next = Math.max(0, (s.runningByScope[key] ?? 0) - 1)
+      // The keys captured at start, not recomputed: the summary above has already
+      // been replaced, and a mismatch here would leak a count forever.
       const runningByScope = { ...s.runningByScope }
-      if (next === 0) delete runningByScope[key]
-      else runningByScope[key] = next
+      for (const key of run.scopeKeys) {
+        const next = Math.max(0, (runningByScope[key] ?? 0) - 1)
+        // Deleted rather than stored as 0, so consumers must use `?? 0` anyway and
+        // the map stays the size of what is actually busy.
+        if (next === 0) delete runningByScope[key]
+        else runningByScope[key] = next
+      }
 
       return { runs, runningByScope }
     }),
 
   setActive: (activeRunId) => set({ activeRunId }),
+
+  setCancelling: (runId, cancelling) =>
+    set((s) => {
+      const run = s.runs.get(runId)
+      if (!run || run.cancelling === cancelling) return s
+      // Only a live run can be cancelling. A late click on a run that has just
+      // exited would otherwise leave the flag set on a finished run forever, and
+      // its footer would read "cancelling…" next to its exit code.
+      if (cancelling && run.summary.status.kind !== 'running') return s
+      const runs = new Map(s.runs)
+      runs.set(runId, { ...run, cancelling })
+      return { runs }
+    }),
 
   setFollow: (runId, follow) =>
     set((s) => {
@@ -175,7 +276,10 @@ export const useRunStore = create<RunState>()((set) => ({
       const run = s.runs.get(runId)
       if (!run) return s
       const runs = new Map(s.runs)
-      runs.set(runId, { ...run, lines: [], droppedHead: 0 })
+      // `lastSeq` is deliberately left alone: live lines still have to pass the
+      // `seq > lastSeq` dedupe, so resetting it would let the backend replay
+      // everything the user just cleared.
+      runs.set(runId, { ...run, lines: [], droppedHead: 0, cleared: true })
       return { runs }
     }),
 
@@ -201,5 +305,15 @@ export const selectRun = (runId: string | null) => (s: RunState) =>
  */
 export function runScope(run: Run): string | null {
   return run.summary.ref ? repoId(run.summary.ref) : null
+}
+
+/**
+ * Whether the log should be refilled from the backend's ring buffer.
+ *
+ * Only to close a gap left by a remount — never to undo a Clear. Exported as a
+ * predicate so the rule is testable without rendering anything.
+ */
+export function shouldReplay(run: Run): boolean {
+  return run.lines.length === 0 && !run.cleared
 }
 

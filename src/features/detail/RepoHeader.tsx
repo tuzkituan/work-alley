@@ -6,6 +6,7 @@ import { RepoMenu } from '@/features/repos/RepoMenu'
 import { shortPackageName } from '@/hooks/use-tracked-package'
 import { useRunAction } from '@/hooks/use-action'
 import { useRescanRepo } from '@/hooks/use-rescan-repo'
+import { busyLabel } from '@/hooks/use-busy'
 import { useUiStore } from '@/stores/ui-store'
 import type { StaleState } from '@/domain/types'
 import { Field } from './StatGrid'
@@ -33,7 +34,7 @@ export function RepoHeader({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }) {
   const toggleHeader = useUiStore((s) => s.toggleDetailHeader)
   const run = useRunAction()
   const rescanRepo = useRescanRepo()
-  const { id, repo, status, d, dev, ahead, behind, trackedPackage, trackedLatest, running } = ctx
+  const { id, repo, status, d, dev, ahead, behind, trackedPackage, trackedLatest, busy } = ctx
   const port = dev?.port ?? status?.devPort ?? null
 
   return (
@@ -48,13 +49,13 @@ export function RepoHeader({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }) {
         {repo.category && <MonoChip>{repo.category}</MonoChip>}
         {d && <StatePill tone={d.tone} label={d.stateLabel} />}
         <div className="flex-1" />
-        {running > 0 && (
+        {busy.total > 0 && (
           <span className="flex items-center gap-1.5 rounded-full border border-info-500/[0.38] bg-blue-500/[0.12] px-2 py-0.5 text-[11px] text-sev-info">
             <span
               className="size-1.5 rounded-full bg-sev-info"
               style={{ animation: 'wa-blink 1.4s step-end infinite' }}
             />
-            {running} running
+            {busyLabel(busy)}
           </span>
         )}
         <Button

@@ -33,6 +33,13 @@ enum Kind {
     /// you clone is unusable without it, and git only complains at the first commit
     /// — by which point you have stopped thinking about setup.
     GitIdentity,
+    /// An ssh key in an agent, or a signed-in `gh`.
+    ///
+    /// Two routes to one outcome, so unlike every other kind this has no single
+    /// command of its own — the page shows both and the user picks. Detection only:
+    /// running `ssh-keygen` means owning a passphrase prompt, and `gh auth login`
+    /// means owning a browser handoff, neither of which belongs in this codebase.
+    Credentials,
 }
 
 struct Step {
@@ -123,12 +130,31 @@ const STEPS: &[Step] = &[
     Step {
         id: "github",
         title: "GitHub CLI",
-        summary: "gh, plus delta for readable diffs.",
+        summary: "gh — sign-in for cloning, and the pull-request list.",
         why: "`gh auth login` is the least painful way to get credentials for cloning \
               over HTTPS, and it is what fills the pull-request list on each repo card.",
-        kind: Kind::System(&["gh", "delta"]),
+        // gh alone. `delta` used to be bundled in here, which meant a *required* step
+        // stayed unfinished over a diff pager — someone with gh installed still saw
+        // "Install", and required setup could not be completed without a cosmetic tool.
+        // It lives in the optional terminal group now.
+        kind: Kind::System(&["gh"]),
         optional: false,
-        note: Some("Run `gh auth login` in a terminal afterwards to sign in."),
+        note: None,
+    },
+    Step {
+        id: "credentials",
+        title: "Credentials for cloning",
+        summary: "An SSH key in an agent, or sign in with the GitHub CLI.",
+        why: "The first thing you will do is clone, and it is the first thing that \
+              fails: git asks for a password it cannot prompt for from a window, so \
+              with neither of these a clone hangs or dies with `Permission denied \
+              (publickey)` and no explanation of what to fix.",
+        kind: Kind::Credentials,
+        optional: false,
+        note: Some(
+            "Either route is enough. After creating a key, add the public half at \
+             github.com/settings/keys — the commands below print it.",
+        ),
     },
     Step {
         id: "bun",
@@ -146,10 +172,10 @@ const STEPS: &[Step] = &[
     Step {
         id: "terminal",
         title: "Terminal tools",
-        summary: "ripgrep, fd, fzf and Neovim.",
+        summary: "ripgrep, fd, fzf, Neovim, and delta for readable diffs.",
         why: "Searching a monorepo with grep is slow enough to change how you work. \
               None of this is required; all of it pays for itself in a week.",
-        kind: Kind::System(&["ripgrep", "fd", "fzf", "neovim"]),
+        kind: Kind::System(&["ripgrep", "fd", "fzf", "neovim", "delta"]),
         optional: true,
         note: None,
     },
@@ -183,6 +209,19 @@ fn find_step(id: &str) -> Option<&'static Step> {
     STEPS.iter().find(|s| s.id == id)
 }
 
+/// The `blocked` reason for one step, or None when it can run.
+///
+/// Its own entry point so `build_action` can refuse a blocked step up front. Costs a
+/// catalog probe, which is acceptable for a click and is what `status` does anyway.
+pub async fn blocked_reason(tc: &Toolchain, id: &str) -> Option<String> {
+    let step = STEPS.iter().find(|s| s.id == id)?;
+    let pkgs = packages::list(tc).await;
+    let has_nvm = packages::nvm_script().is_some();
+    let (name, email) = git_identity(tc).await;
+    let creds = crate::creds::status(tc).await;
+    step_state(step, &pkgs, &name, &email, has_nvm, &creds).1
+}
+
 // --- status -----------------------------------------------------------------
 
 /// Every step with its current state, for the setup page.
@@ -191,11 +230,13 @@ pub async fn status(tc: &Toolchain) -> SetupPlan {
     let sys = packages::detect_system_pm(tc);
     let has_nvm = packages::nvm_script().is_some();
     let (git_name, git_email) = git_identity(tc).await;
+    let creds = crate::creds::status(tc).await;
 
     let steps = STEPS
         .iter()
         .map(|s| {
-            let (items, blocked) = step_state(s, &pkgs, &git_name, &git_email, has_nvm);
+            let (items, blocked) =
+                step_state(s, &pkgs, &git_name, &git_email, has_nvm, &creds);
             // Anything the manager cannot provide is not a reason to keep telling
             // someone their setup is unfinished.
             let done = !items.is_empty()
@@ -240,6 +281,7 @@ fn step_state(
     git_name: &Option<String>,
     git_email: &Option<String>,
     has_nvm: bool,
+    creds: &crate::creds::CredsStatus,
 ) -> (Vec<SetupItem>, Option<String>) {
     match &s.kind {
         Kind::System(ids) => (ids.iter().map(|id| item_for(pkgs, id)).collect(), None),
@@ -272,6 +314,54 @@ fn step_state(
             let items = vec![item_for(pkgs, "node")];
             let blocked = (!has_nvm && !items[0].installed)
                 .then(|| "Install nvm first — Node is installed through it.".to_string());
+            (items, blocked)
+        }
+
+        Kind::Credentials => {
+            // Two alternatives, not a checklist: `done` is computed from all items
+            // being installed, so reporting both as separate unmet items would leave
+            // this step permanently unfinished for someone who picked one route.
+            // Marking the route not taken `available: false` is how the existing
+            // "the manager cannot provide this" rule expresses "not needed".
+            let ssh_ok = !creds.ssh_keys.is_empty() && creds.ssh_agent;
+            let gh_ok = creds.gh_account.is_some();
+            let either = ssh_ok || gh_ok;
+
+            let items = vec![
+                SetupItem {
+                    id: "ssh".to_string(),
+                    label: if ssh_ok {
+                        format!("{} key(s) in the agent", creds.ssh_keys.len())
+                    } else if !creds.ssh_key_files.is_empty() {
+                        // The "so close" state, and worth naming: the key exists, the
+                        // agent just is not holding it, so the fix is `ssh-add`.
+                        "key on disk, not in the agent".to_string()
+                    } else {
+                        "SSH key".to_string()
+                    },
+                    installed: ssh_ok,
+                    available: !gh_ok || ssh_ok,
+                    version: None,
+                },
+                SetupItem {
+                    id: "gh".to_string(),
+                    label: match &creds.gh_account {
+                        Some(login) => format!("signed in as {login}"),
+                        None => "GitHub CLI sign-in".to_string(),
+                    },
+                    installed: gh_ok,
+                    available: !ssh_ok || gh_ok,
+                    version: None,
+                },
+            ];
+
+            // Only genuinely blocked with no way to do either.
+            let blocked = (!either && !creds.gh_present && creds.ssh_key_files.is_empty())
+                .then(|| {
+                    "Install the GitHub CLI first, or generate an SSH key — neither is \
+                     available yet."
+                        .to_string()
+                });
             (items, blocked)
         }
 
@@ -327,6 +417,7 @@ fn kind_id(kind: &Kind) -> &'static str {
         Kind::Script { .. } => "script",
         Kind::Node => "node",
         Kind::GitIdentity => "gitIdentity",
+        Kind::Credentials => "credentials",
     }
 }
 
@@ -336,6 +427,7 @@ fn manager_label(kind: &Kind, sys: Option<packages::SystemPm>) -> &'static str {
         Kind::NpmGlobal(_) => "npm",
         Kind::Script { .. } => "curl",
         Kind::Node => "nvm",
+        Kind::Credentials => "ssh / gh",
         Kind::GitIdentity => "git",
     }
 }
@@ -357,7 +449,7 @@ fn os_label() -> String {
     std::env::consts::OS.to_string()
 }
 
-async fn git_identity(tc: &Toolchain) -> (Option<String>, Option<String>) {
+pub(crate) async fn git_identity(tc: &Toolchain) -> (Option<String>, Option<String>) {
     let Some(git) = tc.path("git") else {
         return (None, None);
     };
@@ -447,6 +539,16 @@ fn plan_for(
             return Err(
                 "Fill in your name and email on the setup page — this step has no \
                  command of its own."
+                    .to_string(),
+            )
+        }
+
+        // No single command, on purpose: there are two routes and the user picks. The
+        // page renders the commands to copy instead of a Run button, which is what an
+        // empty `commandPreview` means.
+        Kind::Credentials => {
+            return Err(
+                "Pick a route on the setup page — an SSH key or the GitHub CLI."
                     .to_string(),
             )
         }
@@ -561,7 +663,7 @@ mod tests {
                         std::slice::from_ref(bin)
                     }
                 }
-                Kind::GitIdentity => &[],
+                Kind::GitIdentity | Kind::Credentials => &[],
             };
             for id in ids {
                 assert!(
@@ -580,6 +682,9 @@ mod tests {
         assert!(pos("nvm") < pos("node"), "Node comes from nvm");
         assert!(pos("node") < pos("js-tools"), "npm -g needs Node");
         assert!(pos("essentials") < pos("git-identity"), "git config needs git");
+        // Last of the required ones: `gh auth login` is one of its two routes, so the
+        // CLI has to exist before the step that offers it.
+        assert!(pos("github") < pos("credentials"), "the gh route needs gh installed");
     }
 
     #[test]
@@ -587,8 +692,74 @@ mod tests {
         let required: Vec<&str> = STEPS.iter().filter(|s| !s.optional).map(|s| s.id).collect();
         assert_eq!(
             required,
-            ["essentials", "git-identity", "nvm", "node", "js-tools", "github"]
+            [
+                "essentials",
+                "git-identity",
+                "nvm",
+                "node",
+                "js-tools",
+                "github",
+                // Required because cloning is the first thing anyone does here, and
+                // with neither an ssh key nor a gh login it fails with a message that
+                // does not say what to fix.
+                "credentials",
+            ]
         );
+    }
+
+    /// The credentials step across its four combinations.
+    ///
+    /// The trap it guards: `done` is "every item installed or unavailable", so two
+    /// unmet items would leave this step permanently unfinished for someone who
+    /// legitimately picked one route. The route not taken is marked unavailable.
+    #[test]
+    fn either_credential_route_finishes_the_step() {
+        let step = STEPS.iter().find(|s| s.id == "credentials").unwrap();
+        let none: Option<String> = None;
+        let state = |creds: crate::creds::CredsStatus| {
+            let (items, blocked) = step_state(step, &[], &none, &none, false, &creds);
+            let done = !items.is_empty() && items.iter().all(|i| i.installed || !i.available);
+            (done, blocked)
+        };
+
+        let ssh_only = crate::creds::CredsStatus {
+            ssh_agent: true,
+            ssh_keys: vec!["SHA256:AbC".into()],
+            ..Default::default()
+        };
+        assert!(state(ssh_only).0, "an ssh key in the agent is enough on its own");
+
+        let gh_only = crate::creds::CredsStatus {
+            gh_present: true,
+            gh_account: Some("ada".into()),
+            ..Default::default()
+        };
+        assert!(state(gh_only).0, "a gh sign-in is enough on its own");
+
+        let both = crate::creds::CredsStatus {
+            ssh_agent: true,
+            ssh_keys: vec!["SHA256:AbC".into()],
+            gh_present: true,
+            gh_account: Some("ada".into()),
+            ..Default::default()
+        };
+        assert!(state(both).0);
+
+        // Neither, and nothing to do either with: blocked rather than silently
+        // unfinished.
+        let (done, blocked) = state(crate::creds::CredsStatus::default());
+        assert!(!done);
+        assert!(blocked.is_some(), "with no gh and no key this needs a reason");
+
+        // A key on disk but no agent holding it is unfinished but NOT blocked — there
+        // is something to do, and `ssh-add` is it.
+        let stranded = crate::creds::CredsStatus {
+            ssh_key_files: vec!["id_ed25519.pub".into()],
+            ..Default::default()
+        };
+        let (done, blocked) = state(stranded);
+        assert!(!done);
+        assert!(blocked.is_none(), "there is a fix, so this must not read as blocked");
     }
 
     #[test]

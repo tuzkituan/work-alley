@@ -86,14 +86,29 @@ impl AppError {
             AppError::Json(_) => "JSON",
         }
     }
+
+    /// The specific thing the code is about, when there is one.
+    ///
+    /// Exists so the UI can offer to fix it. Without this the only way to learn *which*
+    /// tool was missing was to pattern-match `"tool not available: git"` — and the
+    /// prose is explicitly not the contract, per `code` above.
+    pub fn detail(&self) -> Option<String> {
+        match self {
+            AppError::ToolMissing(t) => Some(t.clone()),
+            AppError::UnknownRepo(r) => Some(r.clone()),
+            AppError::UnknownScript(s) => Some(s.clone()),
+            _ => None,
+        }
+    }
 }
 
 impl Serialize for AppError {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
-        let mut st = s.serialize_struct("AppError", 2)?;
+        let mut st = s.serialize_struct("AppError", 3)?;
         st.serialize_field("code", self.code())?;
         st.serialize_field("message", &self.to_string())?;
+        st.serialize_field("detail", &self.detail())?;
         st.end()
     }
 }

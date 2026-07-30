@@ -1,7 +1,6 @@
 import { useState } from 'react'
 import { GitBranch, Moon, Search, SquareTerminal, Sun } from 'lucide-react'
 import { WindowControls } from './WindowControls'
-import { TerminalsMenu } from './TerminalsMenu'
 import { WorkspaceSwitcher } from '@/features/workspace/WorkspacePicker'
 import { Button } from '@/components/ui/button'
 import {
@@ -82,8 +81,6 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
           <span>Search repos, branches, scripts</span>
           <KeyCap>⌘K</KeyCap>
         </button>
-
-        <TerminalsMenu />
 
         <Button
           variant="waOutline"

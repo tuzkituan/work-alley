@@ -24,6 +24,22 @@ pub struct Config {
     /// Most recently opened workspaces, newest first.
     #[serde(default)]
     pub recent_roots: Vec<PathBuf>,
+    /// When first-run onboarding was finished or skipped. `None` means never.
+    ///
+    /// Here rather than in webview storage: clearing site data must not bring a
+    /// takeover screen back on a machine that is plainly set up. A timestamp rather
+    /// than a bool so it is possible to tell *when* — and so a future build can decide
+    /// to ask again after a long enough gap without a migration.
+    #[serde(default)]
+    pub onboarding_done_unix: Option<i64>,
+    /// `workspace_root` came from `WORK_ALLEY_ROOT`, not from the saved config.
+    ///
+    /// Not persisted — it describes this process's environment, and a saved `true`
+    /// would outlive the variable that justified it. Startup reads it to tell an
+    /// explicit instruction apart from a remembered choice: the env var opens a
+    /// workspace, the saved folder is only offered.
+    #[serde(skip)]
+    pub root_forced: bool,
 }
 
 impl Config {
@@ -41,6 +57,8 @@ impl Config {
             port_overrides: BTreeMap::new(),
             max_log_lines_per_run: 5_000,
             recent_roots: Vec::new(),
+            onboarding_done_unix: None,
+            root_forced: false,
         }
     }
 
@@ -63,6 +81,7 @@ impl Config {
                 Ok(mut c) => {
                     if let Some(f) = forced {
                         c.workspace_root = f;
+                        c.root_forced = true;
                     } else if !is_workspace(&c.workspace_root) {
                         c.workspace_root = fallback_root.unwrap_or_default();
                     }
@@ -70,10 +89,16 @@ impl Config {
                 }
                 Err(e) => {
                     log::warn!("config.json unreadable ({e}); using defaults");
-                    Config::defaults(forced.clone().or(fallback_root).unwrap_or_default())
+                    let mut c = Config::defaults(forced.clone().or(fallback_root).unwrap_or_default());
+                    c.root_forced = forced.is_some();
+                    c
                 }
             },
-            Err(_) => Config::defaults(forced.or(fallback_root).unwrap_or_default()),
+            Err(_) => {
+                let mut c = Config::defaults(forced.clone().or(fallback_root).unwrap_or_default());
+                c.root_forced = forced.is_some();
+                c
+            }
         }
     }
 
@@ -124,5 +149,60 @@ impl ConfigPatch {
         if let Some(v) = self.port_overrides {
             c.port_overrides = v;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A config written by a build that predates `onboarding_done_unix`.
+    ///
+    /// The regression this guards is nasty and silent: `load` falls back to *full
+    /// defaults* on any deserialize error, so a field added without `serde(default)`
+    /// would throw away the user's recent workspaces and every per-repo override
+    /// without saying a word.
+    #[test]
+    fn an_older_config_loads_with_its_contents_intact() {
+        let dir = std::env::temp_dir().join(format!("wa-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = r#"{
+            "workspaceRoot": "/nonexistent",
+            "staleDays": 9,
+            "scanConcurrency": 8,
+            "recentCommitLimit": 30,
+            "maxLogLinesPerRun": 5000,
+            "recentRoots": ["/tmp/one", "/tmp/two"],
+            "portOverrides": { "fe/web#dev": 5173 }
+        }"#;
+        std::fs::write(dir.join("config.json"), json).unwrap();
+
+        let c = Config::load(&dir, None);
+
+        assert_eq!(
+            c.recent_roots,
+            vec![PathBuf::from("/tmp/one"), PathBuf::from("/tmp/two")],
+            "the fallback-to-defaults path ate the saved config"
+        );
+        assert_eq!(c.port_overrides.get("fe/web#dev"), Some(&5173));
+        // Absent means never onboarded, which is the honest reading of an old config.
+        assert_eq!(c.onboarding_done_unix, None);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn the_flag_survives_a_save_and_load() {
+        let dir = std::env::temp_dir().join(format!("wa-cfg-rt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut c = Config::defaults(PathBuf::from("/nonexistent"));
+        c.onboarding_done_unix = Some(1_700_000_000);
+        c.save(&dir).unwrap();
+
+        assert_eq!(
+            Config::load(&dir, None).onboarding_done_unix,
+            Some(1_700_000_000)
+        );
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

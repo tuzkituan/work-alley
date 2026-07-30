@@ -23,23 +23,35 @@ export type IpcErrorCode =
 
 export class IpcError extends Error {
   code: IpcErrorCode
-  constructor(code: IpcErrorCode, message: string) {
+  /**
+   * The specific subject of the code — for `TOOL_MISSING`, which tool.
+   *
+   * Carried separately so a handler can act on it. Parsing it out of `message` would
+   * be reading prose, which the code exists to avoid.
+   */
+  detail: string | null
+  constructor(code: IpcErrorCode, message: string, detail: string | null = null) {
     super(message)
     this.name = 'IpcError'
     this.code = code
+    this.detail = detail
   }
 }
 
 /**
- * Rust rejects with `{ code, message }`. Anything else — a panic, a missing
+ * Rust rejects with `{ code, message, detail }`. Anything else — a panic, a missing
  * command, state not yet managed — arrives as a bare string.
  */
 export function normalizeError(e: unknown): IpcError {
   if (e instanceof IpcError) return e
 
   if (e && typeof e === 'object' && 'code' in e && 'message' in e) {
-    const { code, message } = e as { code: string; message: string }
-    return new IpcError(code as IpcErrorCode, message)
+    const { code, message, detail } = e as {
+      code: string
+      message: string
+      detail?: string | null
+    }
+    return new IpcError(code as IpcErrorCode, message, detail ?? null)
   }
 
   const text = typeof e === 'string' ? e : e instanceof Error ? e.message : String(e)

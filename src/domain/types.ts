@@ -273,6 +273,26 @@ export interface Config {
   maxLogLinesPerRun: number
 }
 
+/**
+ * Whether this machine can do what the dashboard offers.
+ *
+ * Distinct from `toolsReady`, which only says the probe finished — it is true on a
+ * machine with nothing installed, which is why every button used to be live where
+ * every button failed. See src-tauri/src/readiness.rs.
+ */
+export interface Readiness {
+  toolsReady: boolean
+  /** Tool ids the app cannot work without. Empty means it can. */
+  missingRequired: string[]
+  gitIdentity: boolean
+  /**
+   * An ssh key in an agent, or a signed-in gh. Reported but deliberately *not* part
+   * of `ready`: cloning over HTTPS with a credential helper is a valid setup.
+   */
+  credentials: boolean
+  ready: boolean
+}
+
 export interface Bootstrap {
   appVersion: string
   /** False while the toolchain probe is still running. */
@@ -290,6 +310,9 @@ export interface Bootstrap {
   /** Editors found on this machine, for the "open in…" action. */
   editors: EditorInfo[]
   scripts: ScriptDescriptor[]
+  readiness: Readiness
+  /** First-run onboarding was finished, or explicitly skipped. Both count. */
+  onboardingCompleted: boolean
   /**
    * The shared package whose version drift is tracked, detected from what the
    * repos depend on. Null in a workspace with no shared package — the column is
@@ -435,7 +458,14 @@ export interface SetupItem {
  * How the step runs. `gitIdentity` is the only one rendered as a form; the rest
  * are one button.
  */
-export type SetupStepKind = 'system' | 'npmGlobal' | 'script' | 'node' | 'gitIdentity'
+export type SetupStepKind =
+  | 'system'
+  | 'npmGlobal'
+  | 'script'
+  | 'node'
+  | 'gitIdentity'
+  /** Two routes to one outcome, so this step has no command of its own. */
+  | 'credentials'
 
 export interface SetupStepStatus {
   id: string
@@ -567,6 +597,12 @@ export type ActionSpec =
   /** One of the repo's own package.json scripts. Validated against availableScripts. */
   | { kind: 'runScript'; ref: RepoRef; script: string }
   | { kind: 'push'; ref: RepoRef; force?: boolean }
+  /**
+   * The one action carrying free text. Safe because Rust passes argv straight to
+   * the child — never through a shell — so quotes and newlines in a message are
+   * just a message.
+   */
+  | { kind: 'commit'; ref: RepoRef; message: string; amend?: boolean }
   | { kind: 'stash'; ref: RepoRef; includeUntracked?: boolean }
   | { kind: 'stashPop'; ref: RepoRef }
   | { kind: 'discardChanges'; ref: RepoRef }

@@ -19,18 +19,14 @@ import { ConfirmActionDialog } from '@/features/actions/ConfirmActionDialog'
 import { CommandPalette } from '@/features/command/CommandPalette'
 import { WorkspaceWelcome } from '@/features/workspace/WorkspacePicker'
 import { Toolbox } from '@/features/toolbox/Toolbox'
-import {
-  MachineTerminalDock,
-  useHasMachineTerminals,
-} from '@/features/terminal/MachineTerminalDock'
 import { SetupPage } from '@/features/setup/SetupPage'
+import { MachinePage } from '@/features/setup/MachinePage'
+import { shouldOnboard } from '@/features/setup/should-onboard'
 import { useUiStore } from '@/stores/ui-store'
 import { useTerminalStore } from '@/stores/terminal-store'
-import { cn } from '@/lib/utils'
 import { api } from '@/ipc/commands'
 import { connectBridge } from '@/ipc/bridge'
 import { isTauri } from '@/ipc/guard'
-import { ActivityPanel } from '@/features/activity/ActivityPanel'
 import { InitWorkspace } from '@/features/workspace/InitWorkspace'
 import { learnNamePrefixes } from '@/domain/severity'
 import { useCategoryScan } from '@/hooks/use-category-scan'
@@ -96,14 +92,13 @@ function Dashboard() {
   // Read once: re-reading on every render would fight the drag.
   const [savedLayout] = useState(loadLayout)
   const page = useUiStore((s) => s.page)
-  const detailRepoId = useUiStore((s) => s.detailRepoId)
+  const setPage = useUiStore((s) => s.setPage)
   const { theme } = useTheme()
   const [setupMode, setSetupMode] = useState(false)
   const outputPanelRef = useRef<PanelImperativeHandle | null>(null)
   useGrowForTerminals(outputPanelRef)
   // Toolbox and setup installs run in a terminal session; the dock below only
   // exists once one has been opened.
-  const hasMachineTerms = useHasMachineTerminals()
 
   // get_bootstrap paints the entire chrome — real counts, every folder, the
   // real scripts list — before a single git process has run.
@@ -156,38 +151,46 @@ function Dashboard() {
   // The Toolbox and the setup page describe this machine, not the open folder, so
   // they take the whole window and work with no workspace at all — which is exactly
   // when someone needs to install their tools.
+  //
+  // Checked before `hasWorkspace` on purpose: that is what makes Guided setup
+  // reachable from the workspace picker on a machine that cannot clone yet.
   if (page === 'toolbox' || page === 'setup') {
     return (
       <TooltipProvider delayDuration={400}>
         <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
           <TopBar boot={boot} />
-          {/* Split only once something is running: installs happen in a terminal
-              tab, and until the first one opens the list should have the whole
-              window. Resizable rather than a fixed strip — a dnf transaction is a
-              lot of output, and a sudo prompt has to be readable. */}
-          {hasMachineTerms ? (
-            <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
-              <ResizablePanel id="machine-page" minSize="180px">
-                {/* The flex context both pages' `min-h-0 flex-1` scroller needs;
-                    outside the split they get it from the window column. */}
-                <div className="flex h-full min-h-0 flex-col">
-                  {page === 'setup' ? (
-                    <SetupPage toolsReady={boot?.toolsReady ?? false} />
-                  ) : (
-                    <Toolbox toolsReady={boot?.toolsReady ?? false} />
-                  )}
-                </div>
-              </ResizablePanel>
-              <ResizableHandle className="hover:bg-primary data-[dragging]:bg-primary" />
-              <ResizablePanel id="machine-term" defaultSize="340px" minSize="140px">
-                <MachineTerminalDock />
-              </ResizablePanel>
-            </ResizablePanelGroup>
-          ) : page === 'setup' ? (
-            <SetupPage toolsReady={boot?.toolsReady ?? false} />
-          ) : (
-            <Toolbox toolsReady={boot?.toolsReady ?? false} />
-          )}
+          <MachinePage>
+            {page === 'setup' ? (
+              <SetupPage toolsReady={boot?.toolsReady ?? false} />
+            ) : (
+              <Toolbox toolsReady={boot?.toolsReady ?? false} />
+            )}
+          </MachinePage>
+        </div>
+        <ConfirmActionDialog />
+        <Toaster theme={theme} position="bottom-left" />
+      </TooltipProvider>
+    )
+  }
+
+  // A machine that cannot do what the dashboard offers gets setup instead of a
+  // dashboard whose every button fails. See `shouldOnboard` for why each term of that
+  // predicate is there.
+  //
+  // After the explicit `page` branch above, so arriving from the banner still wins,
+  // and before `hasWorkspace`, so a bare machine is not first asked to choose a folder
+  // it has no git to scan.
+  if (boot && shouldOnboard(boot)) {
+    return (
+      <TooltipProvider delayDuration={400}>
+        <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
+          {/* ChromeBar, not TopBar: the workspace switcher and the bulk actions are
+              meaningless before the machine works, and a window with no way to close
+              it is the FatalError lesson. */}
+          <ChromeBar />
+          <MachinePage>
+            <SetupPage toolsReady={boot.toolsReady} firstRun />
+          </MachinePage>
         </div>
         <ConfirmActionDialog />
         <Toaster theme={theme} position="bottom-left" />
@@ -213,7 +216,15 @@ function Dashboard() {
                   setSetupMode(false)
                   // The folder only becomes a workspace once something is cloned
                   // into it, so switching is the last step, not the first.
-                  void api.setWorkspace(path).then((b) => qc.setQueryData(keys.bootstrap, b))
+                  void api.setWorkspace(path).then((b) => {
+                    qc.setQueryData(keys.bootstrap, b)
+                    // Select the first folder, so the dashboard lands mid-scan rather
+                    // than on "Pick a folder". Cloning into a workspace and then being
+                    // asked to pick something inside it was one hop too many, and
+                    // nothing said that clicking a rail folder is what starts a scan.
+                    const first = b.categories.find((c) => c.repoCount > 0)
+                    if (first) useUiStore.getState().setCategory(first.category)
+                  })
                 }}
               />
             ) : (
@@ -256,17 +267,13 @@ function Dashboard() {
 
           <ResizablePanel id="main" minSize="420px">
             <div className="flex h-full min-w-0 flex-col overflow-hidden">
-              {/* Hidden on a repo's detail page: that view replaces the centre
-                  panel entirely and has its own back button. */}
-              {!detailRepoId && <MainTabs />}
-              {page === 'activity' ? (
-                <ActivityPanel boot={boot} />
-              ) : (
-                <>
-                  <NeedsYouStrip />
-                  <RepoGrid boot={boot} />
-                </>
-              )}
+              {/* No tab strip: this panel has exactly one view. It used to carry a
+                  Repos/Activity pair, but Activity's two panels were both redundant —
+                  per-repo commits live on the detail page, and container state is a
+                  `docker ps` away in the output pane. Removing it gave the list back
+                  the strip's height. */}
+              <NeedsYouStrip />
+              <RepoGrid boot={boot} />
             </div>
           </ResizablePanel>
 
@@ -283,7 +290,13 @@ function Dashboard() {
           </ResizablePanel>
         </ResizablePanelGroup>
 
-        {boot && boot.warnings.length > 0 && <WarningBar warnings={boot.warnings} />}
+        {boot && (boot.warnings.length > 0 || boot.readiness.missingRequired.length > 0) && (
+          <WarningBar
+            warnings={boot.warnings}
+            missing={boot.readiness.missingRequired}
+            onFix={() => setPage('setup')}
+          />
+        )}
         {isPending && !boot && (
           <div className="flex-none border-t border-adaptive-200 px-4 py-1.5 text-[11px] text-adaptive-500">
             Starting up — resolving the toolchain…
@@ -309,8 +322,43 @@ function Dashboard() {
   )
 }
 
-function WarningBar({ warnings }: { warnings: string[] }) {
+/**
+ * Two modes, because two very different things end up here.
+ *
+ * A *missing required tool* is not a warning — it means the buttons above do not work,
+ * so it renders expanded, in error tone, and cannot be folded away. That case used to
+ * be indistinguishable from "no docker found": both went into one accordion that was
+ * collapsed by default, at the bottom of the window.
+ */
+function WarningBar({
+  warnings,
+  missing = [],
+  onFix,
+}: {
+  warnings: string[]
+  missing?: string[]
+  onFix?: () => void
+}) {
   const [open, setOpen] = useState(false)
+
+  if (missing.length > 0) {
+    return (
+      <div className="flex flex-none flex-wrap items-center gap-x-3 gap-y-1 border-t border-error-500/40 bg-red-500/[0.08] px-4 py-1.5">
+        <span className="text-[11px] font-semibold text-sev-err">
+          {missing.join(', ')} {missing.length > 1 ? 'are' : 'is'} not installed
+        </span>
+        <span className="min-w-0 flex-1 truncate text-[11px] text-adaptive-600">
+          Scanning and most repo actions need {missing.length > 1 ? 'them' : 'it'}.
+        </span>
+        {onFix && (
+          <Button variant="waPrimary" size="waXs" onClick={onFix}>
+            Finish setup
+          </Button>
+        )}
+      </div>
+    )
+  }
+
   return (
     <div className="flex-none border-t border-adaptive-200 bg-amber-500/[0.08] px-4 py-1.5">
       <button
@@ -332,48 +380,6 @@ function WarningBar({ warnings }: { warnings: string[] }) {
           ))}
         </ul>
       )}
-    </div>
-  )
-}
-
-// Workspace-scoped views only. The Toolbox is about the machine, not the open
-// folder, so it is a full-window page reached from the top bar instead.
-const TABS = [
-  { id: 'repos', label: 'Repos' },
-  { id: 'activity', label: 'Activity' },
-] as const
-
-/**
- * The centre panel's pages.
- *
- * A strip rather than a Radix Tabs: the panels are already independent scroll
- * containers driven by `page` in the store, and Tabs would add a second source of
- * truth for which one is showing.
- */
-function MainTabs() {
-  const page = useUiStore((s) => s.page)
-  const setPage = useUiStore((s) => s.setPage)
-
-  return (
-    <div
-      data-slot="main-tabs"
-      className="flex flex-none items-center gap-1 border-b border-adaptive-200 px-3 pt-2"
-    >
-      {TABS.map((t) => (
-        <button
-          key={t.id}
-          type="button"
-          onClick={() => setPage(t.id)}
-          className={cn(
-            'h-[30px] rounded-t-md border-b-2 px-2.5 text-xs font-semibold transition-colors',
-            page === t.id
-              ? 'border-primary text-adaptive-950'
-              : 'border-transparent text-adaptive-500 hover:text-adaptive-800'
-          )}
-        >
-          {t.label}
-        </button>
-      ))}
     </div>
   )
 }

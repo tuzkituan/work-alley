@@ -9,7 +9,8 @@
  *      default base colour uses — so nothing here is a bespoke brand colour.
  *   2. `--sev-*`: severity roles, so a dot, a pill and a stat value describing
  *      the same repo state can never disagree (see src/domain/severity.ts).
- *   3. JetBrains Mono for the output pane and every numeric column.
+ *   3. Archivo for the UI and JetBrains Mono for the output pane and every numeric
+ *      column. Both are variable and self-hosted — see the CSP note in theme.css.
  */
 
 :root {
@@ -62,7 +63,7 @@
   --primary-900: var(--primary);
   --primary-950: var(--primary);
 
-  --font-sans: 'IBM Plex Sans Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Archivo Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     monospace;
 
@@ -204,6 +205,21 @@
   background-clip: content-box;
 }
 
+/* The output pane's tab strip: three rows of 22px chips, their 4px gaps, and the
+ * row's own 6px padding.
+ *
+ * Written here rather than as an arbitrary Tailwind value because it is arithmetic
+ * over the chip height, and the two have to move together: a taller chip with a cap
+ * that did not follow would show two and a half rows.
+ *
+ * It wraps and scrolls *vertically*, which is also what lets it use `.wa-scroll` —
+ * that reserves a 10px track, and on the previous single-row horizontal version those
+ * 10px came out of the 22px chips and sliced every tab in half.
+ */
+.wa-tabwrap {
+  max-height: calc(3 * 22px + 2 * 4px + 2 * 6px);
+}
+
 /* The app fills the window; only inner panes scroll. */
 html,
 body,
@@ -320,6 +336,35 @@ body,
 .wa-detail {
   container-type: inline-size;
   container-name: detail;
+}
+
+/* --- output pane -----------------------------------------------------------
+ *
+ * Same reasoning as `.wa-detail`, one panel over: the output pane is resizable
+ * from 260px to 900px, so anything that has to adapt must measure the pane and not
+ * the window.
+ *
+ * `×N` — the number of repos a bulk run touches — survives every breakpoint. It is
+ * the fact the whole refactor exists to surface, so the age and the wordier labels
+ * go first instead.
+ */
+.wa-output {
+  container-type: inline-size;
+  container-name: output;
+}
+
+@container output (max-width: 340px) {
+  /* Chip ages: useful for telling two runs of the same command apart, but the
+     title and the repo count both matter more. */
+  .wa-o-age {
+    display: none;
+  }
+}
+
+@container output (max-width: 300px) {
+  .wa-o-narrow {
+    display: none;
+  }
 }
 
 .wa-pr-cols {

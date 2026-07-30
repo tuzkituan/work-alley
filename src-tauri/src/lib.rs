@@ -2,6 +2,7 @@ mod ansi;
 mod clone;
 mod commands;
 mod config;
+mod creds;
 mod detect;
 mod docker;
 mod error;
@@ -14,6 +15,7 @@ mod paths;
 mod pkg;
 mod procs;
 mod pty;
+mod readiness;
 mod scripts;
 mod setup;
 mod state;
@@ -160,10 +162,34 @@ pub fn run() {
                 .app_config_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
-            // The saved workspace wins; the guess is only for a first run. Having
-            // no workspace at all is a normal state now — the UI asks for one.
-            let cfg = config::Config::load(&app_dir, paths::guess_workspace_root());
-            let workspace_root = cfg.workspace_root.clone();
+            let mut cfg = config::Config::load(&app_dir, paths::guess_workspace_root());
+
+            // Launch with no workspace open, whatever was open last time.
+            //
+            // The saved folder is *offered* on the welcome screen, not opened: opening
+            // it immediately commits the app to scanning a folder the user has not
+            // asked about yet — on a 40-repo workspace that is seconds of git before
+            // the window is usable, against the wrong folder as often as the right one.
+            // `WORK_ALLEY_ROOT` still opens, because an env var is an instruction for
+            // this launch rather than a memory of an old one.
+            let workspace_root = if cfg.root_forced {
+                cfg.workspace_root.clone()
+            } else {
+                std::path::PathBuf::new()
+            };
+
+            // The folder we just declined to open has to stay reachable. It normally
+            // sits in `recent_roots` already, but a root that arrived from the env var
+            // or the first-run guess never went through `switch_workspace`, so it was
+            // never recorded — and without this it would simply disappear.
+            let saved = cfg.workspace_root.clone();
+            if !cfg.root_forced
+                && paths::is_workspace(&saved)
+                && cfg.recent_roots.first() != Some(&saved)
+            {
+                cfg.remember_root(saved);
+                let _ = cfg.save(&app_dir);
+            }
 
             // State is managed *now*, with an empty toolchain. Deferring this until
             // the probe finished created a race: the probe shells out to an
@@ -185,6 +211,11 @@ pub fn run() {
                     log::warn!("{w}");
                 }
                 state.set_toolchain(tc);
+                // Computed once here rather than per bootstrap: it costs a `git config`
+                // pair and an ssh-agent probe, and the answer only changes when the
+                // toolchain does — which is exactly when `refresh_toolchain` re-runs it.
+                let readiness = readiness::probe(&state.toolchain()).await;
+                state.set_readiness(readiness);
                 // The frontend waits for this before scanning, so it never asks for
                 // a tool we have not resolved yet.
                 let _ = handle.emit(events::TOOLS_READY, ());
@@ -211,10 +242,14 @@ pub fn run() {
             commands::list_branches,
             commands::list_stashes,
             commands::file_diff,
+            commands::stage_paths,
+            commands::unstage_paths,
             commands::list_packages,
             commands::list_package_versions,
             commands::check_package_updates,
             commands::list_setup_plan,
+            commands::refresh_toolchain,
+            commands::complete_onboarding,
             commands::preview_checkout,
             commands::list_pull_requests,
             commands::list_changed_files,

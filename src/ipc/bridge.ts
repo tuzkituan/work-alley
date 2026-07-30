@@ -93,20 +93,27 @@ async function wire(qc: QueryClient) {
 
   on('run:started', ({ run }) => {
     useRunStore.getState().start(run)
-    // Point the output pane at the repo this run belongs to, so launching an
-    // action shows that repo's terminal rather than whatever was open.
-    if (run.ref) useUiStore.getState().setActiveRepo(repoId(run.ref))
-    // Swing the pane back to the log: you started a command to watch it, not to
-    // keep looking at a shell.
+    // Show what just started.
+    //
+    // Both halves are needed. The scope, because a run in another repo — or a bulk
+    // run, which belongs to the workspace — is filtered out of the pane you are
+    // looking at, so starting it appeared to do nothing. And clearing the active
+    // terminal, because a shell outranks a run in the view resolution: you started a
+    // command to watch it, not to keep looking at a prompt.
+    const ui = useUiStore.getState()
+    if (run.ref) ui.setActiveRepo(repoId(run.ref))
+    else ui.setOutputScope(null)
     useTerminalStore.getState().setActive(null)
   })
   on('run:output', ({ runId, lines }) => queueFor(runId).pushAll(lines))
-  on('run:exit', ({ runId, status, endedUnix }) => {
+  on('run:exit', ({ runId, status, endedUnix, lineCount, truncated }) => {
     queueFor(runId).flushNow()
     logQueues.delete(runId)
 
     const run = useRunStore.getState().runs.get(runId)
-    useRunStore.getState().exit(runId, status, endedUnix)
+    // The event has carried lineCount and truncated all along; the store used to
+    // drop them, so a finished run still reported the count it had at start.
+    useRunStore.getState().exit(runId, { status, endedUnix, lineCount, truncated })
     const title = run?.summary.title ?? 'Command'
 
     if (status.kind === 'exited' && status.code === 0) {
@@ -128,11 +135,7 @@ async function wire(qc: QueryClient) {
     // filesystem, and there is nothing to patch it with from here.
     const kind = run?.summary.kind
     if (kind === 'package' || kind === 'gitIdentity') {
-      void qc.invalidateQueries({ queryKey: keys.packages })
-      void qc.invalidateQueries({ queryKey: keys.setupPlan })
-      // An upgrade that just landed is the one thing that makes the "newer version
-      // available" answer wrong.
-      void qc.invalidateQueries({ queryKey: keys.packageUpdates })
+      void refreshMachineState(qc)
     }
 
     // Rescan only the repos this run touched, not the whole folder. `ref` is null
@@ -169,7 +172,11 @@ async function wire(qc: QueryClient) {
     const store = useTerminalStore.getState()
     store.open(term)
     store.setActive(term.termId)
-    if (term.repo) useUiStore.getState().setActiveRepo(repoId(term.repo))
+    // Same as run:started: a session opened at workspace level is invisible from a
+    // repo-scoped pane, so the scope has to follow it or the new tab never shows.
+    const ui = useUiStore.getState()
+    if (term.repo) ui.setActiveRepo(repoId(term.repo))
+    else ui.setOutputScope(null)
   })
   // Deliberately NOT through createFrameQueue, unlike run:output right above.
   // That helper exists to collapse store writes and React renders; terminal
@@ -187,9 +194,7 @@ async function wire(qc: QueryClient) {
     // above never fires for them. Same three queries, same reason: what is on this
     // machine just changed.
     if (tab?.kind === 'package') {
-      void qc.invalidateQueries({ queryKey: keys.packages })
-      void qc.invalidateQueries({ queryKey: keys.setupPlan })
-      void qc.invalidateQueries({ queryKey: keys.packageUpdates })
+      void refreshMachineState(qc)
       const title = tab.title
       if (code === 0) toast.success(`${title} finished`)
       // Not an error toast: a package manager exits non-zero for "nothing to do"
@@ -199,15 +204,19 @@ async function wire(qc: QueryClient) {
     }
   })
 
-  // Patch, never invalidate: invalidating means an IPC round trip and a flicker
-  // through a loading state on every container or dev-server event.
+  // Patched, never invalidated: invalidating means an IPC round trip and a flicker
+  // through a loading state on every dev-server event.
+  //
+  // The rows read devServer off their scan row, so that is what has to be patched —
+  // otherwise a started server would not appear until the next rescan. The
+  // `keys.devServers` cache this also used to fill had one reader, the Local services
+  // panel, and went with it.
   on('dev:changed', ({ servers }) => {
-    qc.setQueryData(keys.devServers, servers)
-    // The cards read devServer off their scan row, so that has to be patched too
-    // — otherwise a started server would not appear until the next rescan.
     useScanStore.getState().setDevServers(servers)
   })
-  on('docker:changed', ({ status }) => qc.setQueryData(keys.docker, status))
+  // `docker:changed` is deliberately unhandled. Rust still emits it, and a future
+  // container view can listen again — but nothing reads container state today, so a
+  // handler filling a cache with no reader is just code that looks alive.
 
   // The probe can take seconds (it runs an interactive shell to pick up nvm), so
   // bootstrap is re-read once it lands and the tool versions fill in.
@@ -232,4 +241,50 @@ async function wire(qc: QueryClient) {
     else if (level === 'warn') toast.warning(message)
     else toast(message)
   })
+
+  // Recover sessions that outlived the webview.
+  //
+  // Rust's pty registry is the only record of a live shell, and nothing read it — so
+  // a reload lost every terminal tab while the shells themselves kept running,
+  // unreachable. Deliberately after the listeners are attached, per the note at the
+  // top of this file: `open` is idempotent, so racing a live `term:opened` is
+  // harmless, whereas registering late would drop one.
+  //
+  // Nothing to restore for the contents — TerminalView replays the scrollback
+  // whenever it attaches to an empty buffer.
+  try {
+    // `restored: true` is what tells TerminalView to replay this session's
+    // scrollback. A live `term:opened` must never set it — see TermTab.restored.
+    for (const t of await api.termList()) {
+      useTerminalStore.getState().open(t, { restored: true })
+    }
+  } catch {
+    // A pty-less platform or a backend that has not finished booting. The strip is
+    // simply empty, which is what it did before this existed.
+  }
+}
+
+/**
+ * Re-reads everything about this machine after something installed a tool.
+ *
+ * The probe comes **first**, and that ordering is the whole point. `setupPlan` is
+ * built from the backend's resolved tool paths, so invalidating it against a
+ * toolchain resolved at launch just refetched the same stale answer — which is why
+ * the setup page's next step kept refusing to run after Node was installed, and why
+ * "Re-check" appeared to do nothing.
+ *
+ * Deliberately not awaited by callers: a probe is two login shells and takes a
+ * moment, and nothing else in the exit handler depends on it.
+ */
+async function refreshMachineState(qc: QueryClient): Promise<void> {
+  try {
+    await api.refreshToolchain()
+  } catch {
+    // A failed probe leaves the previous one in place, which is strictly better than
+    // nothing; the invalidations below are still worth doing.
+  }
+  // `bootstrap` too, because the tool list and the readiness it implies live there.
+  for (const key of [keys.bootstrap, keys.packages, keys.setupPlan, keys.packageUpdates]) {
+    void qc.invalidateQueries({ queryKey: key })
+  }
 }

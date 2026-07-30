@@ -22,6 +22,7 @@ import type {
   RunSummary,
   ScanOptions,
   SetupPlan,
+  ToolInfo,
   StashEntry,
   TermInfo,
   UpdateReport,
@@ -68,7 +69,27 @@ export const api = {
    */
   fileDiff: (repo: RepoRef, path: string, staged: boolean) =>
     call<string>('file_diff', { repo, path, staged }),
+  /**
+   * Index-only, and so deliberately not an ActionSpec: staging changes neither the
+   * working tree nor history, and a confirmation dialog per file click would make
+   * the feature unusable. Both return the repo's fresh changed-file list, so the
+   * panel updates from the authoritative answer instead of guessing.
+   */
+  stagePaths: (repo: RepoRef, paths: string[], all = false) =>
+    call<ChangedFile[]>('stage_paths', { repo, paths, all }),
+  unstagePaths: (repo: RepoRef, paths: string[], all = false) =>
+    call<ChangedFile[]>('unstage_paths', { repo, paths, all }),
   listPackages: () => call<PackageStatus[]>('list_packages'),
+  /**
+   * Re-runs the toolchain probe.
+   *
+   * Call this after anything installs a tool. Without it the backend's resolved
+   * paths are whatever they were at launch, so the setup page's next step keeps
+   * refusing to run against a tool that is already on disk.
+   */
+  refreshToolchain: () => call<ToolInfo[]>('refresh_toolchain'),
+  /** Records first-run onboarding as over. Skipping counts, deliberately. */
+  completeOnboarding: () => call<Bootstrap>('complete_onboarding'),
   /** The first-run setup path: every step, in order, with what is already done. */
   listSetupPlan: () => call<SetupPlan>('list_setup_plan'),
   /** Read-only: what a checkout would do, per repo. `branch` null = each default. */

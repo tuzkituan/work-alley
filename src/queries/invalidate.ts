@@ -38,6 +38,12 @@ export function staleKeysFor(kind: string, id: RepoId): readonly unknown[][] {
     case 'fetchMany':
       return [commits, branches, ...always]
 
+    // A commit empties the index and moves HEAD, so the file list, the log and the
+    // branch's ahead count have all moved. Not `prs`: a local commit cannot change
+    // what GitHub thinks, and that key is a network round trip.
+    case 'commit':
+      return [changed, commits, branches, ...always]
+
     case 'stash':
     case 'stashPop':
     case 'discardChanges':

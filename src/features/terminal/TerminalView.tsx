@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react'
 import { api } from '@/ipc/commands'
 import { b64ToBytes } from '@/lib/b64'
+import { useTerminalStore } from '@/stores/terminal-store'
 import { useUiStore } from '@/stores/ui-store'
 import { buildTermTheme } from './term-theme'
 import { drainPending, ensureTerm } from './xterm-instance'
@@ -25,6 +26,11 @@ export function TerminalView({ termId }: { termId: string }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const focusRef = useRef<() => void>(() => {})
   const fontSize = useUiStore((s) => s.termFontSize)
+  // Read through a ref so the effect does not re-run when the flag settles, and does
+  // not need it in its dependency list.
+  const restored = useTerminalStore((s) => s.tabs.get(termId)?.restored ?? false)
+  const restoredRef = useRef(restored)
+  restoredRef.current = restored
 
   useEffect(() => {
     const container = containerRef.current
@@ -64,10 +70,15 @@ export function TerminalView({ termId }: { termId: string }) {
       handle.term.focus()
     })
 
-    // Only needed after a full webview reload (a dev HMR): the module cache
-    // covers every in-session remount, so an instance that already has content
-    // must not be replayed over.
-    if (handle.term.buffer.active.length <= 1) {
+    // Only for a session recovered from the backend — one that predates this
+    // webview, whose output was emitted to a frontend that no longer exists.
+    //
+    // The buffer check alone was not enough, and got this wrong in the one case that
+    // matters most. A *brand-new* terminal also has an empty buffer, so it asked for
+    // the snapshot too; the reply landed a round trip later and was written over the
+    // prompt and any keystrokes that had arrived live in the meantime. Typing quickly
+    // into a fresh shell duplicated characters.
+    if (restoredRef.current && handle.term.buffer.active.length <= 1) {
       api
         .termScrollback(termId)
         .then((b64) => {

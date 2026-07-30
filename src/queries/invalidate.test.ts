@@ -38,6 +38,15 @@ describe('staleKeysFor', () => {
     }
   })
 
+  it('refetches the log and the branch after a commit, but not the PRs', () => {
+    // A commit empties the index, moves HEAD and changes the branch's ahead count —
+    // so three of the four per-repo views moved. `prs` did not: GitHub cannot know
+    // about a local commit, and that key is a network round trip.
+    const h = heads('commit')
+    expect(h.sort()).toEqual(['branches', 'changedFiles', 'repoCommits', 'runs'].sort())
+    expect(h).not.toContain('prs')
+  })
+
   it('scopes keys to the repo it was given', () => {
     expect(staleKeysFor('pull', 'fe/web')).toEqual(
       expect.arrayContaining([['changedFiles', 'fe/web']])

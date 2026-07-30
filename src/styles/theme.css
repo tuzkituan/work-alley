@@ -2,7 +2,7 @@
 @import 'tw-animate-css';
 
 /* Self-hosted variable fonts — no CDN, so `font-src 'self'` in the CSP suffices. */
-@import '@fontsource-variable/ibm-plex-sans';
+@import '@fontsource-variable/archivo';
 @import '@fontsource-variable/jetbrains-mono';
 
 @import './shadcn-theme.css';

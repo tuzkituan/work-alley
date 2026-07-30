@@ -325,7 +325,7 @@ pub async fn list(tc: &Toolchain) -> Vec<PackageStatus> {
     out
 }
 
-fn search_dirs(tc: &Toolchain) -> Vec<PathBuf> {
+pub(crate) fn search_dirs(tc: &Toolchain) -> Vec<PathBuf> {
     let mut dirs: Vec<PathBuf> = std::env::split_paths(&tc.path_env).collect();
     if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
         for extra in [".local/bin", ".cargo/bin", ".bun/bin"] {
@@ -344,7 +344,7 @@ fn search_dirs(tc: &Toolchain) -> Vec<PathBuf> {
     dirs
 }
 
-fn which_in(dirs: &[PathBuf], bin: &str) -> Option<PathBuf> {
+pub(crate) fn which_in(dirs: &[PathBuf], bin: &str) -> Option<PathBuf> {
     dirs.iter().map(|d| d.join(bin)).find(|c| is_exec(c))
 }
 

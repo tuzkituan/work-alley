@@ -182,10 +182,22 @@ export function WorkspaceWelcome({
   const setPage = useUiStore((s) => s.setPage)
   const home = boot?.homeDir ?? null
   const recents = boot?.recentRoots ?? []
+  // A folder can only be opened if it contains repos, and repos can only be scanned
+  // with git. Asking for one on a machine with no git was the worst screen in the app:
+  // whatever the user picked, nothing would work and nothing said why.
+  const missing = boot?.readiness.missingRequired ?? []
 
   return (
     <div className="flex h-full items-center justify-center bg-background p-10">
       <div className="flex w-full max-w-lg flex-col items-center gap-5">
+        {/* Above the fold, not in a collapsed accordion at the bottom of a window this
+            screen does not even have. */}
+        {missing.length > 0 && (
+          <div className="w-full rounded-md border border-error-500/40 bg-red-500/[0.08] px-3 py-2 text-[11.5px] text-sev-err">
+            {missing.join(', ')} {missing.length > 1 ? 'are' : 'is'} not installed, so a
+            folder cannot be scanned yet.
+          </div>
+        )}
         <div className="flex size-11 items-center justify-center rounded-lg bg-primary text-lg font-bold text-primary-foreground">
           W
         </div>
@@ -241,14 +253,23 @@ export function WorkspaceWelcome({
             and a package manager before it can clone anything at all. Setup leads,
             because on a brand new machine that is the honest first move. */}
         <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1.5">
-          <button
-            type="button"
-            onClick={() => setPage('setup')}
-            className="flex items-center gap-1.5 text-[11px] font-semibold text-adaptive-700 hover:text-adaptive-950"
-          >
-            <ListChecks className="size-3" />
-            New machine? Install everything you need
-          </button>
+          {missing.length > 0 ? (
+            // Promoted from an 11px link to a real button, and given the reason. The
+            // links below the fold were the only route to setup from here.
+            <Button variant="waPrimary" size="wa" onClick={() => setPage('setup')}>
+              <ListChecks className="size-3.5" />
+              Install {missing.join(', ')} first
+            </Button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => setPage('setup')}
+              className="flex items-center gap-1.5 text-[11px] font-semibold text-adaptive-700 hover:text-adaptive-950"
+            >
+              <ListChecks className="size-3" />
+              New machine? Install everything you need
+            </button>
+          )}
           <button
             type="button"
             onClick={() => setPage('toolbox')}

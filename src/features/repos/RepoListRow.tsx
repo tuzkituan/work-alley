@@ -9,7 +9,7 @@ import { repoId, type RepoRef } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
-import { useRunStore } from '@/stores/run-store'
+import { busyLabel, useBusy } from '@/hooks/use-busy'
 import { shortPackageName, useTrackedPackage } from '@/hooks/use-tracked-package'
 import { RepoMenu } from './RepoMenu'
 
@@ -55,7 +55,7 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
   const active = useUiStore((s) => s.activeRepoId === id)
   const setActiveRepo = useUiStore((s) => s.setActiveRepo)
   const openDetail = useUiStore((s) => s.openDetail)
-  const running = useRunStore((s) => s.runningByScope[id] ?? 0)
+  const busy = useBusy(id)
   const run = useRunAction()
 
   const d = status ? derive(status, trackedLatest) : null
@@ -82,11 +82,13 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
       )}
 
       <div className="flex min-w-0 items-center gap-2">
-        {/* A live terminal for this repo, visible without opening any menu. */}
-        {running > 0 && (
+        {/* Anything happening in this repo, visible without opening a menu.
+            The label used to say "terminals" while counting runs, and counted no
+            bulk run at all — so a pull of this very repo left the dot dark. */}
+        {busy.total > 0 && (
           <span
             className="size-1.5 flex-none rounded-full bg-sev-info"
-            title={`${running} terminal${running === 1 ? '' : 's'} running here`}
+            title={`${busyLabel(busy)} here`}
             style={{ animation: 'wa-blink 1.4s step-end infinite' }}
           />
         )}

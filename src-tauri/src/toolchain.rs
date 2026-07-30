@@ -130,6 +130,13 @@ pub async fn probe() -> Toolchain {
         }
     }
 
+    // Pretend a tool is absent, for reviewing the not-ready paths on a machine that
+    // has everything. Applied after resolution and before `path_env`, so a faked tool is
+    // missing as far as every consumer is concerned.
+    for t in fake_missing() {
+        tc.paths.remove(&t);
+    }
+
     tc.path_env = build_path_env(&tc.paths);
 
     for t in TOOLS {
@@ -161,6 +168,30 @@ pub async fn probe() -> Toolchain {
     }
 
     tc
+}
+
+/// Tools to treat as absent, from `WORK_ALLEY_FAKE_MISSING=git,node`.
+///
+/// The only practical way to see the first-run takeover, the error banner and the
+/// blocked-step states on a development machine — each needs a tool to be genuinely
+/// missing, and uninstalling git to check a banner is not reasonable.
+///
+/// An env var rather than `cfg(debug_assertions)`, because it is wanted in a release dev
+/// build too. It only ever *removes*, so it cannot make a machine look more capable than
+/// it is.
+pub fn fake_missing() -> std::collections::BTreeSet<String> {
+    std::env::var("WORK_ALLEY_FAKE_MISSING")
+        .ok()
+        .map(|v| parse_fake_missing(&v))
+        .unwrap_or_default()
+}
+
+fn parse_fake_missing(raw: &str) -> std::collections::BTreeSet<String> {
+    raw.split(',')
+        .map(str::trim)
+        .filter(|t| !t.is_empty())
+        .map(str::to_string)
+        .collect()
 }
 
 /// Every resolved tool's directory, then the inherited PATH, deduplicated.
@@ -405,4 +436,30 @@ pub fn detect_editors(path_env: &str) -> Vec<crate::model::EditorInfo> {
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod fake_missing_tests {
+    use super::parse_fake_missing;
+
+    #[test]
+    fn parses_a_list_with_whitespace() {
+        let set = parse_fake_missing("git, node ,gh");
+        assert!(set.contains("git") && set.contains("node") && set.contains("gh"));
+        assert_eq!(set.len(), 3);
+    }
+
+    #[test]
+    fn an_empty_or_ragged_value_fakes_nothing() {
+        // A stray comma must not remove a tool named "".
+        assert!(parse_fake_missing("").is_empty());
+        assert!(parse_fake_missing(" , ,").is_empty());
+    }
+
+    #[test]
+    fn an_unknown_name_is_harmless() {
+        // It can only ever remove, so a typo costs nothing but the intended effect.
+        let set = parse_fake_missing("nosuchtool");
+        assert_eq!(set.len(), 1);
+    }
 }

@@ -592,6 +592,14 @@ html[data-skin='metro'] :focus-visible {
   outline-offset: 2px;
 }
 
+/* The command palette's search field is focused the moment the dialog opens, so
+   a ring on it says nothing the dialog itself does not already say — and with
+   the 2px offset above it reads as a stray border around the whole search row
+   rather than a ring on the field. The dialog frame is the focus affordance. */
+html[data-skin='metro'] [data-slot='command-input']:focus-visible {
+  outline: none;
+}
+
 /* ═══════════════════════════════════════════════════════ escape hatches ══ */
 
 /* Metro is already a high-contrast design — flat fills, real dividers, no soft

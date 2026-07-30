@@ -697,6 +697,15 @@ pub struct Bootstrap {
     /// neither is guaranteed.
     pub home_dir: Option<PathBuf>,
     pub warnings: Vec<String>,
+    /// Whether this machine can actually do what the dashboard offers.
+    ///
+    /// Not the same as `tools_ready`, which only says the probe finished — see
+    /// readiness.rs. A cached snapshot, refreshed by the probe rather than computed
+    /// here: the honest answer would mean 44 sequential `--version` subprocesses on
+    /// every bootstrap.
+    pub readiness: crate::readiness::Readiness,
+    /// First-run onboarding has been finished, or explicitly skipped. Both count.
+    pub onboarding_completed: bool,
 }
 
 // --- first-run setup --------------------------------------------------------
@@ -806,6 +815,19 @@ pub enum ActionSpec {
         /// Rewrite the remote branch with --force-with-lease.
         #[serde(default)]
         force: bool,
+    },
+    /// Commit whatever is staged in one repo.
+    ///
+    /// The message is caller-supplied — the one action whose argv carries free text.
+    /// That is safe because argv is passed to the child directly, never through a
+    /// shell, so a message containing quotes, newlines or `$(…)` is just a message.
+    Commit {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        message: String,
+        /// Replace the previous commit instead of adding one. Rewrites history.
+        #[serde(default)]
+        amend: bool,
     },
     Stash {
         #[serde(rename = "ref")]

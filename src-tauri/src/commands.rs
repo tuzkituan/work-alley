@@ -94,7 +94,23 @@ async fn build_bootstrap(state: &Arc<AppState>) -> AppResult<Bootstrap> {
         home_dir: dirs_home(),
         workspace_root: root,
         warnings,
+        // A clone of the cached snapshot. Computing it here would put a `git config`
+        // pair and an ssh-agent probe on every invalidation of this query.
+        readiness: state.readiness(),
+        onboarding_completed: onboarding_completed(&state.config()),
     })
+}
+
+/// Whether first-run onboarding is over.
+///
+/// `WORK_ALLEY_ONBOARDING=force` reports it as never done, which is the only practical
+/// way to review the first-run path on a machine that is already set up. Read on every
+/// call rather than cached, so it can be toggled without a rebuild.
+fn onboarding_completed(cfg: &crate::config::Config) -> bool {
+    if std::env::var("WORK_ALLEY_ONBOARDING").as_deref() == Ok("force") {
+        return false;
+    }
+    cfg.onboarding_done_unix.is_some()
 }
 
 /// The user's home directory, for abbreviating paths in the UI.
@@ -854,13 +870,12 @@ pub async fn run_action(
             Ok(String::new())
         }
         kind => {
-            // Only worth tagging when a run spans several repos; on a single-repo
-            // run the prefix is on every line and says nothing.
-            let line_repo = if pending.targets.len() > 1 {
-                pending.repo.as_ref().map(|r| r.key())
-            } else {
-                None
-            };
+            // The keys the emitter may attribute lines to. Previously this was a
+            // single string taken from `pending.repo` and only when
+            // `targets.len() > 1` — a condition no run can satisfy, since every bulk
+            // builder leaves `repo` unset. So the field was always None and the
+            // frontend's repo prefix was dead code.
+            let target_keys: Vec<String> = pending.targets.iter().map(|r| r.key()).collect();
             let run_id = procs::spawn_run(
                 &app,
                 SpawnSpec {
@@ -881,7 +896,7 @@ pub async fn run_action(
                     } else {
                         None
                     },
-                    line_repo,
+                    target_keys,
                 },
             )?;
 
@@ -1151,6 +1166,13 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
         }
 
         ActionSpec::SetupStep { id } => {
+            // Refuse a step whose own prerequisite is missing, with the reason the page
+            // already shows. Without this it failed later inside the planner with a
+            // worse message — "npm is not installed" for a step whose card says, in
+            // plain words, that Node has to come first.
+            if let Some(reason) = crate::setup::blocked_reason(&tc, &id).await {
+                return Err(AppError::Invalid(reason));
+            }
             let step = crate::setup::plan(&tc, &id)
                 .await
                 .map_err(AppError::Invalid)?;
@@ -1528,6 +1550,109 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
+        ActionSpec::Commit {
+            repo,
+            message,
+            amend,
+        } => {
+            let git = tc.require("git")?;
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+
+            let msg = message.trim();
+            if msg.is_empty() {
+                return Err(AppError::Invalid("a commit needs a message".into()));
+            }
+
+            if !crate::git::has_identity(&git, &cwd).await {
+                return Err(AppError::Invalid(
+                    "git does not know who you are yet — set your name and email in Guided setup"
+                        .into(),
+                ));
+            }
+
+            let changed = crate::git::changed_files(&git, &cwd)
+                .await
+                .map_err(AppError::Invalid)?;
+
+            // A conflicted file in the index commits the conflict markers along with
+            // it. git allows this and it is almost never what anyone means.
+            let conflicts = changed.iter().filter(|f| f.conflicted).count();
+            if conflicts > 0 {
+                return Err(AppError::Invalid(format!(
+                    "{} has {conflicts} unresolved conflict(s) — resolve them first",
+                    repo.key()
+                )));
+            }
+
+            let staged = changed.iter().filter(|f| f.staged).count();
+            // --amend with nothing staged is a legitimate operation: it rewrites the
+            // previous commit's message. Without it there is nothing to commit, and
+            // git's own error for that prints the whole status output.
+            if staged == 0 && !amend {
+                return Err(AppError::Invalid(format!(
+                    "nothing is staged in {} — stage a file first",
+                    repo.key()
+                )));
+            }
+
+            let branch = crate::git::current_branch(&git, &cwd).await;
+            let mut warnings = Vec::new();
+            if amend {
+                warnings.push(
+                    "Rewrites the previous commit. Do not amend anything already pushed."
+                        .to_string(),
+                );
+            }
+            warnings.push(match staged {
+                0 => "Nothing staged — only the message changes.".to_string(),
+                1 => "1 staged file will be committed.".to_string(),
+                n => format!("{n} staged files will be committed."),
+            });
+            let left = changed.iter().filter(|f| !f.staged && !f.untracked).count();
+            if left > 0 {
+                warnings.push(format!("{left} change(s) stay uncommitted."));
+            }
+
+            let mut argv = vec![git.display().to_string(), "commit".into()];
+            if amend {
+                argv.push("--amend".into());
+            }
+            // Two elements, never one interpolated string: this is the whole reason a
+            // free-text message is safe here.
+            argv.push("--message".into());
+            argv.push(msg.to_string());
+
+            // The subject only, and shortened: a commit message can be a paragraph,
+            // and this is a dialog title.
+            let subject: String = msg.lines().next().unwrap_or(msg).chars().take(50).collect();
+            Ok(Built {
+                kind: "commit".into(),
+                title: if amend {
+                    format!("Amend {} — {subject}", repo.key())
+                } else {
+                    format!("Commit {} — {subject}", repo.key())
+                },
+                description: match &branch {
+                    Some(b) => format!("Commits the staged changes onto {b}."),
+                    None => "Commits the staged changes as this repo's first commit.".into(),
+                },
+                argv,
+                cwd,
+                env: vec![],
+                // Amending rewrites history, which is a different kind of answer to
+                // "can I undo this" than adding a commit on top.
+                danger: if amend { Danger::Medium } else { Danger::Low },
+                warnings,
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
         ActionSpec::Stash {
             repo,
             include_untracked,
@@ -1714,7 +1839,17 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
         ActionSpec::Diff { repo, staged } => {
             let git = tc.require("git")?;
             let cwd = crate::paths::resolve_repo(&root, &repo)?;
-            let mut argv = vec![git.display().to_string(), "diff".into(), "--stat".into()];
+            // Stat *and* patch. This printed only `--stat` before, while the two
+            // places that offer it — the changes panel's "Diff…" chip and the
+            // truncation note under a long inline patch — both say it shows the
+            // whole patch. The summary leads, so the output still opens with the
+            // overview it used to be.
+            let mut argv = vec![
+                git.display().to_string(),
+                "diff".into(),
+                "--stat".into(),
+                "--patch".into(),
+            ];
             if staged {
                 argv.push("--staged".into());
             }
@@ -2651,8 +2786,12 @@ fn bulk_fetch_argv(git: &std::path::Path, root: &std::path::Path, refs: &[RepoRe
     let mut script = String::new();
     for r in refs {
         let p = crate::paths::repo_path(root, r);
+        // The `[..]` opener exists so the UI has an in-flight state per repo, the
+        // same as pull. Without it a fetch of 40 repos showed 40 queued rows that
+        // each flipped straight to done, and you could not see where it had got to.
         script.push_str(&format!(
-            "{git} -C {path} fetch --all --prune -q && echo \"[OK]   {key}\" || echo \"[FAIL] {key}\";\n",
+            "echo \"[..]   {key}\"; {git} -C {path} fetch --all --prune -q \
+             && echo \"[OK]   {key}\" || echo \"[FAIL] {key}\";\n",
             key = r.key(),
             git = git.display(),
             path = shell_single_quote(&p.display().to_string()),
@@ -2676,6 +2815,81 @@ pub async fn list_packages(state: State<'_, Arc<AppState>>) -> AppResult<Vec<Pac
 #[tauri::command]
 pub async fn check_package_updates(state: State<'_, Arc<AppState>>) -> AppResult<UpdateReport> {
     Ok(crate::packages::updates(&state.toolchain()).await)
+}
+
+/// Sets the onboarding flag, once, and persists it. Never fails a caller.
+fn mark_onboarded(state: &Arc<AppState>) {
+    let mut cfg = state.config();
+    if cfg.onboarding_done_unix.is_some() {
+        return;
+    }
+    cfg.onboarding_done_unix = Some(crate::git::now_unix());
+    state.set_config(cfg.clone());
+    if let Err(e) = cfg.save(&state.app_dir()) {
+        // A convenience flag is not worth failing anything over; the cost of losing it
+        // is one extra visit to a page that will say everything is already done.
+        log::warn!("could not save config: {e}");
+    }
+}
+
+/// Records that first-run onboarding is over — finished or skipped, both count.
+///
+/// Skipping has to be durable for the same reason finishing does: a takeover screen
+/// that returns on the next launch is one people learn to dismiss without reading.
+/// Whatever is still missing keeps showing in the dashboard's warning bar.
+#[tauri::command]
+pub async fn complete_onboarding(state: State<'_, Arc<AppState>>) -> AppResult<Bootstrap> {
+    // Idempotent: the first answer is the one that counts, so this does not move an
+    // existing timestamp.
+    mark_onboarded(state.inner());
+    build_bootstrap(&state).await
+}
+
+/// Re-runs the toolchain probe and republishes the result.
+///
+/// The setup page could not finish without this. `probe()` ran once at startup, so
+/// after the nvm and node steps put npm on disk, `tc.paths` still had no npm — and
+/// `plan_npm_group` kept refusing the very next step, js-tools, with "npm is not
+/// installed — install Node first" until the app was restarted. The probe resolves
+/// tools through a login *and* interactive shell (`-lic`), which is exactly what
+/// picks up the lines nvm's installer appends to your rc file, so re-running it is
+/// all that was needed.
+///
+/// Returns the fresh tool list so a caller can show it without a second round trip.
+#[tauri::command]
+pub async fn refresh_toolchain(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Vec<ToolInfo>> {
+    let st = state.inner().clone();
+
+    // Already probing: hand back what we have rather than queueing a second pair of
+    // login shells behind the first. Callers are events (a package terminal exiting)
+    // as well as clicks, so concurrent calls are the normal case, not the edge one.
+    if !st.begin_probe() {
+        return Ok(st.toolchain().to_infos());
+    }
+
+    let tc = crate::toolchain::probe().await;
+    st.set_toolchain(tc);
+    // Readiness is derived from the toolchain, so it has to be recomputed here or
+    // `get_bootstrap` would keep serving the pre-install answer.
+    let readiness = crate::readiness::probe(&st.toolchain()).await;
+    let ready = readiness.ready;
+    st.set_readiness(readiness);
+    st.end_probe();
+
+    // A machine that is already set up must never be asked to onboard. Recorded here
+    // rather than left to the frontend so it survives a launch on which the user never
+    // opens the setup page at all.
+    if ready && crate::paths::is_workspace(&st.workspace_root()) {
+        mark_onboarded(&st);
+    }
+
+    // The same event the startup probe emits, so every listener that already reacts
+    // to "the toolchain is known" reacts to it changing too.
+    let _ = app.emit(events::TOOLS_READY, ());
+    Ok(st.toolchain().to_infos())
 }
 
 /// The first-run setup path: every step, in order, with what is already done.
@@ -3055,6 +3269,99 @@ pub async fn list_changed_files(
     let git = state.toolchain().require("git")?;
     let path = crate::paths::resolve_repo(&root, &repo)?;
     crate::git::changed_files(&git, &path)
+        .await
+        .map_err(AppError::Invalid)
+}
+
+/// Moves paths into the index, and returns the fresh changed-file list.
+///
+/// A direct command rather than an `ActionSpec`, deliberately. The gate exists to
+/// put a confirmation in front of anything that changes the working tree or history;
+/// staging changes neither — it only sorts what is already there, and `git reset`
+/// puts it straight back. Routing it through the gate would mean a modal dialog per
+/// file click, which is the whole feature made unusable.
+///
+/// What it keeps from the gate is the part that matters: the argv is built here, and
+/// every caller-supplied path is checked against the repo's own changed-file list
+/// first — the same closed-set invariant `file_diff` holds. A path outside the repo,
+/// or a `../` escape, simply is not in that list.
+///
+/// Returning the new list rather than nothing lets the panel update from the
+/// authoritative answer instead of guessing what staging did.
+#[tauri::command]
+pub async fn stage_paths(
+    repo: RepoRef,
+    paths: Vec<String>,
+    all: bool,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Vec<ChangedFile>> {
+    index_op(repo, paths, all, true, state).await
+}
+
+/// Takes paths back out of the index. See `stage_paths`.
+#[tauri::command]
+pub async fn unstage_paths(
+    repo: RepoRef,
+    paths: Vec<String>,
+    all: bool,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Vec<ChangedFile>> {
+    index_op(repo, paths, all, false, state).await
+}
+
+async fn index_op(
+    repo: RepoRef,
+    paths: Vec<String>,
+    all: bool,
+    stage: bool,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Vec<ChangedFile>> {
+    let root = state.workspace_root();
+    let git = state.toolchain().require("git")?;
+    let cwd = crate::paths::resolve_repo(&root, &repo)?;
+
+    let changed = crate::git::changed_files(&git, &cwd)
+        .await
+        .map_err(AppError::Invalid)?;
+
+    if !all {
+        if paths.is_empty() {
+            return Err(AppError::Invalid("no paths given".into()));
+        }
+        // The closed set. Checked before anything reaches git, so a caller cannot
+        // name a path this repo has not reported as changed.
+        for p in &paths {
+            if !changed.iter().any(|f| &f.path == p) {
+                return Err(AppError::Invalid(format!(
+                    "{p} is not a changed file in {}",
+                    repo.key()
+                )));
+            }
+        }
+    }
+
+    let mut argv: Vec<&str> = match (stage, all) {
+        // -A so a deletion and an untracked file stage like any other change.
+        (true, true) => vec!["add", "-A"],
+        (true, false) => vec!["add"],
+        // Plain `git reset` is a mixed reset against HEAD: it empties the index and
+        // leaves every file exactly as it is on disk. Chosen over `restore --staged`
+        // because it also works in a repo whose HEAD is unborn, which is precisely
+        // the repo someone is staging a first commit in.
+        (false, true) => vec!["reset", "--quiet"],
+        (false, false) => vec!["reset", "--quiet"],
+    };
+    if !all {
+        // `--` so a file named like a revision is still treated as a path.
+        argv.push("--");
+        argv.extend(paths.iter().map(String::as_str));
+    }
+
+    crate::git::git_output_public(&git, &cwd, &argv)
+        .await
+        .map_err(AppError::Invalid)?;
+
+    crate::git::changed_files(&git, &cwd)
         .await
         .map_err(AppError::Invalid)
 }

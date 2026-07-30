@@ -1,48 +1,44 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
-import { ArrowDown, Plus, X } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { SectionLabel, StatusDot } from '@/components/wa/primitives'
-import { cn } from '@/lib/utils'
 import { api } from '@/ipc/commands'
-import { runScope, useRunStore, type Run } from '@/stores/run-store'
+import { useRunStore } from '@/stores/run-store'
 import { useScanStore } from '@/stores/scan-store'
-import { termScope, useTerminalStore, type TermTab } from '@/stores/terminal-store'
+import { useTerminalStore } from '@/stores/terminal-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
-import { useContainerRuntime, useHeadlessScripts } from '@/hooks/use-bootstrap'
 import { TerminalView } from '@/features/terminal/TerminalView'
 import { applyFontSize } from '@/features/terminal/xterm-instance'
 import { useTermPalette } from '@/features/terminal/use-term-palette'
-import { SEVERITY_CLASS } from './severity-class'
+import { runStatusLabel } from '@/domain/run-status'
+import type { RepoRef } from '@/domain/types'
 import { estimateGeometry } from './term-geometry'
-import type { LogLine, RepoRef } from '@/domain/types'
-import type { Tone } from '@/domain/severity'
+import { activityLabel, computeActivity, scopesToOffer } from './activity'
+import { buildTabs, type OutputView } from './output-view'
+import { isBulkKind } from './bulk-log'
+import { requestCancel } from './cancel-run'
+import { useCancelKey } from './use-cancel-key'
+import { BulkProgress } from './BulkProgress'
+import { EmptyLog, LogView } from './LogView'
+import { QuickActions } from './QuickActions'
+import { ScopeMenu, type ScopeOption } from './ScopeMenu'
+import { TabStrip } from './TabStrip'
 
 /**
- * Compact age, for the run chips: `now`, `12s`, `4m`, `2h`.
+ * Runs and terminals for one scope.
  *
- * Not a wall-clock time: "started 4m ago" answers "which one did I just start",
- * which is the actual question when several runs of the same command are listed.
+ * A shell now: the tab model lives in `output-view.ts`, "what is running" in
+ * `activity.ts`, per-repo bulk progress in `bulk-log.ts`, and each region in its own
+ * component. The file previously held all of it at ~570 lines, with three separate
+ * selector surfaces and two selection variables that could disagree about what was
+ * showing.
  */
-function ago(startedUnix: number): string {
-  const secs = Math.max(0, Math.floor(Date.now() / 1000) - startedUnix)
-  if (secs < 5) return 'now'
-  if (secs < 60) return `${secs}s`
-  if (secs < 3600) return `${Math.floor(secs / 60)}m`
-  if (secs < 86_400) return `${Math.floor(secs / 3600)}h`
-  return `${Math.floor(secs / 86_400)}d`
-}
-
-/** One 200KB stack-trace line would otherwise measure into a giant row. */
-const MAX_LINE_CHARS = 2_000
-
 export function OutputPane() {
   const runs = useRunStore((s) => s.runs)
+  const runOrder = useRunStore((s) => s.order)
   const activeRunId = useRunStore((s) => s.activeRunId)
-  const setActive = useRunStore((s) => s.setActive)
-  const scripts = useHeadlessScripts()
-  const runtime = useContainerRuntime()
+  const setActiveRun = useRunStore((s) => s.setActive)
   const clear = useRunStore((s) => s.clear)
   const dismiss = useRunStore((s) => s.dismiss)
   const run = useRunAction()
@@ -61,62 +57,66 @@ export function OutputPane() {
     applyFontSize(termFontSize)
   }, [termFontSize])
 
-  // The pane is scoped: the selected repo's own terminal, or the workspace scope
-  // for runs that belong to no single repo (scripts, bulk pull, gh pr list).
-  const activeRepoId = useUiStore((s) => s.activeRepoId)
-  const [scope, setScope] = useState<string | null>(activeRepoId)
+  // The pane is scoped: the selected repo's own runs and terminals, or the workspace
+  // scope for anything that belongs to no single repo.
+  // In the store, not local state: the bridge moves it when a run or a terminal
+  // spawns, so the pane shows the thing that just started even when it belongs to a
+  // scope you were not looking at.
+  const scope = useUiStore((s) => s.outputScope)
+  const setScope = useUiStore((s) => s.setOutputScope)
+  const setActiveRepo = useUiStore((s) => s.setActiveRepo)
 
-  // Follow the selection, but let an explicit scope switch stick until the
-  // selection actually changes again.
-  useEffect(() => {
-    setScope(activeRepoId)
-  }, [activeRepoId])
-
-  // Computed, not selected: a selector returning a fresh array on every call
-  // breaks useSyncExternalStore's snapshot caching.
-  const order = useRunStore((s) => s.order)
-  const scopeIds = useMemo(
-    () =>
-      order.filter((id) => {
-        const r = runs.get(id)
-        return r ? runScope(r) === scope : false
-      }),
-    [order, runs, scope]
+  // Computed, not selected: a selector returning a fresh object on every call breaks
+  // useSyncExternalStore's snapshot caching.
+  const { runTabs, termTabs, shown } = useMemo(
+    () => buildTabs({ runs, runOrder, tabs, termOrder, scope, activeRunId, activeTermId }),
+    [runs, runOrder, tabs, termOrder, scope, activeRunId, activeTermId]
   )
 
-  // Keep the shown run inside the current scope.
-  const activeInScope = activeRunId && scopeIds.includes(activeRunId) ? activeRunId : null
-  const shownId = activeInScope ?? scopeIds[scopeIds.length - 1] ?? null
-  const active = shownId ? runs.get(shownId) : undefined
-  // Newest first: with several runs of the same command in one repo, the one you
-  // just started is the one you want, and it was previously last in a wrapped grid.
-  const recent = useMemo(() => [...scopeIds].reverse(), [scopeIds])
-  const finished = useMemo(
-    () => recent.filter((id) => runs.get(id)?.summary.status.kind !== 'running'),
-    [recent, runs]
+  const activity = useMemo(
+    () => computeActivity(runs.values(), tabs.values(), scope),
+    [runs, tabs, scope]
+  )
+  const allActivity = useMemo(
+    () => computeActivity(runs.values(), tabs.values()),
+    [runs, tabs]
   )
 
-  // Terminal tabs are scoped exactly like runs, so one scope toggle governs both.
-  const scopeTerms = useMemo(
-    () =>
-      termOrder.filter((id) => {
-        const t = tabs.get(id)
-        return t ? termScope(t) === scope : false
-      }),
-    [termOrder, tabs, scope]
-  )
-  // Showing a terminal from another repo would contradict the scope button.
-  const shownTermId = activeTermId && scopeTerms.includes(activeTermId) ? activeTermId : null
-  const shownTerm = shownTermId ? tabs.get(shownTermId) : undefined
+  const shownRun = shown?.kind === 'run' ? runs.get(shown.id) : undefined
+  const shownTerm = shown?.kind === 'term' ? tabs.get(shown.id) : undefined
 
-  const scopeLabel = scope
-    ? (scope.split('/')[1] ?? scope)
-    : 'workspace'
+  // Only for the run on screen, and never while a shell is showing — there, Ctrl+C
+  // belongs to the shell.
+  useCancelKey(shownTerm ? undefined : shownRun)
 
-  // The `ref` a new terminal should belong to. Looked up rather than parsed out
-  // of the scope id, because a category or a repo name can itself contain a
-  // slash and splitting would silently open the shell in the wrong folder.
+  const scopeLabel = scope ? (scanRepos.get(scope)?.ref.name ?? scope) : 'workspace'
+
+  // Looked up rather than parsed out of the scope id, because a category or a repo
+  // name can itself contain a slash and splitting would open the shell in the wrong
+  // folder.
   const scopeRef: RepoRef | null = (scope ? scanRepos.get(scope)?.ref : null) ?? null
+
+  // Which repo the log is filtered to, from a bulk progress row. Reset whenever the
+  // shown view changes — a filter left over from another run reads as an empty log.
+  const [repoFilter, setRepoFilter] = useState<string | null>(null)
+  useEffect(() => {
+    setRepoFilter(null)
+  }, [shown?.kind, shown?.id])
+
+  // Only scopes with something in them, plus the current one. A repo with no runs
+  // and no shells has an empty pane, so offering every repo made the menu long and
+  // most of it a dead end.
+  const scopeOptions: ScopeOption[] = useMemo(() => {
+    return scopesToOffer(allActivity, scope).map((id) => {
+      const a = computeActivity(runs.values(), tabs.values(), id)
+      return {
+        id,
+        label: id ? (scanRepos.get(id)?.ref.name ?? id) : 'workspace',
+        runs: a.runs,
+        terms: a.terms,
+      }
+    })
+  }, [allActivity, scope, runs, tabs, scanRepos])
 
   const openTerminal = (external = false) =>
     run({
@@ -126,32 +126,63 @@ export function OutputPane() {
       size: estimateGeometry(bodyRef.current, termFontSize),
     })
 
+  const select = (view: OutputView) => {
+    if (view.kind === 'term') {
+      setActiveTerm(view.id)
+      return
+    }
+    // Selecting a run means "show the log", which is what activeTermId: null encodes.
+    setActiveTerm(null)
+    setActiveRun(view.id)
+  }
+
+  const close = (view: OutputView) => {
+    if (view.kind === 'term') {
+      closeTerm(view.id)
+      return
+    }
+    dismiss(view.id)
+    void api.dismissRun(view.id).catch(() => {})
+  }
+
+  const summary = activityLabel(activity)
+
   return (
-    <div className="flex h-full flex-col border-l border-adaptive-200 bg-adaptive-50">
+    <div className="wa-output flex h-full flex-col border-l border-adaptive-200 bg-adaptive-50">
       <div className="flex h-10 flex-none items-center gap-2 border-b border-adaptive-200 px-2.5">
         <SectionLabel>Output</SectionLabel>
-        <button
-          type="button"
-          onClick={() => setScope(scope === null ? activeRepoId : null)}
-          title={
-            scope === null
-              ? 'Showing workspace-level runs. Click to switch to the selected repo.'
-              : 'Showing this repo. Click to switch to workspace-level runs.'
-          }
-          className="max-w-[130px] truncate rounded-sm border border-adaptive-200 px-1.5 py-0.5 font-mono text-[11px] text-adaptive-700 hover:border-adaptive-400"
-        >
-          {scopeLabel}
-        </button>
-        <span className="wa-num truncate font-mono text-[11px] text-adaptive-400">
-          {shownTerm ? termStatusLabel(shownTerm) : active ? statusLabel(active) : 'idle'}
-        </span>
+        <ScopeMenu scope={scope} label={scopeLabel} options={scopeOptions} onSelect={(id) => {
+          setScope(id)
+          // Keep the pane and the repo table pointing at the same thing.
+          if (id) setActiveRepo(id)
+        }} />
+
+        {/* What is running, across everything in this scope — not the status of the
+            one run that happens to be showing, which is all this could say before and
+            was always in the singular. */}
+        {summary ? (
+          <span className="flex min-w-0 items-center gap-1.5 font-mono text-[11px] text-adaptive-600">
+            <StatusDot
+              tone="info"
+              size={5}
+              style={{ animation: 'wa-blink 1.4s step-end infinite' }}
+            />
+            <span className="truncate">{summary}</span>
+          </span>
+        ) : (
+          <span className="font-mono text-[11px] text-adaptive-400">
+            {shownRun ? runStatusLabel(shownRun.summary.status) : 'idle'}
+          </span>
+        )}
+
         <div className="flex-1" />
-        {/* Terminal-specific controls replace the run controls wholesale: Cancel,
-            Dismiss and Clear all act on a run, and none of them means anything
-            while a shell is showing. */}
+
+        {/* Terminal controls replace the run controls wholesale: Cancel, Dismiss and
+            Clear all act on a run, and none of them means anything while a shell is
+            showing. */}
         {shownTerm ? (
           <>
-            <span className="flex items-center rounded-sm border border-adaptive-200 font-mono text-[11px] text-adaptive-500">
+            <span className="wa-o-narrow flex items-center rounded-sm border border-adaptive-200 font-mono text-[11px] text-adaptive-500">
               <button
                 type="button"
                 aria-label="Smaller terminal text"
@@ -169,20 +200,18 @@ export function OutputPane() {
                 +
               </button>
             </span>
-            {/* The fallback. Also where the NO_TERMINAL toast still earns its
-                keep, for a machine with no emulator installed. */}
             <Button
               variant="waOutline"
               size="waXs"
-              title="Open a shell in the system terminal emulator instead"
+              className="wa-o-narrow"
+              title="Reopen this shell in the system terminal"
               onClick={() => openTerminal(true)}
             >
               Externally
             </Button>
             <Button
-              variant="waOutline"
+              variant={shownTerm.status === 'live' ? 'waDanger' : 'waOutline'}
               size="waXs"
-              title="Close this terminal and hang up its shell"
               onClick={() => closeTerm(shownTerm.termId)}
             >
               {shownTerm.status === 'live' ? 'Kill' : 'Close'}
@@ -190,38 +219,50 @@ export function OutputPane() {
           </>
         ) : (
           <>
-            {active && active.summary.status.kind === 'running' && (
+            {shownRun?.summary.status.kind === 'running' && (
               <Button
-                variant="waOutline"
+                variant="waDanger"
                 size="waXs"
-                onClick={() => void api.cancelRun(active.runId).catch(() => {})}
+                // Disabled while the signal is in flight: clicking again sends a
+                // second SIGTERM to the same tree, which does nothing but make the
+                // button feel broken.
+                disabled={shownRun.cancelling}
+                title="Cancel this run (Ctrl+C)"
+                onClick={() => requestCancel(shownRun.runId)}
               >
-                Cancel
+                {shownRun.cancelling ? (
+                  <>
+                    <Loader2 className="size-3 animate-spin" />
+                    Cancelling
+                  </>
+                ) : (
+                  'Cancel'
+                )}
               </Button>
             )}
-            {finished.length > 1 && (
+            {/* Only when there is more than one to sweep up; a single finished run has
+                its own × on the chip. */}
+            {runTabs.filter((t) => t.closable).length > 1 && (
               <Button
                 variant="waOutline"
                 size="waXs"
-                title={`Dismiss ${finished.length} finished runs in this scope`}
+                className="wa-o-narrow"
                 onClick={() => {
-                  // Finished runs accumulate one per start; without this the strip
-                  // grows until it is unreadable, which is exactly what it did.
-                  for (const id of finished) {
-                    dismiss(id)
-                    void api.dismissRun(id).catch(() => {})
+                  for (const t of runTabs.filter((x) => x.closable)) {
+                    dismiss(t.view.id)
+                    void api.dismissRun(t.view.id).catch(() => {})
                   }
                 }}
               >
-                Dismiss {finished.length}
+                Dismiss {runTabs.filter((t) => t.closable).length}
               </Button>
             )}
             <Button
               variant="waOutline"
               size="waXs"
-              disabled={!active}
-              title="Clear this run's output"
-              onClick={() => active && clear(active.runId)}
+              disabled={!shownRun}
+              title="Empty this log. New output still arrives."
+              onClick={() => shownRun && clear(shownRun.runId)}
             >
               Clear
             </Button>
@@ -229,341 +270,42 @@ export function OutputPane() {
         )}
       </div>
 
-      {/* View selector: the run log, then one chip per terminal in this scope.
-       *
-       * Deliberately not <Tabs> from components/ui. Radix unmounts TabsContent on
-       * switch, which would destroy the xterm instance; forceMount instead gives a
-       * display:none box, so fit() measures 0x0 and the geometry comes back wrong
-       * on re-show. A plain strip plus a conditional render, backed by the module
-       * cache in xterm-instance.ts, is both simpler and correct. */}
-      <div className="wa-scroll flex flex-none items-center gap-1 overflow-x-auto border-b border-adaptive-200 px-2.5 py-1.5">
-        <ViewChip active={shownTermId === null} onClick={() => setActiveTerm(null)}>
-          Log
-        </ViewChip>
-        {scopeTerms.map((id) => {
-          const t = tabs.get(id)
-          if (!t) return null
-          return (
-            <span
-              key={id}
-              className={cn(
-                'flex h-[22px] flex-none items-center gap-1.5 rounded-[5px] border pr-0.5 pl-1.5 font-mono text-[10.5px]',
-                id === shownTermId
-                  ? 'border-adaptive-400 bg-background text-adaptive-900'
-                  : 'border-adaptive-200 text-adaptive-500 hover:border-adaptive-400'
-              )}
-            >
-              <button
-                type="button"
-                onClick={() => setActiveTerm(id)}
-                title={`${t.title} — ${t.cwd}`}
-                className="flex items-center gap-1.5"
-              >
-                <StatusDot tone={t.status === 'live' ? 'info' : 'idle'} size={5} />
-                <span className="max-w-28 truncate">{t.title}</span>
-              </button>
-              <button
-                type="button"
-                aria-label="Close this terminal"
-                onClick={() => closeTerm(id)}
-                className="flex size-3.5 flex-none items-center justify-center rounded-sm text-adaptive-400 hover:bg-adaptive-200 hover:text-adaptive-900"
-              >
-                <X className="size-2.5" />
-              </button>
-            </span>
-          )
-        })}
-        <button
-          type="button"
-          aria-label={`New terminal in ${scopeLabel}`}
-          title={`New terminal in ${scopeLabel}`}
-          onClick={() => openTerminal()}
-          className="flex size-[22px] flex-none items-center justify-center rounded-[5px] border border-adaptive-200 text-adaptive-400 hover:border-adaptive-400 hover:text-adaptive-900"
-        >
-          <Plus className="size-3" />
-        </button>
-      </div>
+      <TabStrip
+        runTabs={runTabs}
+        termTabs={termTabs}
+        shown={shown}
+        scopeLabel={scopeLabel}
+        onSelect={select}
+        onClose={close}
+        onNewTerminal={() => openTerminal()}
+      />
 
-      {/* One chip per run in this scope.
-       *
-       * A single scrolling row, not a wrapping grid: every run in one repo has the
-       * same `kind`, so a grid of a dozen identical "devStart" chips over four rows
-       * was impossible to read. Each chip now carries how long ago it started —
-       * within one scope that is the only thing that tells them apart — and can be
-       * dismissed individually. */}
-      {shownTermId === null && recent.length > 1 && (
-        <div className="wa-scroll flex flex-none items-center gap-1 overflow-x-auto border-b border-adaptive-200 px-2.5 py-1.5">
-          {recent.map((id) => {
-            const r = runs.get(id)
-            if (!r) return null
-            const running = r.summary.status.kind === 'running'
-            return (
-              <span
-                key={id}
-                className={cn(
-                  'flex h-[22px] flex-none items-center gap-1.5 rounded-[5px] border pl-1.5 font-mono text-[10.5px]',
-                  running ? 'pr-1.5' : 'pr-0.5',
-                  id === activeRunId
-                    ? 'border-adaptive-400 bg-background text-adaptive-900'
-                    : 'border-adaptive-200 text-adaptive-500 hover:border-adaptive-400'
-                )}
-              >
-                <button
-                  type="button"
-                  onClick={() => setActive(id)}
-                  title={`${r.summary.title} — ${statusLabel(r)}`}
-                  className="flex items-center gap-1.5"
-                >
-                  <StatusDot tone={runTone(r)} size={5} />
-                  <span className="max-w-28 truncate">{r.summary.kind}</span>
-                  <span className="wa-num text-adaptive-400">{ago(r.summary.startedUnix)}</span>
-                </button>
-                {/* Only finished runs: dismissing a live one would orphan it. */}
-                {!running && (
-                  <button
-                    type="button"
-                    aria-label="Dismiss this run"
-                    onClick={() => {
-                      dismiss(id)
-                      void api.dismissRun(id).catch(() => {})
-                    }}
-                    className="flex size-3.5 flex-none items-center justify-center rounded-sm text-adaptive-400 hover:bg-adaptive-200 hover:text-adaptive-900"
-                  >
-                    <X className="size-2.5" />
-                  </button>
-                )}
-              </span>
-            )
-          })}
-        </div>
+      {/* Per-repo progress, above the log rather than inside it: during a 40-repo pull
+          the question is "how far, and did any fail", and the answer was previously
+          only findable by reading the whole interleaved log. */}
+      {shownRun && isBulkKind(shownRun.summary.kind) && (
+        <BulkProgress run={shownRun} onSelectRepo={setRepoFilter} selected={repoFilter} />
       )}
 
       {/* `bodyRef` is what `estimateGeometry` measures, so a new shell starts at
           roughly the right size instead of reprinting its prompt a frame later. */}
       <div ref={bodyRef} className="flex min-h-0 flex-1 flex-col">
-        {shownTermId !== null ? (
-          <TerminalView key={shownTermId} termId={shownTermId} />
-        ) : active ? (
-          <LogView run={active} />
+        {shownTerm ? (
+          <TerminalView key={shownTerm.termId} termId={shownTerm.termId} />
+        ) : shownRun ? (
+          <LogView
+            run={shownRun}
+            repoFilter={repoFilter}
+            onClearFilter={() => setRepoFilter(null)}
+          />
         ) : (
           <EmptyLog scope={scopeLabel} />
         )}
       </div>
 
-      {/* Quick actions. The script chips come from whatever this workspace has in
-          scripts/ — there is no built-in script to hardcode.
-          Hidden while a terminal is showing: their output goes to the log anyway,
-          and 60px of height is worth a lot in a pane this narrow. */}
-      {shownTermId === null && (
-        <div className="flex flex-none flex-wrap gap-1.5 border-t border-adaptive-200 px-2.5 py-2.5">
-          <Button variant="waDashed" size="waChip" onClick={() => run({ kind: 'prList' })}>
-            gh pr list
-          </Button>
-          {runtime && (
-            <Button variant="waDashed" size="waChip" onClick={() => run({ kind: 'dockerPs' })}>
-              {runtime} ps
-            </Button>
-          )}
-          <Button
-            variant="waDashed"
-            size="waChip"
-            onClick={() => run({ kind: 'fetchAll', ref: null })}
-          >
-            fetch --all
-          </Button>
-          {scripts.map((s) => (
-            <Button
-              key={s.id}
-              variant="waDashed"
-              size="waChip"
-              title={s.description}
-              onClick={() => run({ kind: 'script', script: s.id, args: [] })}
-            >
-              {s.id}
-            </Button>
-          ))}
-        </div>
-      )}
+      {/* Hidden while a terminal is showing: its output goes to the log anyway, and
+          60px of height is worth a lot in a pane this narrow. */}
+      {!shownTerm && <QuickActions scopeRef={scopeRef} />}
     </div>
   )
-}
-
-/** The `Log` entry in the view strip; terminal chips carry a status dot instead. */
-function ViewChip({
-  active,
-  onClick,
-  children,
-}: {
-  active: boolean
-  onClick: () => void
-  children: React.ReactNode
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        'flex h-[22px] flex-none items-center rounded-[5px] border px-2 font-mono text-[10.5px]',
-        active
-          ? 'border-adaptive-400 bg-background text-adaptive-900'
-          : 'border-adaptive-200 text-adaptive-500 hover:border-adaptive-400'
-      )}
-    >
-      {children}
-    </button>
-  )
-}
-
-function termStatusLabel(t: TermTab): string {
-  if (t.status === 'live') return 'shell'
-  return t.exitCode === 0 ? 'exited' : `exit ${t.exitCode ?? '?'}`
-}
-
-function EmptyLog({ scope }: { scope: string }) {
-  return (
-    <div className="flex min-h-0 flex-1 flex-col gap-0.5 p-2.5 font-mono text-[11.5px] leading-[1.65]">
-      <div className="text-adaptive-500">Nothing has run for {scope} yet.</div>
-      <Prompt />
-    </div>
-  )
-}
-
-function LogView({ run }: { run: Run }) {
-  const scrollRef = useRef<HTMLDivElement>(null)
-  const setFollow = useRunStore((s) => s.setFollow)
-  const append = useRunStore((s) => s.append)
-
-  const lines = run.lines
-
-  const virtualizer = useVirtualizer({
-    count: lines.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: () => 19,
-    overscan: 20,
-    measureElement: (el) => el.getBoundingClientRect().height,
-  })
-
-  // Replay after a remount: fill any gap from the ring buffer, deduped by seq.
-  useEffect(() => {
-    if (lines.length > 0) return
-    let cancelled = false
-    api
-      .getRunLog(run.runId, 0)
-      .then((page) => {
-        if (!cancelled && page.lines.length) append(run.runId, page.lines)
-      })
-      .catch(() => {})
-    return () => {
-      cancelled = true
-    }
-  }, [run.runId, lines.length, append])
-
-  // Tail only while following.
-  useLayoutEffect(() => {
-    if (!run.follow || lines.length === 0) return
-    virtualizer.scrollToIndex(lines.length - 1, { align: 'end' })
-  }, [lines.length, run.follow, virtualizer])
-
-  return (
-    <div className="relative flex min-h-0 flex-1 flex-col">
-      <div
-        ref={scrollRef}
-        onScroll={(e) => {
-          const el = e.currentTarget
-          const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
-          // Auto-disengage tail the moment the user scrolls away, or reading a
-          // failure becomes impossible.
-          if (atBottom !== run.follow) setFollow(run.runId, atBottom)
-        }}
-        className="wa-scroll min-h-0 flex-1 overflow-y-auto p-2.5 font-mono text-[11.5px] leading-[1.65]"
-      >
-        {run.droppedHead > 0 && (
-          <div className="pb-1 text-adaptive-400 italic">
-            … {run.droppedHead.toLocaleString()} earlier lines dropped
-          </div>
-        )}
-
-        <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
-          {virtualizer.getVirtualItems().map((vi) => {
-            const line = lines[vi.index]!
-            return (
-              <div
-                key={line.seq}
-                data-index={vi.index}
-                ref={virtualizer.measureElement}
-                className="absolute inset-x-0"
-                style={{ top: vi.start }}
-              >
-                <LogRow line={line} />
-              </div>
-            )
-          })}
-        </div>
-
-        {run.summary.status.kind === 'running' && <Prompt />}
-      </div>
-
-      {!run.follow && (
-        <Button
-          variant="waOutline"
-          size="waXs"
-          className="absolute right-3 bottom-3 shadow-md"
-          onClick={() => setFollow(run.runId, true)}
-        >
-          <ArrowDown className="size-3" />
-          Jump to latest
-        </Button>
-      )}
-    </div>
-  )
-}
-
-function LogRow({ line }: { line: LogLine }) {
-  const truncated = line.text.length > MAX_LINE_CHARS
-  const text = truncated ? `${line.text.slice(0, MAX_LINE_CHARS)}…` : line.text
-  return (
-    <div className={cn('break-words whitespace-pre-wrap', SEVERITY_CLASS[line.severity])}>
-      {line.repo && line.severity !== 'cmd' && (
-        <span className="mr-1.5 text-adaptive-400">{line.repo.split('/')[0]}</span>
-      )}
-      {text}
-      {truncated && <span className="text-adaptive-400"> [line truncated]</span>}
-    </div>
-  )
-}
-
-function Prompt() {
-  return (
-    <div className="flex gap-1.5 text-adaptive-500">
-      <span className="text-primary-600">›</span>
-      <span
-        className="inline-block h-[14px] w-[7px] bg-adaptive-600"
-        style={{ animation: 'wa-blink 1.1s step-end infinite' }}
-      />
-    </div>
-  )
-}
-
-function statusLabel(run: Run): string {
-  const s = run.summary.status
-  switch (s.kind) {
-    case 'running':
-      return `running ${run.summary.kind}…`
-    case 'exited':
-      return s.code === 0 ? 'done' : `exit ${s.code}`
-    case 'signaled':
-      return `signal ${s.signal}`
-    case 'cancelled':
-      return 'cancelled'
-    case 'failed':
-      return 'failed'
-  }
-}
-
-function runTone(run: Run): Tone {
-  const s = run.summary.status
-  if (s.kind === 'running') return 'info'
-  if (s.kind === 'exited') return s.code === 0 ? 'ok' : 'warn'
-  if (s.kind === 'failed') return 'err'
-  return 'idle'
 }
