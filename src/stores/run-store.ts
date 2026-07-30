@@ -29,6 +29,15 @@ interface RunState {
   runningByScope: Record<string, number>
 
   start(summary: RunSummary): void
+  /**
+   * Loads a finished run that is not in this store, and makes it active.
+   *
+   * For the detail page's Runs tab: the backend keeps every run for the session, but
+   * this store only holds what it saw live, so a dismissed run — or any run from
+   * before a reload — could be listed and not opened. Unlike `start` it does not
+   * touch `runningByScope`, because nothing is running.
+   */
+  hydrate(summary: RunSummary, lines: LogLine[]): void
   append(runId: string, lines: LogLine[]): void
   exit(runId: string, status: RunStatus, endedUnix: number): void
   setActive(runId: string | null): void
@@ -68,6 +77,27 @@ export const useRunStore = create<RunState>()((set) => ({
           ...s.runningByScope,
           [key]: (s.runningByScope[key] ?? 0) + 1,
         },
+      }
+    }),
+
+  hydrate: (summary, lines) =>
+    set((s) => {
+      const runs = new Map(s.runs)
+      runs.set(summary.runId, {
+        runId: summary.runId,
+        summary,
+        lines,
+        lastSeq: lines.length > 0 ? lines[lines.length - 1]!.seq : -1,
+        droppedHead: 0,
+        // Not following: this run has already finished, so there is nothing to tail,
+        // and jumping to the bottom of a 5000-line log hides why it failed.
+        follow: false,
+        scrollTop: 0,
+      })
+      return {
+        runs,
+        order: s.order.includes(summary.runId) ? s.order : [...s.order, summary.runId],
+        activeRunId: summary.runId,
       }
     }),
 

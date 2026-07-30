@@ -1,0 +1,59 @@
+import { keys } from './keys'
+import type { RepoId } from '@/domain/types'
+
+/**
+ * Which per-repo queries a finished run can have made stale.
+ *
+ * A table rather than "invalidate everything for this repo", for two reasons.
+ *
+ * `keys.prs` is a `gh` network round trip with a 20s ceiling in Rust, so firing it
+ * after every run turns a free local inspection into a network call per click.
+ *
+ * And the read-only inspections — status, diff, log graph — change nothing on
+ * disk. Refetching after them would be pure waste: the answer cannot have moved.
+ *
+ * Returns key *prefixes*: react-query matches partially, so ['repoCommits', id]
+ * clears every page size under it.
+ */
+export function staleKeysFor(kind: string, id: RepoId): readonly unknown[][] {
+  const changed = [...keys.changedFiles(id)]
+  const commits = ['repoCommits', id]
+  const branches = [...keys.branches(id)]
+  const prs = [...keys.prs(id)]
+
+  // The run list itself always moved: a run just finished.
+  const always = [[...keys.runs]]
+
+  switch (kind) {
+    // Moves HEAD and the working tree, so everything about this repo is suspect.
+    case 'pull':
+    case 'pullMany':
+    case 'push':
+    case 'checkout':
+      return [changed, commits, branches, prs, ...always]
+
+    // A fetch moves remote refs only — the working tree is untouched, so the
+    // changed-file list cannot have changed.
+    case 'fetchAll':
+    case 'fetchMany':
+      return [commits, branches, ...always]
+
+    case 'stash':
+    case 'stashPop':
+    case 'discardChanges':
+      return [changed, ...always]
+
+    // A `format` or `lint:fix` rewrites files, and almost any script can touch a
+    // lockfile. Commits and branches cannot move without a git command.
+    case 'runScript':
+      return [changed, ...always]
+
+    case 'prList':
+      return [prs, ...always]
+
+    // Read-only, or nothing to do with git state: status, diff, logGraph,
+    // branchList, stashList, openShell, openInEditor, killPort, dockerPs…
+    default:
+      return always
+  }
+}

@@ -37,7 +37,8 @@ export function LocalServicesPanel() {
           {runtimeLabel} ps
         </Button>
       }
-      className="max-h-[320px]"
+      /* Capped only while the panels are stacked; side by side it fills the tab. */
+      className="max-h-[320px] lg:max-h-none"
     >
       {isPending && (
         <div className="flex flex-col gap-2 p-3">

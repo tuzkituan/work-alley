@@ -15,9 +15,14 @@ mock.module('@/ipc/commands', () => ({
 
 const { useTerminalStore, termScope } = await import('./terminal-store')
 
-function info(termId: string, repo: TermInfo['repo'] = { category: 'fe', name: 'web' }): TermInfo {
+function info(
+  termId: string,
+  repo: TermInfo['repo'] = { category: 'fe', name: 'web' },
+  kind = 'shell'
+): TermInfo {
   return {
     termId,
+    kind,
     title: 'Terminal in fe/web',
     argv: ['/bin/zsh', '-l'],
     cwd: '/w/fe/web',
@@ -44,6 +49,16 @@ describe('terminal store', () => {
     useTerminalStore.getState().open(info('t1'))
     expect(useTerminalStore.getState().order).toEqual(['t1'])
     expect(useTerminalStore.getState().tabs.size).toBe(1)
+  })
+
+  it('keeps the session kind, which is what routes a tab to a page', () => {
+    // The Toolbox and setup pages render `package` sessions and nothing else, and
+    // the bridge refreshes the package queries when one of them exits — both read
+    // this field, so losing it would silently break an install's aftermath.
+    useTerminalStore.getState().open(info('t1', null, 'package'))
+    useTerminalStore.getState().open(info('t2'))
+    expect(useTerminalStore.getState().tabs.get('t1')?.kind).toBe('package')
+    expect(useTerminalStore.getState().tabs.get('t2')?.kind).toBe('shell')
   })
 
   it('marks a tab exited without removing it', () => {

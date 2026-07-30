@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { ReactNode, Ref } from 'react'
 import { cn } from '@/lib/utils'
 import { TONE_BG, TONE_TEXT, TONE_TINT, type Tone } from '@/domain/severity'
 
@@ -89,6 +89,7 @@ export function StatePill({ tone, label }: { tone: Tone; label: string }) {
 export function MonoChip({ children, className }: { children: ReactNode; className?: string }) {
   return (
     <span
+      data-slot="mono-chip"
       className={cn(
         'rounded-sm border border-adaptive-200 px-1 font-mono text-[11px] text-adaptive-400',
         className
@@ -120,7 +121,10 @@ export function SectionLabel({
 
 export function KeyCap({ children }: { children: ReactNode }) {
   return (
-    <span className="rounded-sm border border-adaptive-200 px-1 font-mono text-[11px] leading-4">
+    <span
+      data-slot="keycap"
+      className="rounded-sm border border-adaptive-200 px-1 font-mono text-[11px] leading-4"
+    >
       {children}
     </span>
   )
@@ -142,24 +146,53 @@ export function PanelShell({
   right,
   children,
   className,
+  header,
+  bodyRef,
+  bodyClassName,
 }: {
-  title: ReactNode
+  title?: ReactNode
   right?: ReactNode
   children: ReactNode
   className?: string
+  /** Replaces the whole default header bar, for panels that need more than a title. */
+  header?: ReactNode
+  /**
+   * The scrolling body element.
+   *
+   * Exposed because a virtualizer has to be handed the real scrollport: measuring
+   * the wrong node makes it compute a viewport height of zero and render one row
+   * forever. See the same lesson in RepoGrid, which is why that list scrolls a
+   * plain div rather than a Radix ScrollArea.
+   */
+  bodyRef?: Ref<HTMLDivElement>
+  bodyClassName?: string
 }) {
   return (
     <div
+      // The hook the neumorph skin hangs a raised surface on. PanelShell is a
+      // bare div with no other stable handle, and the skin cannot reach it any
+      // other way; the classes below stay correct for the classic skin.
+      data-slot="panel"
       className={cn(
         'flex min-h-0 flex-col overflow-hidden rounded-lg border border-adaptive-200 bg-card',
         className
       )}
     >
-      <div className="flex flex-none items-center justify-between border-b border-adaptive-200 px-3 py-2.5">
-        <span className="text-[13px] font-semibold">{title}</span>
-        {right}
+      {header ?? (
+        <div
+          data-slot="panel-header"
+          className="flex flex-none items-center justify-between border-b border-adaptive-200 px-3 py-2.5"
+        >
+          <span className="text-[13px] font-semibold">{title}</span>
+          {right}
+        </div>
+      )}
+      <div
+        ref={bodyRef}
+        className={cn('wa-scroll min-h-0 flex-1 overflow-y-auto', bodyClassName)}
+      >
+        {children}
       </div>
-      <div className="wa-scroll min-h-0 flex-1 overflow-y-auto">{children}</div>
     </div>
   )
 }

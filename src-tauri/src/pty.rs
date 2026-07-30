@@ -65,6 +65,10 @@ pub const DEFAULT_ROWS: u16 = 24;
 /// What `run_action` hands over. Built in Rust; see the module doc.
 pub struct OpenSpec {
     pub argv: Vec<String>,
+    /// What this session is for: "shell", "script" or "package". The frontend
+    /// groups tabs by it — a package install belongs to the machine pages, not to
+    /// a repo's output pane — and refreshes the Toolbox when a package tab exits.
+    pub kind: String,
     pub cwd: PathBuf,
     pub env: Vec<(String, String)>,
     /// True for an interactive login shell, which must build its own PATH.
@@ -80,6 +84,7 @@ pub struct OpenSpec {
 #[serde(rename_all = "camelCase")]
 pub struct TermInfo {
     pub term_id: String,
+    pub kind: String,
     pub title: String,
     pub argv: Vec<String>,
     pub cwd: PathBuf,
@@ -226,6 +231,7 @@ pub fn open<R: Runtime>(
     let term_id = uuid::Uuid::new_v4().to_string();
     let info = TermInfo {
         term_id: term_id.clone(),
+        kind: spec.kind,
         title: spec.title,
         argv: spec.argv.clone(),
         cwd: spec.cwd,
@@ -545,6 +551,7 @@ mod tests {
 
     fn spec(script: &str) -> OpenSpec {
         OpenSpec {
+            kind: "script".into(),
             argv: vec!["/bin/bash".into(), "-c".into(), script.into()],
             cwd: std::env::temp_dir(),
             env: vec![],
@@ -592,6 +599,7 @@ mod tests {
             &app,
             &state,
             OpenSpec {
+                kind: "shell".into(),
                 argv: vec![shell.clone(), "-l".into()],
                 cwd: std::env::temp_dir(),
                 env: vec![],

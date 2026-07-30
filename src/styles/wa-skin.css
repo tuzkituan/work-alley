@@ -1,0 +1,455 @@
+/* The `neumorph` skin: one surface colour, soft shadows, no borders.
+ *
+ * Read this before editing anything here.
+ *
+ * ── Why this file is one stylesheet and not 300 class edits ──────────────────
+ * Every Tailwind declaration lives inside `@layer theme|base|components|
+ * utilities`. Unlayered CSS — which is all of this file — beats every layer
+ * regardless of specificity, with no `!important`. Combined with the `data-slot`
+ * attributes every shadcn primitive already emits, and the `data-variant` /
+ * `data-size` on Button, that means the whole of src/components/ui/ plus most
+ * feature surfaces reskin from here without a single component edit.
+ *
+ * ── The cost of that, stated plainly ────────────────────────────────────────
+ * These rules outrank *all* utilities on the properties they set, including a
+ * className a future caller writes. Under this skin, `<PanelShell
+ * className="shadow-none" />` will not work. That is the trade: one file with a
+ * loud comment, instead of ~300 edits across ~42 files.
+ *
+ * ── Selector shape ──────────────────────────────────────────────────────────
+ * Four mutually exclusive selectors, never a bare `[data-skin='neumorph']`.
+ * `.dark` (from shadcn-theme.css and wa-bridge.css) is also (0,1,0), so a bare
+ * attribute selector — later in source — would beat `.dark` on any token the
+ * dark block forgot to restate: a silent light-in-dark bug that only shows on
+ * the token you missed. `:not(.dark)` / `.dark` makes the two blocks
+ * independent, so neither has to know what the other set.
+ *
+ * ── Accessibility, honestly ─────────────────────────────────────────────────
+ * A soft shadow at ΔL ~0.1 cannot meet WCAG 1.4.11's 3:1 for component
+ * boundaries, and no amount of token tuning changes that. Hence: classic stays
+ * the default, depth is never the only signal for state, and the
+ * `prefers-contrast: more` block at the bottom gives the borders back.
+ */
+
+/* ═══════════════════════════════════════════════════════════ tokens: light ══ */
+html[data-skin='neumorph']:not(.dark) {
+  /* Hex, deliberately: this same value is handed to xterm through --wa-term-bg,
+     and xterm's colour parser does not understand oklch. Declaring it once as
+     hex is also what proves the terminal well and its panel are the same
+     colour rather than two values that drifted apart. */
+  --wa-surface: #eceef2;
+  --wa-surface-sunk: #e4e7ec; /* rails, gutters, docks — carved out of the page */
+  --wa-surface-lift: #f2f4f8; /* floating layers, so a popover is not invisible */
+
+  /* Every shadcn surface collapses onto the one colour. This alone handles the
+     20 `bg-card` and 23 `bg-background` call sites. */
+  --background: var(--wa-surface);
+  --card: var(--wa-surface);
+  --popover: var(--wa-surface-lift);
+  --muted: var(--wa-surface);
+  --secondary: var(--wa-surface);
+  --accent: #e2e5eb; /* hover fill only — must stay perceptible */
+  /* Neutralises theme.css's `@layer base { * { border-color: var(--border) } }`,
+     which is what every bare `border` in stock shadcn resolves to. */
+  --border: transparent;
+  --input: transparent;
+  --ring: oklch(0.55 0.14 258);
+
+  /* One override retiles rounded-sm/md/lg: wa-bridge derives all three from it. */
+  --radius: 1rem;
+
+  /* --- the adaptive ramp, re-tuned -------------------------------------------
+   *
+   * 50–400 are surfaces and lines; 500+ are text.
+   *
+   * --adaptive-200 is the interesting one. It is a 1px border in 94 places and a
+   * filled hover region in 16 (waGhost's hover, the left rail, dropdown items).
+   * Setting it *equal* to the surface would kill every one of those hovers. So it
+   * sits a hair off the surface instead — at ΔL ~0.013 a 1px line is invisible
+   * at any normal viewing distance while a 26px filled block still reads
+   * plainly. One token, both intents, no edits. This is the value most likely to
+   * need tuning by eye.
+   */
+  --adaptive-50: var(--wa-surface-lift);
+  --adaptive-100: var(--wa-surface-sunk);
+  --adaptive-200: #e3e6eb;
+  --adaptive-300: #d3d7de;
+  --adaptive-400: #aeb4c0;
+  /* Darkened one notch: the surface is 0.945L, not 1.0L, so the stock text steps
+     lose roughly 0.8:1 of contrast against it. */
+  --adaptive-500: oklch(0.5 0 0);
+  --adaptive-600: oklch(0.4 0 0);
+
+  /* --- elevation: light source top-left, consistently, at four depths ------- */
+  --wa-hi: #ffffff;
+  --wa-lo: rgb(163 172 189 / 0.55);
+
+  --wa-raise-1: -2px -2px 4px var(--wa-hi), 2px 2px 5px var(--wa-lo);
+  --wa-raise-2: -5px -5px 12px var(--wa-hi), 6px 6px 16px var(--wa-lo);
+  --wa-float-1: -6px -6px 16px var(--wa-hi), 10px 12px 28px var(--wa-lo);
+  --wa-float-2: -8px -8px 22px var(--wa-hi), 16px 20px 44px rgb(120 130 150 / 0.45);
+
+  --wa-inset-1: inset 2px 2px 4px var(--wa-lo), inset -2px -2px 4px var(--wa-hi);
+  --wa-inset-2: inset 4px 4px 9px var(--wa-lo), inset -3px -3px 7px var(--wa-hi);
+  --wa-pressed: inset 2px 2px 5px var(--wa-lo), inset -2px -2px 5px var(--wa-hi);
+
+  /* Carries the raise as well as the ring, so a raised control gaining focus
+     does not flatten. See the interactive-elevation note below for the other
+     half of this. */
+  --shadow-focus-ring: 0 0 0 2px var(--ring), var(--wa-raise-1);
+
+  --wa-scroll-thumb: #cfd4dc;
+  --wa-scroll-thumb-hover: #b6bdc9;
+
+  /* Same colour as the panel: the terminal reads as a depression in the surface
+     rather than a black rectangle glued onto it. */
+  --wa-term-bg: #eceef2;
+  --wa-term-fg: #262b33;
+  --wa-term-cursor: #262b33;
+  --wa-term-cursor-accent: #eceef2;
+  --wa-term-selection: #c3d6f0;
+  /* Only the two greys move: Tango's were picked against pure white and wash
+     out on a grey surface. The other 14 ANSI slots are a palette programs
+     address by index, so re-tinting them would break real output. */
+  --wa-term-white: #b9bfc9;
+  --wa-term-bright-white: #f6f8fb;
+}
+
+/* ══════════════════════════════════════════════════════════════ tokens: dark ══ */
+html[data-skin='neumorph'].dark {
+  /* Markedly lighter than classic dark's 0.145L, and that is required rather
+     than a taste call: a highlight needs headroom *above* the surface, and on
+     near-black there is none — the top-left light disappears and all that is
+     left is a drop shadow, which is not neumorphism. */
+  --wa-surface: #3a3f47;
+  --wa-surface-sunk: #33373e;
+  --wa-surface-lift: #40454e;
+
+  --background: var(--wa-surface);
+  --card: var(--wa-surface);
+  --popover: var(--wa-surface-lift);
+  --muted: var(--wa-surface);
+  --secondary: var(--wa-surface);
+  --accent: #474d57;
+  --border: transparent;
+  --input: transparent;
+  --ring: oklch(0.72 0.13 250);
+
+  --radius: 1rem;
+
+  /* Inverted, like classic dark: 50–400 walk toward light. */
+  --adaptive-50: var(--wa-surface-lift);
+  --adaptive-100: var(--wa-surface-sunk);
+  --adaptive-200: #42474f;
+  --adaptive-300: #4e545e;
+  --adaptive-400: #7b828f;
+  /* Lightened, mirroring the light block: the surface is 0.29L, not 0.145L. */
+  --adaptive-500: oklch(0.76 0 0);
+  --adaptive-600: oklch(0.88 0 0);
+
+  --wa-hi: rgb(255 255 255 / 0.07);
+  --wa-lo: rgb(0 0 0 / 0.5);
+
+  --wa-raise-1: -2px -2px 4px var(--wa-hi), 2px 2px 5px var(--wa-lo);
+  --wa-raise-2: -5px -5px 12px var(--wa-hi), 6px 6px 16px var(--wa-lo);
+  --wa-float-1: -6px -6px 16px var(--wa-hi), 10px 12px 28px rgb(0 0 0 / 0.6);
+  --wa-float-2: -8px -8px 22px var(--wa-hi), 16px 20px 44px rgb(0 0 0 / 0.7);
+
+  --wa-inset-1: inset 2px 2px 4px var(--wa-lo), inset -2px -2px 4px var(--wa-hi);
+  --wa-inset-2: inset 4px 4px 10px rgb(0 0 0 / 0.6), inset -3px -3px 7px var(--wa-hi);
+  --wa-pressed: inset 2px 2px 5px var(--wa-lo), inset -2px -2px 5px var(--wa-hi);
+
+  --shadow-focus-ring: 0 0 0 2px var(--ring), var(--wa-raise-1);
+
+  --wa-scroll-thumb: #565c67;
+  --wa-scroll-thumb-hover: #6c737f;
+
+  --wa-term-bg: #3a3f47;
+  --wa-term-fg: #e2e5ea;
+  --wa-term-cursor: #e2e5ea;
+  --wa-term-cursor-accent: #3a3f47;
+  --wa-term-selection: #4d5a6d;
+  /* One Dark's blacks were chosen against #16181a and vanish on #3a3f47. */
+  --wa-term-black: #4a5058;
+  --wa-term-bright-black: #7d8593;
+  --wa-term-white: #c3cad4;
+}
+
+/* ═════════════════════════════════════════════════════ raised surfaces ══ */
+
+/* Two selectors cover every card in the app. `[data-slot='panel']` is PanelShell
+ * (4 importers); `.bg-card` is the ~20 places that hand-roll the same surface
+ * inline. Targeting a utility class by name is safe *here* in a way that
+ * targeting `.border-b` would not be: `bg-card` means "this is a card", so the
+ * class carries the intent. A single-side border does not — it is a panel edge
+ * in one file and a table-row separator in the next.
+ */
+html[data-skin='neumorph'] :is([data-slot='panel'], .bg-card, .wa-table) {
+  background-color: var(--wa-surface);
+  box-shadow: var(--wa-raise-2);
+}
+
+/* Nested panels demote to the shallow raise. Without this the detail page stacks
+   three levels of raise-2 and turns to mud — the signature neumorphism smell. */
+html[data-skin='neumorph']
+  :is([data-slot='panel'], .bg-card)
+  :is([data-slot='panel'], .bg-card) {
+  box-shadow: var(--wa-raise-1);
+}
+
+/* A panel header keeps a separator, because the ΔL trick makes the inherited
+   hairline nearly invisible and a titled panel needs its title divided. */
+html[data-skin='neumorph'] [data-slot='panel-header'] {
+  border-bottom-color: transparent;
+  box-shadow: 0 1px 0 var(--wa-hi), 0 2px 3px -2px var(--wa-lo);
+}
+
+/* ════════════════════════════════════════════════════ floating surfaces ══ */
+
+/* Lifted off the base colour on purpose: a same-colour popover over a
+   same-colour panel is the classic neumorphism failure. */
+html[data-skin='neumorph']
+  :is(
+    [data-slot='popover-content'],
+    [data-slot='dropdown-menu-content'],
+    [data-slot='dropdown-menu-sub-content']
+  ) {
+  background-color: var(--wa-surface-lift);
+  box-shadow: var(--wa-float-1);
+}
+
+/* Small and short: a 20px blur on a 24px-tall box is a smudge, not a shadow. */
+html[data-skin='neumorph'] [data-slot='tooltip-content'] {
+  box-shadow: var(--wa-raise-1);
+}
+
+html[data-skin='neumorph']
+  :is([data-slot='dialog-content'], [data-slot='alert-dialog-content'], [data-slot='command']) {
+  background-color: var(--wa-surface-lift);
+  box-shadow: var(--wa-float-2);
+}
+
+/* A heavy scrim under soft shadows reads as fog rather than as focus. */
+html[data-skin='neumorph'] :is([data-slot='dialog-overlay'], [data-slot='alert-dialog-overlay']) {
+  background-color: rgb(0 0 0 / 0.25);
+}
+
+/* ══════════════════════════════════════════════════════════ inset wells ══ */
+
+html[data-skin='neumorph'] :is([data-slot='input'], [data-slot='command-input-wrapper']) {
+  background-color: var(--wa-surface);
+  border-color: transparent;
+  box-shadow: var(--wa-inset-1);
+}
+html[data-skin='neumorph'] [data-slot='command-input-wrapper'] {
+  border-radius: var(--radius-md);
+}
+
+/* The terminal is the app's deepest well. The inset is drawn on an overlay
+ * rather than as `box-shadow: inset` because xterm renders an opaque canvas
+ * filling the wrapper: an inset shadow would show only in the padding and stop
+ * dead at the canvas edge, which looks like a rendering bug. `pointer-events:
+ * none` is not optional — xterm's selection and link handlers live on
+ * descendants of this element.
+ */
+html[data-skin='neumorph'] [data-slot='term-surface'] {
+  position: relative;
+  border-radius: var(--radius-md);
+  padding: 10px;
+}
+html[data-skin='neumorph'] [data-slot='term-surface']::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  box-shadow: var(--wa-inset-2);
+}
+
+/* Docks and rails are carved out of the page, not sitting on it. */
+html[data-skin='neumorph'] [data-slot='terminal-dock'] {
+  background-color: var(--wa-surface-sunk);
+  border-top-color: transparent;
+  box-shadow: inset 0 3px 6px -3px var(--wa-lo);
+}
+
+/* ═════════════════════════════════════════════════════════════ buttons ══ */
+
+/* Keyed on the attributes button.tsx already emits, so its cva table is
+ * reachable without adding a single variant to it — and a future shadcn update
+ * still applies cleanly.
+ *
+ * These write Tailwind's `--tw-shadow` *slot* and then restate the five-slot
+ * box-shadow, rather than setting the longhand directly. That is what keeps
+ * `hover:shadow-focus-ring` working: as an unlayered longhand this rule would
+ * beat the utility outright and the focus ring would be silently swallowed on
+ * all 16 of its call sites. Writing the slot instead lets the utility win the
+ * custom property, and because --shadow-focus-ring carries var(--wa-raise-1) the
+ * control gains a ring *without flattening*.
+ */
+/* waOutline only — `waGhost` deliberately stays flat. Ghost means "no chrome",
+   and it is what the dense rows use for their row actions and close buttons;
+   raising all of those would turn every list into a field of pebbles. A toggled
+   ghost still presses in, via the aria-pressed rule below. */
+html[data-skin='neumorph'] [data-slot='button'][data-variant='waOutline'] {
+  background-color: var(--wa-surface);
+  border-color: transparent;
+  --tw-shadow: var(--wa-raise-1);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow),
+    var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+  transition:
+    box-shadow 120ms ease,
+    background-color 120ms ease;
+}
+
+/* waPrimary keeps its fill. The primary action is the one place a colour is
+   allowed to break the one-surface rule — in a borderless UI a grey "Pull All"
+   would be indistinguishable from the page. */
+html[data-skin='neumorph'] [data-slot='button'][data-variant='waPrimary'] {
+  border-color: transparent;
+  --tw-shadow: var(--wa-raise-1);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow),
+    var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+}
+
+/* waDanger's red edge and waDashed's dashed edge are *semantic*, not chrome, so
+   they are re-asserted against the global --border: transparent. */
+html[data-skin='neumorph'] [data-slot='button'][data-variant='waDanger'] {
+  border-color: var(--error-500);
+}
+html[data-skin='neumorph'] [data-slot='button'][data-variant='waDashed'] {
+  border-color: var(--adaptive-300);
+}
+
+/* The press. This is the point of the skin: a soft button must actually sink. */
+html[data-skin='neumorph'] [data-slot='button']:active:not(:disabled) {
+  --tw-shadow: var(--wa-pressed);
+}
+
+/* Toggled state. Note the background change as well as the depth: depth alone is
+   invisible to a low-vision user and on a dim display, so it is never the only
+   signal. */
+html[data-skin='neumorph'] :is([data-slot='button'], button)[aria-pressed='true'] {
+  background-color: var(--wa-surface-sunk);
+  --tw-shadow: var(--wa-pressed);
+  box-shadow: var(--tw-inset-shadow), var(--tw-inset-ring-shadow),
+    var(--tw-ring-offset-shadow), var(--tw-ring-shadow), var(--tw-shadow);
+}
+
+/* Selected, for things that are navigation rather than a control. */
+html[data-skin='neumorph'] [aria-current='true'] {
+  background-color: var(--wa-surface);
+  box-shadow: var(--wa-raise-1);
+}
+
+/* The 12 literal `rounded-[5px]` sites are all button sizes plus the dock's tab
+   chips; an arbitrary-value utility cannot follow --radius, so it is restated. */
+html[data-skin='neumorph']
+  [data-slot='button']:is(
+    [data-size='waSm'],
+    [data-size='waXs'],
+    [data-size='waChip'],
+    [data-size='waIcon']
+  ) {
+  border-radius: 9px;
+}
+
+/* ════════════════════════════════════════════════════════════════ tabs ══ */
+
+/* The list becomes a groove and the active trigger lifts out of it — the
+   canonical neumorphic tab. The `line` variant's underline is an indicator
+   rather than a surface, so it is left alone. */
+html[data-skin='neumorph'] [data-slot='tabs-list'] {
+  background-color: var(--wa-surface);
+  box-shadow: var(--wa-inset-1);
+}
+html[data-skin='neumorph'] [data-slot='tabs-trigger'][data-state='active'] {
+  background-color: var(--wa-surface);
+  border-color: transparent;
+  box-shadow: var(--wa-raise-1);
+}
+html[data-skin='neumorph'] [data-slot='tabs-trigger']:not([data-state='active']) {
+  box-shadow: none;
+}
+
+/* ════════════════════════════════════════════════════════════ gutters ══ */
+
+/* --border: transparent would leave the 1px resize handles *invisible*, which is
+ * a real usability regression — you cannot grab what you cannot see. A carved
+ * seam replaces them, at the same width, so nothing in the layout moves. The
+ * `hover:bg-primary` App.tsx passes to these still wins, so drag feedback is
+ * untouched.
+ */
+html[data-skin='neumorph'] [data-slot='resizable-handle'] {
+  background-color: transparent;
+  box-shadow: inset 1px 0 1px var(--wa-hi), inset -1px 0 2px var(--wa-lo);
+}
+html[data-skin='neumorph'] [data-slot='resizable-handle'][aria-orientation='horizontal'] {
+  box-shadow: inset 0 1px 1px var(--wa-hi), inset 0 -1px 2px var(--wa-lo);
+}
+
+/* ═════════════════════════════════════════════════ smaller primitives ══ */
+
+/* A keycap and a mono tag are the textbook engraved chip. */
+html[data-skin='neumorph'] :is([data-slot='keycap'], [data-slot='mono-chip']) {
+  border-color: transparent;
+  border-radius: 7px;
+  box-shadow: var(--wa-inset-1);
+}
+
+html[data-skin='neumorph'] [data-slot='skeleton'] {
+  background-color: var(--wa-surface-sunk);
+  box-shadow: var(--wa-inset-1);
+}
+html[data-skin='neumorph'] [data-slot='progress'] {
+  background-color: var(--wa-surface);
+  box-shadow: var(--wa-inset-1);
+}
+html[data-skin='neumorph'] :is([data-slot='separator'], [data-slot='dropdown-menu-separator']) {
+  background-color: var(--adaptive-300);
+}
+html[data-skin='neumorph'] [data-sonner-toast] {
+  border-color: transparent;
+  box-shadow: var(--wa-float-2);
+}
+
+/* ══════════════════════════════════════════════════════════════ focus ══ */
+
+/* An outline, not a box-shadow, and for three concrete reasons: it is a
+ * different property so no shadow rule anywhere — present or future — can
+ * clobber it; it is not clipped by the `overflow-hidden` that PanelShell and
+ * every window frame set, which an outer ring on a focused descendant would be;
+ * and `outline-offset` gives visible separation when there is no border to
+ * thicken.
+ *
+ * Unlayered, so it outranks `.outline-none` (which Tailwind emits in @layer
+ * utilities) without `!important`. Coloured, not neutral: a grey ring on #eceef2
+ * is ~1.2:1 and effectively invisible. This alone satisfies WCAG 2.4.7/2.4.11
+ * for focus, whatever happens to the shadows.
+ */
+html[data-skin='neumorph'] :focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 3px;
+}
+
+/* ═══════════════════════════════════════════════════════ escape hatches ══ */
+
+/* The OS asked for contrast; the skin gives its borders back. Not optional —
+   this is the mitigation for the 1.4.11 limitation in the header comment. */
+@media (prefers-contrast: more) {
+  html[data-skin='neumorph'] {
+    --adaptive-200: var(--adaptive-400);
+    --border: var(--adaptive-400);
+    --wa-lo: rgb(60 70 90 / 0.85);
+  }
+  html[data-skin='neumorph']
+    :is([data-slot='panel'], .bg-card, [data-slot='dialog-content'], [data-slot='input']) {
+    border-color: var(--adaptive-400);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html[data-skin='neumorph'] [data-slot='button'] {
+    transition-duration: 0ms;
+  }
+}

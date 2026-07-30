@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { Folder, FolderOpen, Play } from 'lucide-react'
+import { Folder, FolderOpen, ListChecks, Play, Wrench } from 'lucide-react'
 import { KvRow, SectionLabel } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
 import type { Bootstrap, Category } from '@/domain/types'
@@ -85,8 +85,62 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
         </div>
       </div>
 
+      {/* Pinned under the scroll, directly above the card that reports the same
+          machine these two pages manage. Outside the scroll container on purpose:
+          they are how you fix a missing tool, so they must not be scrolled away. */}
+      <div className="flex flex-none flex-col gap-1">
+        <MachineButton
+          page="toolbox"
+          icon={<Wrench className="size-3 flex-none" />}
+          label="Toolbox"
+          title="Install, upgrade or remove your dev tools"
+        />
+        <MachineButton
+          page="setup"
+          icon={<ListChecks className="size-3 flex-none" />}
+          label="Guided setup"
+          title="The ordered path for a machine with nothing on it"
+        />
+      </div>
+
       <ToolchainCard boot={boot} />
     </div>
+  )
+}
+
+/**
+ * A link to one of the machine-scoped pages.
+ *
+ * No active state, unlike FolderButton: both pages replace the whole window and
+ * the rail is not on screen beside them, so it could never render as selected.
+ * Getting back out is the job of those pages' own back button.
+ *
+ * Styled to match the Scripts buttons above rather than as a Button, so the rail
+ * reads as one column of the same control repeated.
+ */
+function MachineButton({
+  page,
+  icon,
+  label,
+  title,
+}: {
+  page: 'toolbox' | 'setup'
+  icon: React.ReactNode
+  label: string
+  title: string
+}) {
+  const setPage = useUiStore((s) => s.setPage)
+
+  return (
+    <button
+      type="button"
+      onClick={() => setPage(page)}
+      title={title}
+      className="flex h-[30px] items-center gap-2 rounded-md border border-transparent px-2 text-left text-xs font-medium text-adaptive-800 hover:bg-adaptive-200"
+    >
+      {icon}
+      <span className="flex-1 truncate">{label}</span>
+    </button>
   )
 }
 
@@ -131,6 +185,10 @@ const FolderButton = memo(function FolderButton({
     <button
       type="button"
       onClick={() => setCategory(category)}
+      // Correct markup regardless of the skin, and the only way CSS can tell the
+      // selected folder from the rest: under neumorph the selected fill sits
+      // 0.02L from the rail, which is invisible without a raise.
+      aria-current={selected ? 'true' : undefined}
       title={
         empty
           ? `none of ${declared} repos cloned into ${category}/`

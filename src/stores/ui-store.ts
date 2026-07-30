@@ -8,14 +8,39 @@ export type ViewMode = 'cards' | 'list'
 export type ThemeMode = 'light' | 'dark'
 
 /**
+ * The skin: which *material* the app is painted in, independent of the theme's
+ * *lighting*. Two axes, four real looks.
+ *
+ * `classic` is the 1px-hairline look this app has always had and stays the
+ * default. `neumorph` paints every surface in one colour and separates them with
+ * soft shadows instead of borders — which is deliberately opt-in, because it
+ * cannot meet WCAG 1.4.11's 3:1 contrast for component boundaries. Exported as a
+ * list so the persisted value can be validated against it; see `migrate`.
+ */
+export const SKINS = ['classic', 'neumorph'] as const
+export type Skin = (typeof SKINS)[number]
+
+/**
  * Top-level views. `toolbox` and `setup` describe the machine rather than the open
  * folder, so both take the whole window and work with no workspace at all.
  */
 export type Page = 'repos' | 'activity' | 'toolbox' | 'setup'
 
+/**
+ * The repo detail page's tabs. Exported as a list so the persisted value can be
+ * validated against it — see `migrate`.
+ *
+ * Changes leads: the question you open a repo with is far more often "what have I
+ * got here" than "what are the open PRs".
+ */
+export const DETAIL_TABS = ['changes', 'commits', 'branches', 'prs', 'runs'] as const
+export type DetailTab = (typeof DETAIL_TABS)[number]
+
 interface UiState {
   /** An explicit choice. The app does not follow the OS theme. */
   theme: ThemeMode
+  /** Which surface treatment to paint in. Orthogonal to `theme`. */
+  skin: Skin
   /**
    * The selected folder, or null when none is.
    *
@@ -29,6 +54,22 @@ interface UiState {
   activeRepoId: RepoId | null
   /** Repo whose detail page replaces the list, or null for the list. */
   detailRepoId: RepoId | null
+  /**
+   * Which detail tab is open, remembered across repos and restarts.
+   *
+   * Persisted because the tab is a working preference, not a property of a repo:
+   * someone reviewing PRs opens repo after repo wanting the PR tab every time, and
+   * resetting to the default on each one is a click per repo.
+   */
+  detailTab: DetailTab
+  /**
+   * Collapses the detail header to just its identity row.
+   *
+   * Worth a preference because at the centre panel's 420px floor the full header is
+   * ~230px of a ~600px panel — more chrome than content for anyone who opened the
+   * page to read a file list.
+   */
+  detailHeaderCollapsed: boolean
   filterText: string
   filterChip: NeedsYouKind | null
   view: ViewMode
@@ -44,12 +85,16 @@ interface UiState {
 
   toggleTheme(): void
   setTheme(theme: ThemeMode): void
+  toggleSkin(): void
+  setSkin(skin: Skin): void
   setTermFontSize(size: number): void
   toggleCategory(category: Category): void
   setCategory(category: Category | null): void
   setActiveRepo(id: RepoId | null): void
   openDetail(id: RepoId): void
   closeDetail(): void
+  setDetailTab(tab: DetailTab): void
+  toggleDetailHeader(): void
   setFilterText(text: string): void
   toggleFilterChip(kind: NeedsYouKind): void
   clearFilters(): void
@@ -58,13 +103,55 @@ interface UiState {
   setPaletteOpen(open: boolean): void
 }
 
+/**
+ * Rebuilds the persisted slice from whatever an older build wrote.
+ *
+ * Named and exported rather than inlined into the persist options so it can be
+ * tested directly: it is the one function here that can silently corrupt state —
+ * it runs against a blob this build never wrote, and whatever it returns *is* the
+ * store. Every field is validated, and anything unrecognised falls back rather
+ * than being trusted.
+ */
+export function migrateUiState(persisted: unknown) {
+  const p = (persisted ?? {}) as {
+    theme?: unknown
+    skin?: unknown
+    view?: unknown
+    expandedCategory?: unknown
+    termFontSize?: unknown
+    detailTab?: unknown
+    detailHeaderCollapsed?: unknown
+  }
+  return {
+    theme: p.theme === 'light' || p.theme === 'dark' ? p.theme : 'light',
+    // Validated against the list, like `detailTab`: a blob from before the skin
+    // existed simply has no key, which lands on 'classic' — the right answer for
+    // an opt-in look nobody has chosen yet.
+    skin: SKINS.includes(p.skin as Skin) ? (p.skin as Skin) : 'classic',
+    view: p.view === 'cards' || p.view === 'list' ? p.view : 'list',
+    expandedCategory: typeof p.expandedCategory === 'string' ? p.expandedCategory : null,
+    termFontSize:
+      typeof p.termFontSize === 'number' && p.termFontSize >= 8 && p.termFontSize <= 20
+        ? p.termFontSize
+        : 12,
+    // Validated against the list rather than accepted as any string: a tab removed
+    // in a later build would otherwise leave the page with no TabsContent
+    // matching, and so blank.
+    detailTab: DETAIL_TABS.includes(p.detailTab as DetailTab) ? (p.detailTab as DetailTab) : 'changes',
+    detailHeaderCollapsed: p.detailHeaderCollapsed === true,
+  }
+}
+
 export const useUiStore = create<UiState>()(
   persist(
     (set) => ({
       theme: 'light',
+      skin: 'classic',
       expandedCategory: null,
       activeRepoId: null,
       detailRepoId: null,
+      detailTab: 'changes',
+      detailHeaderCollapsed: false,
       filterText: '',
       filterChip: null,
       view: 'list',
@@ -74,6 +161,8 @@ export const useUiStore = create<UiState>()(
 
       toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
       setTheme: (theme) => set({ theme }),
+      toggleSkin: () => set((s) => ({ skin: s.skin === 'classic' ? 'neumorph' : 'classic' })),
+      setSkin: (skin) => set({ skin }),
       setTermFontSize: (size) => set({ termFontSize: Math.min(20, Math.max(8, size)) }),
 
       toggleCategory: (category) =>
@@ -90,6 +179,9 @@ export const useUiStore = create<UiState>()(
       // Opening a detail page also selects the repo, so the output pane follows.
       openDetail: (id) => set({ detailRepoId: id, activeRepoId: id }),
       closeDetail: () => set({ detailRepoId: null }),
+      setDetailTab: (detailTab) => set({ detailTab }),
+      toggleDetailHeader: () =>
+        set((s) => ({ detailHeaderCollapsed: !s.detailHeaderCollapsed })),
       setFilterText: (filterText) => set({ filterText }),
       toggleFilterChip: (kind) => set((s) => ({ filterChip: s.filterChip === kind ? null : kind })),
       clearFilters: () => set({ filterText: '', filterChip: null }),
@@ -104,33 +196,19 @@ export const useUiStore = create<UiState>()(
       // directory must not leave a selection pointing at a folder that is gone.
       partialize: (s) => ({
         theme: s.theme,
+        skin: s.skin,
         view: s.view,
         expandedCategory: s.expandedCategory,
         termFontSize: s.termFontSize,
+        detailTab: s.detailTab,
+        detailHeaderCollapsed: s.detailHeaderCollapsed,
       }),
       // `partialize` decides what is *written*, not what is read: a blob saved by
       // an older build is still merged over the defaults on load, keys and all. So
       // the version is bumped whenever the shape changes, and `migrate` rebuilds the
       // state from scratch rather than trusting whatever was stored.
-      version: 6,
-      migrate: (persisted) => {
-        const p = (persisted ?? {}) as {
-          theme?: unknown
-          view?: unknown
-          expandedCategory?: unknown
-          termFontSize?: unknown
-        }
-        return {
-          theme: p.theme === 'light' || p.theme === 'dark' ? p.theme : 'light',
-          view: p.view === 'cards' || p.view === 'list' ? p.view : 'list',
-          expandedCategory:
-            typeof p.expandedCategory === 'string' ? p.expandedCategory : null,
-          termFontSize:
-            typeof p.termFontSize === 'number' && p.termFontSize >= 8 && p.termFontSize <= 20
-              ? p.termFontSize
-              : 12,
-        } as never
-      },
+      version: 8,
+      migrate: migrateUiState,
     }
   )
 )

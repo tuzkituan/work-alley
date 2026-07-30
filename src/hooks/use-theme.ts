@@ -1,29 +1,58 @@
-import { useEffect } from 'react'
 import { useUiStore } from '@/stores/ui-store'
-import type { ThemeMode } from '@/stores/ui-store'
+import type { Skin, ThemeMode } from '@/stores/ui-store'
 
 /**
- * Applies the theme to <html>, NOT to the app root div.
+ * Writes the appearance to <html>, NOT to the app root div.
  *
  * Every Radix portal (Dialog, Popover, DropdownMenu, Tooltip, CommandDialog,
- * Sonner) mounts into document.body — outside the app root. If `.dark` lived on
- * the root, those portals would lose it and resolve the whole --adaptive-* ramp
- * to its light values, producing white dialogs floating over a dark app.
+ * Sonner) mounts into document.body — outside the app root. If `.dark` or
+ * `data-skin` lived on the root, those portals would lose them and resolve the
+ * whole --adaptive-* ramp to its light, hairlined values: white dialogs floating
+ * over a dark app.
+ *
+ * A module-scope subscription rather than an effect in `App`, and that is a fix
+ * rather than a style preference. `buildTermTheme()` samples these very
+ * attributes through `getComputedStyle`, from an effect in a *descendant* of App
+ * — and React flushes child effects before parent effects, so an App-level effect
+ * wrote `.dark` only *after* the terminal had already read the previous theme's
+ * colours. Writing here, outside React's scheduling entirely, means the DOM is
+ * correct before any component can look at it.
+ */
+function applyToDom(theme: ThemeMode, skin: Skin) {
+  const root = document.documentElement
+  root.classList.toggle('dark', theme === 'dark')
+  root.dataset.skin = skin
+  // Only ever light|dark: this drives native scrollbars, form controls and the
+  // webview backdrop, none of which have any notion of a skin.
+  root.style.colorScheme = theme
+}
+
+// Eagerly, at import time. `persist` rehydrates from localStorage synchronously,
+// so the store is already correct here and there is no frame of the wrong look.
+applyToDom(useUiStore.getState().theme, useUiStore.getState().skin)
+
+useUiStore.subscribe((state, prev) => {
+  if (state.theme === prev.theme && state.skin === prev.skin) return
+  applyToDom(state.theme, state.skin)
+})
+
+/**
+ * Kept as a hook so `App` still declares the dependency, but the work is done by
+ * the subscription above.
  */
 export function useApplyTheme() {
-  const theme = useUiStore((s) => s.theme)
-
-  useEffect(() => {
-    const root = document.documentElement
-    root.classList.toggle('dark', theme === 'dark')
-    // Keeps native scrollbars, form controls and the webview backdrop in step.
-    root.style.colorScheme = theme
-  }, [theme])
+  // Intentionally empty. See applyToDom's comment for why this is not an effect.
 }
 
 const LABEL: Record<ThemeMode, string> = {
   light: 'Light',
   dark: 'Dark',
+}
+
+/** "Soft" rather than "Neumorph": the UI describes the look, not the technique. */
+const SKIN_LABEL: Record<Skin, string> = {
+  classic: 'Classic',
+  neumorph: 'Soft',
 }
 
 /**
@@ -48,4 +77,16 @@ export function useTheme() {
     setTheme,
     label: LABEL[theme],
   }
+}
+
+/**
+ * The other axis. Separate from `useTheme` so a component that only cares about
+ * light-vs-dark does not re-render when the skin changes.
+ */
+export function useSkin() {
+  const skin = useUiStore((s) => s.skin)
+  const setSkin = useUiStore((s) => s.setSkin)
+  const toggleSkin = useUiStore((s) => s.toggleSkin)
+
+  return { skin, setSkin, toggleSkin, label: SKIN_LABEL[skin] }
 }

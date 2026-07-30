@@ -188,12 +188,71 @@ pub fn available_tasks(repo: &Path) -> Vec<String> {
     };
     // Long-running by convention. A curated list on purpose: offering every script
     // as a "task" would put `build` and `test` behind a Stop button.
-    ["dev", "start", "serve", "storybook"]
+    LONG_RUNNING
         .into_iter()
         .filter(|t| scripts.contains_key(*t))
         .map(|t| t.to_string())
         .collect()
 }
+
+/// Scripts that run, finish, and are worth a menu entry — `build`, `lint`,
+/// `format` and friends.
+///
+/// The complement of `available_tasks`: anything long-running is excluded, since
+/// those belong behind a Start/Stop pair rather than a fire-and-forget item. The
+/// well-known names lead, in that order, because they are what people reach for;
+/// whatever else the repo declares follows alphabetically.
+pub fn available_scripts(repo: &Path) -> Vec<String> {
+    let Ok(text) = std::fs::read_to_string(repo.join("package.json")) else {
+        return Vec::new();
+    };
+    parse_available_scripts(&text)
+}
+
+/// The ordering and filtering half of `available_scripts`, split out so it can be
+/// tested without a package.json on disk.
+pub fn parse_available_scripts(text: &str) -> Vec<String> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+    let Some(scripts) = json.get("scripts").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+
+    let mut out: Vec<String> = COMMON_SCRIPTS
+        .iter()
+        .filter(|s| scripts.contains_key(**s))
+        .map(|s| s.to_string())
+        .collect();
+
+    let mut rest: Vec<String> = scripts
+        .keys()
+        .filter(|k| !LONG_RUNNING.contains(&k.as_str()))
+        .filter(|k| !COMMON_SCRIPTS.contains(&k.as_str()))
+        // Lifecycle hooks fire on their own; running one by hand is never the
+        // intent, and `prepare` in particular re-runs an install.
+        .filter(|k| !k.starts_with("pre") && !k.starts_with("post") && *k != "prepare")
+        .cloned()
+        .collect();
+    rest.sort();
+    out.append(&mut rest);
+    out
+}
+
+/// Scripts offered as long-running tasks instead, by `available_tasks`.
+const LONG_RUNNING: [&str; 4] = ["dev", "start", "serve", "storybook"];
+
+/// Display order for the scripts people actually reach for.
+const COMMON_SCRIPTS: [&str; 8] = [
+    "build",
+    "lint",
+    "lint:fix",
+    "format",
+    "format:check",
+    "typecheck",
+    "test",
+    "check",
+];
 
 /// The package-manager invocation for a named task.
 pub fn task_command(repo: &Path, task: &str, fallback: &str) -> Option<(String, Vec<String>)> {
@@ -341,6 +400,27 @@ mod tests {
         assert_eq!(clean_version("workspace:*"), None);
         assert_eq!(clean_version("*"), None);
         assert_eq!(clean_version("git+ssh://x/y.git"), None);
+    }
+
+    #[test]
+    fn lists_one_shot_scripts_in_display_order() {
+        let json = r#"{"scripts":{
+            "zip":"x","dev":"vite","build":"tsc","postbuild":"x","lint":"eslint .",
+            "storybook":"sb","prepare":"husky","format":"prettier -w .","apidocs":"x"
+        }}"#;
+        assert_eq!(
+            parse_available_scripts(json),
+            // Well-known names first in their own order, then the rest alphabetically.
+            vec!["build", "lint", "format", "apidocs", "zip"]
+        );
+    }
+
+    #[test]
+    fn no_scripts_is_empty_not_a_panic() {
+        assert!(parse_available_scripts("{}").is_empty());
+        assert!(parse_available_scripts("not json").is_empty());
+        // Only long-running ones: those are offered as tasks instead.
+        assert!(parse_available_scripts(r#"{"scripts":{"dev":"vite","start":"node ."}}"#).is_empty());
     }
 
     #[test]

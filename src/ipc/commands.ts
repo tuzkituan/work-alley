@@ -4,6 +4,7 @@ import type {
   ActionIntent,
   ActionSpec,
   Bootstrap,
+  BranchInfo,
   ChangedFile,
   CheckoutPreview,
   CommitEntry,
@@ -21,7 +22,9 @@ import type {
   RunSummary,
   ScanOptions,
   SetupPlan,
+  StashEntry,
   TermInfo,
+  UpdateReport,
   WorkspaceSnapshot,
 } from '@/domain/types'
 
@@ -56,7 +59,15 @@ export const api = {
   recentCommits: (limit?: number) => call<CommitEntry[]>('recent_commits', { limit }),
   dockerStatus: () => call<DockerStatus>('docker_status'),
   listDevServers: () => call<DevServer[]>('list_dev_servers'),
-  listBranches: (repo: RepoRef) => call<string[]>('list_branches', { repo }),
+  listBranches: (repo: RepoRef) => call<BranchInfo[]>('list_branches', { repo }),
+  listStashes: (repo: RepoRef) => call<StashEntry[]>('list_stashes', { repo }),
+  /**
+   * The patch for one changed file. `path` must be one the repo currently reports as
+   * changed — Rust rejects anything else, which is what keeps this from reading
+   * arbitrary files.
+   */
+  fileDiff: (repo: RepoRef, path: string, staged: boolean) =>
+    call<string>('file_diff', { repo, path, staged }),
   listPackages: () => call<PackageStatus[]>('list_packages'),
   /** The first-run setup path: every step, in order, with what is already done. */
   listSetupPlan: () => call<SetupPlan>('list_setup_plan'),
@@ -66,6 +77,12 @@ export const api = {
 
   /** Installable versions for one tool. Empty when the manager cannot list them. */
   listPackageVersions: (id: string) => call<PackageVersion[]>('list_package_versions', { id }),
+  /**
+   * Which installed tools have a newer version. Slow — one bulk query per manager,
+   * hitting mirrors and registries — so it is its own call rather than part of
+   * listPackages.
+   */
+  checkPackageUpdates: () => call<UpdateReport>('check_package_updates'),
   listPullRequests: (repo: RepoRef) => call<PullRequestsResult>('list_pull_requests', { repo }),
   listChangedFiles: (repo: RepoRef) => call<ChangedFile[]>('list_changed_files', { repo }),
   repoCommits: (repo: RepoRef, limit?: number) =>

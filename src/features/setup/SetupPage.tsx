@@ -15,6 +15,7 @@ import { Skeleton } from '@/components/ui/skeleton'
 import { SectionLabel } from '@/components/wa/primitives'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunStore } from '@/stores/run-store'
+import { useTerminalStore } from '@/stores/terminal-store'
 import { api } from '@/ipc/commands'
 import { keys } from '@/queries/keys'
 import { cn } from '@/lib/utils'
@@ -56,8 +57,9 @@ export function SetupPage({ toolsReady }: { toolsReady: boolean }) {
     // installed tool reports as missing.
     enabled: toolsReady,
     staleTime: 30_000,
-    // The exception to the app-wide default. Root installs happen in a terminal
-    // window, so coming back to Work Alley is the moment the answers changed.
+    // The exception to the app-wide default. Installs run in a terminal tab and
+    // can leave the window (a browser sign-in, a manual step), so coming back is a
+    // moment the answers may have changed.
     refetchOnWindowFocus: true,
   })
 
@@ -77,7 +79,7 @@ export function SetupPage({ toolsReady }: { toolsReady: boolean }) {
 
   return (
     <div className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
-      <div className="mx-auto flex w-full max-w-3xl flex-col gap-3.5">
+      <div className="mx-auto flex w-full max-w-[104rem] flex-col gap-3.5">
         <div className="flex items-center gap-2">
           <Button
             variant="waGhost"
@@ -161,12 +163,12 @@ function Intro({ plan }: { plan: SetupPlan | undefined }) {
         )}
       </div>
       {/* The two things that surprise people, said once here rather than on every
-          step: why a window opens, and why nvm needs a restart. */}
+          step: where the output goes, and why nvm needs a restart. */}
       <p className="max-w-prose text-xs text-adaptive-500">
-        Work through these in order — each one assumes the ones above it. Steps that
-        install system packages open a terminal so you can type your password, because
-        a desktop app cannot ask for it; everything else streams into the output pane.
-        Every command is shown before it runs, and nothing runs until you accept it.
+        Work through these in order — each one assumes the ones above it. Every step
+        runs in a terminal at the bottom of this page, which is also where you type
+        your password when a system package needs root. Every command is shown before
+        it runs, and nothing runs until you accept it.
       </p>
     </div>
   )
@@ -184,7 +186,14 @@ function StepList({
   lastRan: ActionSpec | null
 }) {
   return (
-    <div className="flex flex-col gap-2">
+    // Staggered columns, same as the Toolbox — steps range from two lines to a
+    // whole command preview, so grid rows left large holes.
+    //
+    // Multi-column happens to suit ordered content better than a grid would: it
+    // fills a column top to bottom before starting the next, so the steps still
+    // read 1, 2, 3 downwards rather than zig-zagging across rows. The numbers on
+    // the cards carry the order either way.
+    <div className="columns-[34rem] gap-4">
       {steps.map((step, i) => (
         <StepCard
           key={step.id}
@@ -219,7 +228,9 @@ function StepCard({
   return (
     <div
       className={cn(
-        'flex flex-col gap-2.5 rounded-lg border bg-card p-3.5',
+        // mb + break-inside-avoid: this card is a multi-column item in StepList,
+        // and a step split across a column boundary is unreadable.
+        'mb-2 flex break-inside-avoid flex-col gap-2.5 rounded-lg border bg-card p-3.5',
         current ? 'border-adaptive-950 shadow-focus-ring' : 'border-adaptive-200'
       )}
     >
@@ -235,7 +246,7 @@ function StepCard({
             {step.needsRoot && (
               <span
                 className="flex items-center gap-1 text-[10px] text-adaptive-400"
-                title="Opens a terminal for the password prompt"
+                title="Runs in the terminal below, where you can enter your password"
               >
                 <Terminal className="size-2.5" />
                 root
@@ -447,15 +458,22 @@ function GitIdentityForm({
 }
 
 /**
- * The tail of the run this step started.
+ * What this step's operation is doing.
  *
- * A tail rather than the whole log: the output pane is right there for the full
- * thing, and what this needs to answer is "is it moving, and did it work".
- *
- * Root installs produce no run at all — `open_terminal` hands the command to a
- * terminal emulator and returns — so those get a sentence instead of a log.
+ * Installs run in the integrated terminal at the bottom of this page, so their
+ * state comes from the terminal tab rather than from a run: there is no log to
+ * tail, and the real output is already on screen a few hundred pixels below. The
+ * run-store path below it still serves the identity step, which is a plain
+ * `git config` and streams like any other command.
  */
 function StepOutput({ needsRoot }: { needsRoot: boolean }) {
+  const term = useTerminalStore((s) => {
+    for (let i = s.order.length - 1; i >= 0; i--) {
+      const t = s.tabs.get(s.order[i]!)
+      if (t?.kind === 'package') return t
+    }
+    return undefined
+  })
   const runId = useRunStore((s) => {
     for (let i = s.order.length - 1; i >= 0; i--) {
       const id = s.order[i]!
@@ -466,11 +484,29 @@ function StepOutput({ needsRoot }: { needsRoot: boolean }) {
   })
   const run = useRunStore((s) => (runId ? s.runs.get(runId) : undefined))
 
+  if (term) {
+    const live = term.status === 'live'
+    return (
+      <div className="flex items-center gap-2 rounded-md border border-adaptive-200 bg-adaptive-100 px-2.5 py-1.5 text-[11px] text-adaptive-600">
+        <Terminal className="size-3 flex-none" />
+        {live
+          ? needsRoot
+            ? 'Running in the terminal below — enter your password there.'
+            : 'Running in the terminal below.'
+          : term.exitCode === 0
+            ? 'Finished — press Re-check.'
+            : `Exited with code ${term.exitCode ?? '?'} — the terminal below has why.`}
+      </div>
+    )
+  }
+
+  // Between pressing the button and the session opening there is a beat, and on a
+  // root step that beat is where the password prompt is about to appear.
   if (needsRoot && !run) {
     return (
       <div className="flex items-center gap-2 rounded-md border border-adaptive-200 bg-adaptive-100 px-2.5 py-1.5 text-[11px] text-adaptive-600">
         <Terminal className="size-3 flex-none" />
-        A terminal window opened — enter your password there, then press Re-check.
+        Opening a terminal for the password prompt…
       </div>
     )
   }

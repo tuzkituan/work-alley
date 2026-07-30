@@ -21,10 +21,14 @@ export function ActivityPanel({ boot }: { boot: Bootstrap | undefined }) {
   )
 
   return (
-    <div className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
+    // Full height, not a scrolling page: each panel scrolls its own list, so the
+    // tab itself never scrolls. Both used to be capped at 320px, which left most
+    // of a tall window empty while the commit list scrolled inside a short box.
+    <div className="flex min-h-0 flex-1 flex-col px-4 py-3.5">
       {/* Side by side while there is room, stacked when the panel is narrow — the
-          centre panel is user-resizable down to 420px. */}
-      <div className="grid grid-cols-1 gap-3 lg:grid-cols-[1.15fr_1fr]">
+          centre panel is user-resizable down to 420px. Stacked, the tab scrolls
+          instead: two panels sharing a short height would leave both unreadable. */}
+      <div className="wa-scroll grid min-h-0 flex-1 grid-cols-1 gap-3 overflow-y-auto lg:grid-cols-[1.15fr_1fr] lg:overflow-visible">
         <RecentCommitsPanel repoCount={inFolder.length} scope={expanded} />
         <LocalServicesPanel />
       </div>

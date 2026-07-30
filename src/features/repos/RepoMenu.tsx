@@ -6,6 +6,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
@@ -13,8 +16,7 @@ import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
 import { api } from '@/ipc/commands'
 import { keys } from '@/queries/keys'
 import { useRunAction } from '@/hooks/use-action'
-import { useScanStore } from '@/stores/scan-store'
-import { useRescanCategory } from '@/hooks/use-category-scan'
+import { useRescanRepo } from '@/hooks/use-rescan-repo'
 import { taskOf } from '@/domain/severity'
 import { repoId, type RepoRef, type RepoStatus } from '@/domain/types'
 import { useUiStore } from '@/stores/ui-store'
@@ -28,8 +30,7 @@ import { useUiStore } from '@/stores/ui-store'
  */
 export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus | undefined }) {
   const run = useRunAction()
-  const rescan = useRescanCategory()
-  const upsert = useScanStore((s) => s.upsertMany)
+  const rescanRepo = useRescanRepo()
   const openDetail = useUiStore((s) => s.openDetail)
   // Served from the bootstrap cache, so this costs nothing per row.
   const { data: boot } = useQuery({ queryKey: keys.bootstrap, enabled: false })
@@ -43,6 +44,10 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
   // Only offered where package.json actually declares the script — that is every
   // ui/ library here, and nothing else.
   const hasStorybook = status?.availableTasks.includes('storybook') ?? false
+  const scripts = status?.availableScripts ?? []
+  const dirty = (status?.dirtyCount ?? 0) + (status?.untrackedCount ?? 0)
+  // Only to label the Push item with a count; the real preflight happens in Rust.
+  const ahead = status?.sync.kind === 'diverged' ? status.sync.ahead : 0
 
   return (
     <DropdownMenu>
@@ -61,20 +66,25 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
       <DropdownMenuContent align="end" className="w-56">
         <DropdownMenuItem onClick={() => openDetail(repoId(repo))}>Open details</DropdownMenuItem>
 
+        {/* A submenu rather than one item per editor: a machine with VS Code, Cursor,
+            Zed and a JetBrains IDE installed put four entries above everything
+            else, pushing the git actions off the first screen of the menu. */}
         {editors.length > 0 && (
           <>
             <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
-              Open in
-            </DropdownMenuLabel>
-            {editors.map((e) => (
-              <DropdownMenuItem
-                key={e.id}
-                onClick={() => run({ kind: 'openInEditor', ref: repo, editor: e.id })}
-              >
-                {e.label}
-              </DropdownMenuItem>
-            ))}
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Open in</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-52">
+                {editors.map((e) => (
+                  <DropdownMenuItem
+                    key={e.id}
+                    onClick={() => run({ kind: 'openInEditor', ref: repo, editor: e.id })}
+                  >
+                    {e.label}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
           </>
         )}
 
@@ -90,22 +100,97 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
           Open in system terminal
         </DropdownMenuItem>
         <DropdownMenuSeparator />
-        <DropdownMenuItem onClick={() => run({ kind: 'branchList', ref: repo })}>
-          Branches…
+        <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
+          Git
+        </DropdownMenuLabel>
+        <DropdownMenuItem onClick={() => run({ kind: 'pull', ref: repo })}>Pull</DropdownMenuItem>
+        <DropdownMenuItem onClick={() => run({ kind: 'push', ref: repo })}>
+          Push{ahead > 0 ? ` (${ahead})` : ''}
         </DropdownMenuItem>
         <DropdownMenuItem onClick={() => run({ kind: 'fetchAll', ref: repo })}>
           Fetch
         </DropdownMenuItem>
-        <DropdownMenuItem
-          onClick={() => {
-            void api
-              .rescanRepo(repo)
-              .then((s) => upsert([s]))
-              .catch(() => rescan(repo.category))
-          }}
-        >
+
+        {/* Reuses the bulk checkout action with a single target: one repo is just
+            the n=1 case, and the dirty policy and preflight come free. */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>Switch branch</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="max-h-80 w-56 overflow-y-auto">
+            <SwitchBranchItems repo={repo} current={status?.branch ?? null} />
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>Stash</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-56">
+            <DropdownMenuItem onClick={() => run({ kind: 'stash', ref: repo })}>
+              Stash changes{dirty > 0 ? ` (${dirty})` : ''}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              onClick={() => run({ kind: 'stash', ref: repo, includeUntracked: true })}
+            >
+              Stash including untracked
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => run({ kind: 'stashPop', ref: repo })}>
+              Pop newest stash
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onClick={() => run({ kind: 'stashList', ref: repo })}>
+              List stash…
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+
+        {/* Read-only, so every one of these skips the confirm dialog and goes
+            straight to the run log. */}
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>Inspect</DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-56">
+            <DropdownMenuItem onClick={() => run({ kind: 'status', ref: repo })}>
+              Status…
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => run({ kind: 'diff', ref: repo })}>
+              Diff…
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => run({ kind: 'diff', ref: repo, staged: true })}>
+              Staged diff…
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => run({ kind: 'branchList', ref: repo })}>
+              Branches…
+            </DropdownMenuItem>
+            <DropdownMenuItem onClick={() => run({ kind: 'logGraph', ref: repo })}>
+              Log graph…
+            </DropdownMenuItem>
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+
+        <DropdownMenuItem onClick={() => void rescanRepo(repo)}>
           Rescan this repo
         </DropdownMenuItem>
+
+        {scripts.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
+              Scripts
+            </DropdownMenuLabel>
+            {/* A submenu rather than inline items: a repo can declare a dozen
+                scripts, and the menu already has plenty in it. */}
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Run script</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="max-h-80 w-52 overflow-y-auto">
+                {scripts.map((s) => (
+                  <DropdownMenuItem
+                    key={s}
+                    onClick={() => run({ kind: 'runScript', ref: repo, script: s })}
+                  >
+                    <span className="font-mono text-[11.5px]">{s}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          </>
+        )}
 
         {hasStorybook && (
           <>
@@ -148,6 +233,25 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
             Free port :{port}
           </DropdownMenuItem>
         )}
+        {/* Down here with the other destructive items rather than next to Push:
+            after a rebase it is the only way forward, but it is never the thing
+            you want by default. Both of these require a typed confirmation. */}
+        <DropdownMenuItem
+          variant="destructive"
+          onClick={() => run({ kind: 'push', ref: repo, force: true })}
+        >
+          Force-push (with lease)…
+        </DropdownMenuItem>
+        {/* Hidden when there is nothing to lose, so the destructive item is not
+            sitting there on a clean repo waiting to be misclicked. */}
+        {dirty > 0 && (
+          <DropdownMenuItem
+            variant="destructive"
+            onClick={() => run({ kind: 'discardChanges', ref: repo })}
+          >
+            Discard {dirty} local change{dirty === 1 ? '' : 's'}…
+          </DropdownMenuItem>
+        )}
 
         <DropdownMenuSeparator />
 
@@ -161,5 +265,57 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+  )
+}
+
+/**
+ * The branch list, fetched only once the submenu is opened.
+ *
+ * Radix mounts sub-content lazily, so putting the query in its own component is
+ * what keeps `git for-each-ref` off every row of a 40-repo grid — the same reason
+ * the editors list above reads from the bootstrap cache instead of querying.
+ */
+function SwitchBranchItems({ repo, current }: { repo: RepoRef; current: string | null }) {
+  const run = useRunAction()
+  const { data, isPending, isError } = useQuery({
+    queryKey: keys.branches(repoId(repo)),
+    queryFn: () => api.listBranches(repo),
+    staleTime: 60_000,
+  })
+
+  if (isPending) {
+    return <DropdownMenuItem disabled>Loading branches…</DropdownMenuItem>
+  }
+  if (isError || (data ?? []).length === 0) {
+    return <DropdownMenuItem disabled>No branches found</DropdownMenuItem>
+  }
+
+  return (
+    <>
+      {(data ?? []).map((b) => (
+        <DropdownMenuItem
+          key={b.name}
+          disabled={b.name === current}
+          // `dirty: 'stash'` rather than 'skip': asking to switch and getting
+          // nothing because the tree was dirty is the more surprising outcome, and
+          // stashing is recoverable. The confirm dialog says so before it runs.
+          onClick={() => run({ kind: 'checkout', refs: [repo], branch: b.name, dirty: 'stash' })}
+        >
+          <span className="truncate font-mono text-[11.5px]">{b.name}</span>
+          {b.name === current ? (
+            <span className="ml-auto flex-none text-[10px] text-adaptive-400">current</span>
+          ) : (
+            // Drift at a glance, so you can tell a live branch from a stale one
+            // without leaving the menu.
+            (b.ahead > 0 || b.behind > 0) && (
+              <span className="ml-auto flex-none font-mono text-[10px] text-adaptive-400">
+                {b.ahead > 0 && `↑${b.ahead}`}
+                {b.behind > 0 && `↓${b.behind}`}
+              </span>
+            )
+          )}
+        </DropdownMenuItem>
+      ))}
+    </>
   )
 }

@@ -12,7 +12,7 @@ import { repoId, type Bootstrap } from '@/domain/types'
 import { useUiStore } from '@/stores/ui-store'
 import { useScanStore } from '@/stores/scan-store'
 import { useRunAction } from '@/hooks/use-action'
-import { useTheme } from '@/hooks/use-theme'
+import { useSkin, useTheme } from '@/hooks/use-theme'
 import { shortenHome, useHomeDir, useWorkspaceActions } from '@/features/workspace/WorkspacePicker'
 
 /**
@@ -31,6 +31,7 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
   const statuses = useScanStore((s) => s.repos)
   const run = useRunAction()
   const { toggleTheme } = useTheme()
+  const { toggleSkin } = useSkin()
   const workspace = useWorkspaceActions()
   const home = useHomeDir()
   const [query, setQuery] = useState('')
@@ -191,13 +192,24 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
               Pull all repos
             </CommandItem>
             <CommandItem
-              value="action:theme"
+              value="action:theme light dark"
               onSelect={() => {
                 setOpen(false)
                 toggleTheme()
               }}
             >
-              Toggle theme
+              Toggle theme (light / dark)
+            </CommandItem>
+            {/* "skin", "classic" and "soft" all live in the value because cmdk
+                filters on that, not on the label. */}
+            <CommandItem
+              value="action:skin classic soft neumorphic"
+              onSelect={() => {
+                setOpen(false)
+                toggleSkin()
+              }}
+            >
+              Toggle skin (classic / soft)
             </CommandItem>
             <CommandItem
               value="action:toolbox"

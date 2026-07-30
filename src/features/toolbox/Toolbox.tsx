@@ -2,15 +2,19 @@ import { useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import {
   ArrowLeft,
+  ArrowUp,
   Check,
   ChevronDown,
   Download,
   ListChecks,
   RefreshCw,
+  Search,
   Terminal,
   Trash2,
+  X,
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -26,7 +30,7 @@ import { api } from '@/ipc/commands'
 import { keys } from '@/queries/keys'
 import { cn } from '@/lib/utils'
 import { useRunAction } from '@/hooks/use-action'
-import type { PackageStatus } from '@/domain/types'
+import type { PackageStatus, PackageUpdate } from '@/domain/types'
 
 /**
  * Install / upgrade / remove developer tooling.
@@ -49,25 +53,73 @@ export function Toolbox({ toolsReady }: { toolsReady: boolean }) {
     staleTime: 30_000,
   })
 
+  // The slow half, and a separate query for exactly that reason: this one asks
+  // mirrors and registries, so the list renders first and the "newer version"
+  // answers fold in when they arrive. A failure here leaves every row exactly as
+  // it was before — see `checked` below.
+  const updates = useQuery({
+    queryKey: keys.packageUpdates,
+    queryFn: () => api.checkPackageUpdates(),
+    enabled: toolsReady,
+    // Mirrors publish on the order of days; re-asking on every visit would spend
+    // seconds to learn nothing.
+    staleTime: 10 * 60_000,
+  })
+
+  // Only ids the backend actually managed to ask about get a definitive "up to
+  // date". Everything else keeps its Upgrade button, because an unreachable
+  // registry is not evidence that a tool is current.
+  const checked = useMemo(
+    () => new Set(updates.data?.checked ?? []),
+    [updates.data]
+  )
+  const outdated = useMemo(
+    () => new Map((updates.data?.updates ?? []).map((u) => [u.id, u])),
+    [updates.data]
+  )
+
+  const [query, setQuery] = useState('')
+
+  // Matched against id and manager as well as the label: people look for "podman"
+  // by name, but also ask "what does dnf install here" — and the id is what the
+  // description sometimes omits.
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    if (!q) return data ?? []
+    return (data ?? []).filter(({ package: m }) =>
+      [m.label, m.id, m.description, m.manager, m.group].some((f) =>
+        f.toLowerCase().includes(q)
+      )
+    )
+  }, [data, query])
+
   const groups = useMemo(() => {
     const byGroup = new Map<string, PackageStatus[]>()
-    for (const p of data ?? []) {
+    for (const p of matches) {
       const list = byGroup.get(p.package.group)
       if (list) list.push(p)
       else byGroup.set(p.package.group, [p])
     }
     return [...byGroup.entries()]
-  }, [data])
+  }, [matches])
 
   const installed = (data ?? []).filter((p) => p.installed).length
   const total = data?.length ?? 0
+  const filtering = query.trim().length > 0
+  // Counted against the list rather than taken from the report's length: a tool
+  // that has since been removed should not be advertised as upgradable.
+  const upgradable = (data ?? []).filter(
+    (p) => p.installed && outdated.has(p.package.id)
+  ).length
 
   return (
     <div className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
-      {/* Capped and centred. Full-window rows stretched to ~2000px, leaving a dead
-          gap between each tool's description and its buttons — the two things you
-          need to read together ended up at opposite edges of the screen. */}
-      <div className="mx-auto flex w-full max-w-4xl flex-col gap-3.5">
+      {/* Capped and centred, but the cap is now on the *column*, not the page: a
+          single 56rem column of 50 rows wasted two thirds of a wide screen, while
+          letting a row stretch to 2000px put each tool's description and its
+          buttons at opposite edges. Columns below do both — readable rows, and the
+          whole list closer to one screen. */}
+      <div className="mx-auto flex w-full max-w-[104rem] flex-col gap-3.5">
         <div className="flex items-center gap-2">
           {/* A full-window page, so it needs its own way out. */}
           <Button
@@ -84,6 +136,51 @@ export function Toolbox({ toolsReady }: { toolsReady: boolean }) {
               {installed}/{total} installed
             </span>
           )}
+          {/* Only ever a count of real answers: while the check is still running,
+              or if it failed, there is nothing here rather than a reassuring 0. */}
+          {upgradable > 0 && (
+            <span className="rounded-sm border border-sev-warn/40 px-1.5 py-px font-mono text-[10px] text-sev-warn">
+              {upgradable} {upgradable === 1 ? 'update' : 'updates'}
+            </span>
+          )}
+          {updates.isFetching && (
+            <span className="text-[11px] text-adaptive-400">checking for updates…</span>
+          )}
+          {/* In the header row at a fixed width, not full-bleed on its own line: a
+              field the width of a 2000px window reads as the page's subject rather
+              than as a filter, and the query is never more than a word. */}
+          <div className="relative ml-1 w-[17rem] flex-none">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3 -translate-y-1/2 text-adaptive-400" />
+            <Input
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              // Escape clears rather than blurs: the field holds the only state on
+              // this page, so getting back to the full list is the useful escape.
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') setQuery('')
+              }}
+              placeholder="Filter tools…"
+              aria-label="Filter tools by name, manager or description"
+              className="h-[30px] pr-7 pl-7 text-xs"
+            />
+            {filtering && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                title="Clear the filter"
+                aria-label="Clear the filter"
+                className="absolute top-1/2 right-1.5 -translate-y-1/2 rounded-sm p-0.5 text-adaptive-400 hover:bg-adaptive-200 hover:text-adaptive-800"
+              >
+                <X className="size-3" />
+              </button>
+            )}
+          </div>
+          {filtering && (
+            <span className="wa-num font-mono text-[11px] text-adaptive-400">
+              {matches.length} of {total}
+            </span>
+          )}
+
           <div className="flex-1" />
           {/* A list of 50 rows is the wrong first screen on a machine with nothing
               on it — that needs an order, which the setup page is. */}
@@ -99,18 +196,26 @@ export function Toolbox({ toolsReady }: { toolsReady: boolean }) {
           <Button
             variant="waOutline"
             size="waXs"
-            disabled={isFetching}
-            onClick={() => void refetch()}
+            disabled={isFetching || updates.isFetching}
+            // Both halves: "re-check" means the whole picture, and the version
+            // answers are the half most likely to have gone stale.
+            onClick={() => {
+              void refetch()
+              void updates.refetch()
+            }}
           >
-            <RefreshCw className={cn('size-3', isFetching && 'animate-spin')} />
+            <RefreshCw
+              className={cn('size-3', (isFetching || updates.isFetching) && 'animate-spin')}
+            />
             Re-check
           </Button>
         </div>
 
         <p className="max-w-prose text-xs text-adaptive-500">
-          Anything needing root opens a terminal so you can enter your password —
-          a desktop app cannot ask for it. Everything else streams into the output
-          pane. System packages use whichever manager this machine has.
+          Every operation runs in a terminal at the bottom of this page, which is
+          also where you type your password when something needs root — a desktop
+          app cannot ask for it. System packages use whichever manager this machine
+          has.
         </p>
 
         {!toolsReady ? (
@@ -123,23 +228,51 @@ export function Toolbox({ toolsReady }: { toolsReady: boolean }) {
               <Skeleton key={i} className="h-12 w-full" />
             ))}
           </div>
+        ) : groups.length === 0 ? (
+          <div className="rounded-lg border border-adaptive-200 bg-card p-4 text-xs text-adaptive-500">
+            Nothing matches “{query.trim()}”. The Toolbox is a curated list, so a
+            tool that is not here has to be installed by hand.
+          </div>
         ) : (
-          groups.map(([group, items]) => (
-            <div key={group} className="flex flex-col gap-1.5">
-              <div className="flex items-center gap-2">
-                <SectionLabel>{group}</SectionLabel>
-                <span className="wa-num font-mono text-[10px] text-adaptive-400">
-                  {items.filter((i) => i.installed).length}/{items.length}
-                </span>
-                <span className="h-px flex-1 bg-adaptive-200" />
+          // Staggered, not a grid: groups run from 3 rows to 12, and in a grid each
+          // row is as tall as its tallest member, so a short group left a hole the
+          // height of the long one beside it. Multi-column packs each column
+          // independently instead.
+          //
+          // A column *width* rather than a count, so the count follows the window:
+          // the browser fits as many 32rem columns as there is room for, which is 1
+          // when narrow and 3 at the 104rem cap.
+          //
+          // A plain length, not `min(32rem, 100%)` — column-width takes no
+          // percentage, so that whole declaration was invalid and silently left one
+          // column. It was never needed: the width is only a preference, so a
+          // container narrower than 32rem gets one column of the container's width
+          // rather than an overflowing one.
+          <div className="columns-[32rem] gap-4">
+            {groups.map(([group, items]) => (
+              // break-inside-avoid: a group card split across a column boundary
+              // would put half its rows at the top of the next column.
+              <div key={group} className="mb-3.5 flex break-inside-avoid flex-col gap-1.5">
+                <div className="flex items-center gap-2">
+                  <SectionLabel>{group}</SectionLabel>
+                  <span className="wa-num font-mono text-[10px] text-adaptive-400">
+                    {items.filter((i) => i.installed).length}/{items.length}
+                  </span>
+                  <span className="h-px flex-1 bg-adaptive-200" />
+                </div>
+                <div className="overflow-hidden rounded-lg border border-adaptive-200 bg-card">
+                  {items.map((p) => (
+                    <PackageRow
+                      key={p.package.id}
+                      pkg={p}
+                      update={outdated.get(p.package.id)}
+                      checked={checked.has(p.package.id)}
+                    />
+                  ))}
+                </div>
               </div>
-              <div className="overflow-hidden rounded-lg border border-adaptive-200 bg-card">
-                {items.map((p) => (
-                  <PackageRow key={p.package.id} pkg={p} />
-                ))}
-              </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
       </div>
     </div>
@@ -163,6 +296,7 @@ function SplitAction({
   variant,
   icon,
   title,
+  menuOnly,
 }: {
   id: string
   label: string
@@ -170,6 +304,12 @@ function SplitAction({
   variant: 'waPrimary' | 'waOutline'
   icon?: React.ReactNode
   title: string
+  /**
+   * Drops the main button and keeps the version menu. Used for a tool that is
+   * already current: there is nothing to upgrade to, but pinning a specific
+   * version is still a thing people do.
+   */
+  menuOnly?: boolean
 }) {
   const run = useRunAction()
   const [menuOpen, setMenuOpen] = useState(false)
@@ -184,23 +324,25 @@ function SplitAction({
 
   return (
     <div className="flex flex-none items-center">
-      <Button
-        variant={variant}
-        size="waXs"
-        title={title}
-        className="rounded-r-none"
-        onClick={() => run({ kind: 'package', id, op })}
-      >
-        {icon}
-        {label}
-      </Button>
+      {!menuOnly && (
+        <Button
+          variant={variant}
+          size="waXs"
+          title={title}
+          className="rounded-r-none"
+          onClick={() => run({ kind: 'package', id, op })}
+        >
+          {icon}
+          {label}
+        </Button>
+      )}
       <DropdownMenu open={menuOpen} onOpenChange={setMenuOpen}>
         <DropdownMenuTrigger asChild>
           <Button
             variant={variant}
             size="waXs"
-            title="Choose a version"
-            className="rounded-l-none border-l-0 px-1"
+            title={menuOnly ? title : 'Choose a version'}
+            className={cn('px-1', menuOnly ? '' : 'rounded-l-none border-l-0')}
           >
             <ChevronDown className="size-3" />
           </Button>
@@ -243,9 +385,24 @@ function SplitAction({
   )
 }
 
-function PackageRow({ pkg }: { pkg: PackageStatus }) {
+/**
+ * @param update  The newer version this tool's manager reports, if any.
+ * @param checked Whether the manager could be asked at all. Without it there is no
+ *                difference between "current" and "we do not know", and rendering
+ *                the second as the first would quietly hide a real upgrade.
+ */
+function PackageRow({
+  pkg,
+  update,
+  checked,
+}: {
+  pkg: PackageStatus
+  update?: PackageUpdate
+  checked: boolean
+}) {
   const run = useRunAction()
   const { package: meta, installed, version, managerAvailable, path } = pkg
+  const upToDate = installed && checked && !update
 
   return (
     // flex-wrap so a narrow panel stacks the actions under the name rather than
@@ -254,7 +411,9 @@ function PackageRow({ pkg }: { pkg: PackageStatus }) {
       <span
         className={cn(
           'size-1.5 flex-none rounded-full',
-          installed ? 'bg-sev-ok' : 'bg-adaptive-300'
+          // Amber for behind, so a row needing attention is findable by scanning
+          // the left edge rather than by reading every version.
+          installed ? (update ? 'bg-sev-warn' : 'bg-sev-ok') : 'bg-adaptive-300'
         )}
       />
 
@@ -264,13 +423,23 @@ function PackageRow({ pkg }: { pkg: PackageStatus }) {
           {installed && version && (
             <span className="wa-num font-mono text-[11px] text-adaptive-500">{version}</span>
           )}
+          {/* The new version next to the installed one, so the row answers "how far
+              behind am I" without opening a menu. */}
+          {installed && update?.latest && (
+            <span
+              className="wa-num font-mono text-[11px] text-sev-warn"
+              title={`${meta.manager} has ${update.latest}`}
+            >
+              → {update.latest}
+            </span>
+          )}
           <span className="rounded-sm border border-adaptive-200 px-1 font-mono text-[10px] text-adaptive-400">
             {meta.manager}
           </span>
           {meta.needsRoot && (
             <span
               className="flex items-center gap-1 text-[10px] text-adaptive-400"
-              title="Runs in a terminal for the password prompt"
+              title="Runs in the terminal below, where you can enter your password"
             >
               <Terminal className="size-2.5" />
               root
@@ -291,16 +460,33 @@ function PackageRow({ pkg }: { pkg: PackageStatus }) {
         </span>
       ) : installed ? (
         <div className="flex flex-none items-center gap-1.5">
-          <span className="hidden items-center gap-1 text-[11px] text-sev-ok sm:flex">
+          <span
+            className={cn(
+              'hidden items-center gap-1 text-[11px] sm:flex',
+              upToDate ? 'text-adaptive-400' : 'text-sev-ok'
+            )}
+          >
             <Check className="size-3" />
-            installed
+            {upToDate ? 'up to date' : 'installed'}
           </span>
+          {/* The point of the check: Upgrade is offered when there is something to
+              upgrade to, or when the manager could not be asked — never as a button
+              that reinstalls the version already on disk. A tool that is current
+              keeps only the version menu, since pinning is still worth doing. */}
           <SplitAction
             id={meta.id}
             label="Upgrade"
             op="upgrade"
-            variant="waOutline"
-            title={`Upgrade ${meta.label}`}
+            variant={update ? 'waPrimary' : 'waOutline'}
+            icon={update ? <ArrowUp className="size-3" /> : undefined}
+            menuOnly={upToDate}
+            title={
+              update
+                ? `Upgrade ${meta.label}${update.latest ? ` to ${update.latest}` : ''}`
+                : upToDate
+                  ? `${meta.label} is current — install a specific version`
+                  : `Upgrade ${meta.label}`
+            }
           />
           {meta.removable && (
             <Button

@@ -10,7 +10,9 @@
 //!    only exists inside a shell that has sourced it. Those commands are therefore
 //!    run as `$SHELL -lic '…'` rather than executed directly.
 
-use crate::model::{Danger, PackageOp, PackageStatus, PackageVersion, ToolPackage};
+use crate::model::{
+    Danger, PackageOp, PackageStatus, PackageUpdate, PackageVersion, ToolPackage, UpdateReport,
+};
 use crate::toolchain::Toolchain;
 use std::path::PathBuf;
 
@@ -128,7 +130,7 @@ impl Manager {
         }
     }
 
-    /// True when the operation must run as root, and therefore in a terminal.
+    /// True when the operation runs as root, so a password prompt is coming.
     pub fn needs_root(&self, sys: Option<SystemPm>) -> bool {
         match self {
             // Unknown manager: assume root, which is the safe assumption — it
@@ -614,12 +616,341 @@ pub fn parse_apt_madison(text: &str) -> Vec<PackageVersion> {
     out
 }
 
+// --- update checking --------------------------------------------------------
+
+/// What every manager on this machine reports as upgradable.
+///
+/// One bulk query per manager rather than one per tool: `dnf check-update` answers
+/// for all 30 system packages in a single call, and asking 30 times would be both
+/// slow and rude to the mirror. Nothing here is fatal — a manager that cannot be
+/// asked is simply left out of `checked`, and its rows keep the plain Upgrade
+/// button instead of claiming to be current.
+pub async fn updates(tc: &Toolchain) -> UpdateReport {
+    let sys = detect_system_pm(tc);
+
+    let (system, npm, rust, node) = tokio::join!(
+        system_updates(tc, sys),
+        npm_global_updates(tc),
+        rustup_update(tc),
+        node_update(tc),
+    );
+
+    let mut report = UpdateReport::default();
+
+    for e in CATALOG {
+        match e.manager {
+            Manager::System => {
+                let Some(found) = &system else { continue };
+                let Some(name) = sys.and_then(|s| package_name(e, s)) else {
+                    continue;
+                };
+                report.checked.push(e.id.to_string());
+                if let Some((_, latest)) = found.iter().find(|(n, _)| n == name) {
+                    report.updates.push(PackageUpdate {
+                        id: e.id.to_string(),
+                        latest: latest.clone(),
+                    });
+                }
+            }
+            Manager::NpmGlobal => {
+                let Some(found) = &npm else { continue };
+                report.checked.push(e.id.to_string());
+                if let Some((_, latest)) = found.iter().find(|(n, _)| n == e.package) {
+                    report.updates.push(PackageUpdate {
+                        id: e.id.to_string(),
+                        latest: latest.clone(),
+                    });
+                }
+            }
+            Manager::Rustup => {
+                let Some(latest) = &rust else { continue };
+                report.checked.push(e.id.to_string());
+                if let Some(v) = latest {
+                    report.updates.push(PackageUpdate {
+                        id: e.id.to_string(),
+                        latest: Some(v.clone()),
+                    });
+                }
+            }
+            Manager::Nvm => {
+                let Some(latest) = &node else { continue };
+                report.checked.push(e.id.to_string());
+                if let Some(v) = latest {
+                    report.updates.push(PackageUpdate {
+                        id: e.id.to_string(),
+                        latest: Some(v.clone()),
+                    });
+                }
+            }
+            // `bun upgrade` and `cargo install` decide for themselves whether there
+            // is anything to do, and neither can be asked without doing it.
+            Manager::BunSelf | Manager::Cargo => {}
+        }
+    }
+
+    report
+}
+
+/// Upgradable system packages as (package name, new version). None = not asked.
+async fn system_updates(
+    tc: &Toolchain,
+    sys: Option<SystemPm>,
+) -> Option<Vec<(String, Option<String>)>> {
+    let sys = sys?;
+    let dirs = search_dirs(tc);
+    let timeout = std::time::Duration::from_secs(45);
+
+    match sys {
+        SystemPm::Dnf => {
+            let bin = which_in(&dirs, "dnf")?;
+            // Exit 100 means "updates available" and 0 means "none" — anything else
+            // is a real failure, and reading it as "up to date" would be a lie.
+            let (out, code) =
+                capture_status(&bin, &["--quiet", "check-update"], &tc.path_env, timeout).await;
+            matches!(code, Some(0) | Some(100)).then(|| parse_dnf_check_update(&out))
+        }
+        SystemPm::Apt => {
+            let bin = which_in(&dirs, "apt")?;
+            let (out, code) =
+                capture_status(&bin, &["list", "--upgradable"], &tc.path_env, timeout).await;
+            (code == Some(0)).then(|| parse_apt_upgradable(&out))
+        }
+        SystemPm::Pacman => {
+            let bin = which_in(&dirs, "pacman")?;
+            // -Qu reads the local database, so it needs neither root nor a sync.
+            // It exits 1 when nothing is upgradable.
+            let (out, code) = capture_status(&bin, &["-Qu"], &tc.path_env, timeout).await;
+            matches!(code, Some(0) | Some(1)).then(|| parse_pacman_qu(&out))
+        }
+        SystemPm::Zypper => {
+            let bin = which_in(&dirs, "zypper")?;
+            let (out, code) = capture_status(
+                &bin,
+                &["--non-interactive", "list-updates"],
+                &tc.path_env,
+                timeout,
+            )
+            .await;
+            (code == Some(0)).then(|| parse_zypper_list_updates(&out))
+        }
+        SystemPm::Brew => {
+            let bin = which_in(&dirs, "brew")?;
+            let (out, code) =
+                capture_status(&bin, &["outdated", "--verbose"], &tc.path_env, timeout).await;
+            (code == Some(0)).then(|| parse_brew_outdated(&out))
+        }
+        // `apk version` reports every package's state in a format that needs the
+        // package name split back out of "name-1.2.3-r0"; not worth guessing.
+        SystemPm::Apk => None,
+    }
+}
+
+/// `dnf check-update` prints "name.arch  new-version  repo" per upgradable package.
+pub fn parse_dnf_check_update(text: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        // The obsoletes section that can follow is about replacements, not upgrades.
+        if line.starts_with("Obsoleting") {
+            break;
+        }
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() != 3 || !cols[0].contains('.') {
+            continue;
+        }
+        // "git.x86_64" -> "git". The arch is always the final dot-segment.
+        let Some((name, _arch)) = cols[0].rsplit_once('.') else {
+            continue;
+        };
+        out.push((name.to_string(), Some(cols[1].to_string())));
+    }
+    out
+}
+
+/// `apt list --upgradable` prints "name/suite 1.2.3 arch [upgradable from: 1.2.2]".
+pub fn parse_apt_upgradable(text: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 2 {
+            continue;
+        }
+        let Some((name, _suite)) = cols[0].split_once('/') else {
+            continue;
+        };
+        out.push((name.to_string(), Some(cols[1].to_string())));
+    }
+    out
+}
+
+/// `pacman -Qu` prints "name 1.0-1 -> 1.1-1".
+pub fn parse_pacman_qu(text: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() < 4 || cols[2] != "->" {
+            continue;
+        }
+        out.push((cols[0].to_string(), Some(cols[3].to_string())));
+    }
+    out
+}
+
+/// `zypper list-updates` prints a table: "v | repo | name | current | available | arch".
+pub fn parse_zypper_list_updates(text: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split('|').map(|c| c.trim()).collect();
+        // The header row names its own columns, which is how it is recognised.
+        if cols.len() < 5 || cols[0] != "v" || cols[2] == "Name" {
+            continue;
+        }
+        out.push((cols[2].to_string(), Some(cols[4].to_string())));
+    }
+    out
+}
+
+/// `brew outdated --verbose` prints "name (1.2.2) < 1.2.3".
+pub fn parse_brew_outdated(text: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        let Some(name) = cols.first() else { continue };
+        // Casks print as "name (1.2.2) != 1.2.3"; either arrow leaves the new
+        // version last, and a bare name is still a usable "outdated".
+        let latest = (cols.len() >= 4).then(|| cols[cols.len() - 1].to_string());
+        out.push((name.to_string(), latest));
+    }
+    out
+}
+
+/// Outdated global npm packages. None = npm could not be asked.
+async fn npm_global_updates(tc: &Toolchain) -> Option<Vec<(String, Option<String>)>> {
+    let npm = tc.path("npm")?;
+    // npm exits 1 when anything is outdated, which is not an error here.
+    let (out, code) = capture_status(
+        npm,
+        &["outdated", "-g", "--json"],
+        &tc.path_env,
+        std::time::Duration::from_secs(45),
+    )
+    .await;
+    if !matches!(code, Some(0) | Some(1)) {
+        return None;
+    }
+    parse_npm_outdated(&out)
+}
+
+/// `npm outdated -g --json` prints `{"pnpm":{"current":"9.0.0","latest":"9.5.0"}}`,
+/// and `{}` when everything is current. Anything else means npm did not answer.
+pub fn parse_npm_outdated(json: &str) -> Option<Vec<(String, Option<String>)>> {
+    let obj = serde_json::from_str::<serde_json::Value>(json.trim())
+        .ok()?
+        .as_object()?
+        .clone();
+    Some(
+        obj.into_iter()
+            .filter_map(|(name, v)| {
+                let latest = v.get("latest").and_then(|l| l.as_str()).map(String::from);
+                let current = v.get("current").and_then(|c| c.as_str());
+                // A package npm reports with no installed version is not something
+                // this machine can upgrade.
+                match (current, &latest) {
+                    // Identical versions do happen, for packages installed from a
+                    // tag; those are not an upgrade.
+                    (Some(c), Some(l)) if c == l => None,
+                    (Some(_), _) => Some((name, latest)),
+                    _ => None,
+                }
+            })
+            .collect(),
+    )
+}
+
+/// The new rustc version, if any. Outer None = rustup could not be asked.
+async fn rustup_update(tc: &Toolchain) -> Option<Option<String>> {
+    let dirs = search_dirs(tc);
+    let bin = which_in(&dirs, "rustup")?;
+    let (out, code) = capture_status(
+        &bin,
+        &["check"],
+        &tc.path_env,
+        std::time::Duration::from_secs(45),
+    )
+    .await;
+    // 100 is rustup's "something is out of date", the same convention dnf uses.
+    matches!(code, Some(0) | Some(100)).then(|| parse_rustup_check(&out))
+}
+
+/// The new toolchain version from `rustup check`, which prints one line per
+/// component:
+///
+/// ```text
+/// stable-x86_64-unknown-linux-gnu - update available: 1.96.0 (ac68faa20 2026-05-25) -> 1.97.1 (8bab26f4f 2026-07-14)
+/// rustup - up to date : 1.29.0
+/// ```
+///
+/// Only the toolchain line matters — rustup upgrading itself is not what the row's
+/// version shows. Case is not load-bearing: older releases capitalise the label.
+pub fn parse_rustup_check(text: &str) -> Option<String> {
+    for line in text.lines() {
+        if line.starts_with("rustup") || !line.to_ascii_lowercase().contains("update available") {
+            continue;
+        }
+        // The token straight after the arrow, not the last one on the line: current
+        // rustup appends a commit hash and date to each version.
+        if let Some(v) = line
+            .split_whitespace()
+            .skip_while(|t| *t != "->")
+            .nth(1)
+        {
+            return Some(v.to_string());
+        }
+    }
+    None
+}
+
+/// The newest Node LTS, when it is newer than the installed one.
+///
+/// Node is the one tool whose "latest" has to be worked out rather than reported:
+/// nvm lists what it could install but says nothing about what is in use, so the
+/// comparison happens here.
+async fn node_update(tc: &Toolchain) -> Option<Option<String>> {
+    let dirs = search_dirs(tc);
+    let node = which_in(&dirs, "node").or_else(|| tc.path("node").cloned())?;
+    let current = version_of(&node, &tc.path_env).await?;
+    let latest = node_versions()
+        .await
+        .into_iter()
+        .find(|v| v.note.is_some())?
+        .value;
+
+    let (cur, new) = (
+        semver::Version::parse(&current).ok()?,
+        semver::Version::parse(&latest).ok()?,
+    );
+    // Someone on a newer non-LTS release is not behind.
+    Some((new > cur).then_some(latest))
+}
+
 async fn capture(
     program: &std::path::Path,
     args: &[&str],
     path_env: &str,
     timeout: std::time::Duration,
 ) -> String {
+    capture_status(program, args, path_env, timeout).await.0
+}
+
+/// `capture`, plus the exit code — None on a timeout or a spawn failure.
+///
+/// The code is what separates "nothing to upgrade" from "the mirror is
+/// unreachable" for most managers, and both print nothing on stdout.
+async fn capture_status(
+    program: &std::path::Path,
+    args: &[&str],
+    path_env: &str,
+    timeout: std::time::Duration,
+) -> (String, Option<i32>) {
     let mut cmd = tokio::process::Command::new(program);
     cmd.args(args)
         .stdin(std::process::Stdio::null())
@@ -632,8 +963,11 @@ async fn capture(
     cmd.env("NO_COLOR", "1").env("CI", "1");
 
     match tokio::time::timeout(timeout, cmd.output()).await {
-        Ok(Ok(out)) => String::from_utf8_lossy(&out.stdout).into_owned(),
-        _ => String::new(),
+        Ok(Ok(out)) => (
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            out.status.code(),
+        ),
+        _ => (String::new(), None),
     }
 }
 
@@ -656,7 +990,9 @@ async fn shell_capture(script: &str) -> String {
 #[derive(Debug)]
 pub struct Plan {
     pub argv: Vec<String>,
-    /// True when this must open a terminal instead of streaming.
+    /// True when this needs root, and so a tty and a password prompt. Every
+    /// package operation runs in the integrated terminal now, so this is no longer
+    /// a routing decision — only a warning the confirmation dialog repeats.
     pub in_terminal: bool,
     pub danger: Danger,
     pub warnings: Vec<String>,
@@ -751,7 +1087,7 @@ pub fn plan_with_version(
             // Homebrew refuses to run as root; everything else needs it.
             if sys.needs_root() {
                 argv.push("sudo".to_string());
-                warnings.push("Runs in a terminal so you can enter your password.".into());
+                warnings.push("Runs in the integrated terminal, where you can enter your password.".into());
             }
             argv.push(sys.id().to_string());
             argv.extend(sys.verb(op).iter().map(|a| a.to_string()));
@@ -907,7 +1243,7 @@ pub fn plan_with_version(
 /// manager.
 ///
 /// A setup step means "make these five things exist". Doing that as five separate
-/// installs means five terminal windows and five password prompts, which is how a
+/// installs means five terminal tabs and five password prompts, which is how a
 /// ten-minute setup becomes a chore. One command is one prompt.
 pub fn plan_system_group(tc: &Toolchain, ids: &[&str]) -> Result<Plan, String> {
     plan_system_group_with(detect_system_pm(tc), ids)
@@ -950,7 +1286,7 @@ pub fn plan_system_group_with(sys: Option<SystemPm>, ids: &[&str]) -> Result<Pla
     let mut argv: Vec<String> = Vec::new();
     if sys.needs_root() {
         argv.push("sudo".to_string());
-        warnings.push("Runs in a terminal so you can enter your password.".into());
+        warnings.push("Runs in the integrated terminal, where you can enter your password.".into());
     }
     argv.push(sys.id().to_string());
     argv.extend(sys.verb(PackageOp::Install).iter().map(|a| a.to_string()));
@@ -1274,3 +1610,108 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod update_tests {
+    use super::*;
+
+    #[test]
+    fn parses_dnf_check_update() {
+        let out = "\nLast metadata expiration check: 0:03:11 ago on Wed 30 Jul 2026.\n\
+             git.x86_64                 2.51.1-1.fc43        updates\n\
+             ripgrep.x86_64             14.1.1-2.fc43        updates\n\
+             Obsoleting Packages\n\
+             old-thing.noarch           1.0-1.fc43           updates\n";
+        assert_eq!(
+            parse_dnf_check_update(out),
+            vec![
+                ("git".into(), Some("2.51.1-1.fc43".into())),
+                ("ripgrep".into(), Some("14.1.1-2.fc43".into())),
+            ]
+        );
+        // Nothing to do prints no package rows at all.
+        assert!(parse_dnf_check_update("").is_empty());
+    }
+
+    #[test]
+    fn parses_apt_upgradable() {
+        let out = "Listing...\n\
+            git/stable-security 1:2.39.5-0+deb12u2 amd64 [upgradable from: 1:2.39.2-1.1]\n\
+            jq/stable 1.6-2.1 amd64 [upgradable from: 1.6-2]\n";
+        assert_eq!(
+            parse_apt_upgradable(out),
+            vec![
+                ("git".into(), Some("1:2.39.5-0+deb12u2".into())),
+                ("jq".into(), Some("1.6-2.1".into())),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_pacman_and_zypper_and_brew() {
+        assert_eq!(
+            parse_pacman_qu("git 2.50.0-1 -> 2.51.1-1\njq 1.7-1 -> 1.8-1\n"),
+            vec![
+                ("git".into(), Some("2.51.1-1".into())),
+                ("jq".into(), Some("1.8-1".into())),
+            ]
+        );
+
+        let z = "S | Repository | Name | Current Version | Available Version | Arch\n\
+                 --+------------+------+-----------------+-------------------+-----\n\
+                 v | repo-oss   | git  | 2.50.0-1.1      | 2.51.1-1.1        | x86_64\n";
+        assert_eq!(
+            parse_zypper_list_updates(z),
+            vec![("git".into(), Some("2.51.1-1.1".into()))]
+        );
+
+        assert_eq!(
+            parse_brew_outdated("git (2.50.0) < 2.51.1\njq\n"),
+            vec![
+                ("git".into(), Some("2.51.1".into())),
+                // A bare name still says "outdated", just not what to.
+                ("jq".into(), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn parses_npm_outdated() {
+        let json = r#"{
+            "pnpm": {"current":"9.0.0","latest":"10.2.0"},
+            "typescript": {"current":"5.6.0","latest":"5.6.0"},
+            "serve": {"latest":"14.2.0"}
+        }"#;
+        let mut got = parse_npm_outdated(json).expect("npm answered");
+        got.sort();
+        // Only a package that is installed *and* behind counts as an upgrade.
+        assert_eq!(got, vec![("pnpm".to_string(), Some("10.2.0".to_string()))]);
+        // Everything current is an empty object, which is still an answer.
+        assert_eq!(parse_npm_outdated("{}"), Some(Vec::new()));
+        // Anything unparseable means npm did not answer, not "up to date".
+        assert_eq!(parse_npm_outdated("npm ERR! code E404"), None);
+    }
+
+    #[test]
+    fn parses_rustup_check() {
+        // Verbatim from rustup 1.29: lowercase label, and a commit hash and date
+        // after each version, so the new version is not the last token.
+        let out = "stable-x86_64-unknown-linux-gnu - update available: \
+                   1.96.0 (ac68faa20 2026-05-25) -> 1.97.1 (8bab26f4f 2026-07-14)\n\
+                   rustup - up to date : 1.29.0\n";
+        assert_eq!(parse_rustup_check(out).as_deref(), Some("1.97.1"));
+        // The older, capitalised, hashless form still parses.
+        assert_eq!(
+            parse_rustup_check("stable-x86_64-unknown-linux-gnu - Update available : 1.88.0 -> 1.90.0")
+                .as_deref(),
+            Some("1.90.0")
+        );
+        // rustup upgrading itself is not the row's version.
+        assert_eq!(parse_rustup_check("rustup - Update available : 1.27.1 -> 1.28.2"), None);
+        assert_eq!(
+            parse_rustup_check("stable-x86_64-unknown-linux-gnu - Up to date : 1.90.0"),
+            None
+        );
+    }
+}
+

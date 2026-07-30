@@ -10,6 +10,7 @@ import { useRunStore } from '@/stores/run-store'
 import { useTerminalStore } from '@/stores/terminal-store'
 import { useUiStore } from '@/stores/ui-store'
 import { keys } from '@/queries/keys'
+import { staleKeysFor } from '@/queries/invalidate'
 import { repoId, type LogLine, type RepoStatus } from '@/domain/types'
 
 let wiring: Promise<void> | null = null
@@ -129,15 +130,38 @@ async function wire(qc: QueryClient) {
     if (kind === 'package' || kind === 'gitIdentity') {
       void qc.invalidateQueries({ queryKey: keys.packages })
       void qc.invalidateQueries({ queryKey: keys.setupPlan })
+      // An upgrade that just landed is the one thing that makes the "newer version
+      // available" answer wrong.
+      void qc.invalidateQueries({ queryKey: keys.packageUpdates })
     }
 
-    // Rescan only the repo this run touched, not the whole folder.
-    const ref = run?.summary.ref
-    if (ref && status.kind !== 'cancelled') {
-      api
-        .rescanRepo(ref)
-        .then((updated) => useScanStore.getState().upsertMany([updated]))
-        .catch(() => {})
+    // Rescan only the repos this run touched, not the whole folder. `ref` is null
+    // on bulk runs (fetch all, pull many, bulk checkout) — those carry their repos
+    // in `targets`, and without this their ahead/behind counts stay stale until a
+    // manual rescan.
+    const touched = run?.summary.targets?.length
+      ? run.summary.targets
+      : run?.summary.ref
+        ? [run.summary.ref]
+        : []
+    if (touched.length && status.kind !== 'cancelled') {
+      void Promise.all(
+        touched.map((ref) => api.rescanRepo(ref).catch(() => null)),
+      ).then((updated) => {
+        const ok = updated.filter((s): s is RepoStatus => s !== null)
+        if (ok.length) useScanStore.getState().upsertMany(ok)
+      })
+
+      // The rescan above only refreshes the scan store, which is what the repo
+      // rows read. The detail page's tabs are react-query and were never told, so
+      // after a pull its header updated while Changes, Commits and Branches went on
+      // showing pre-pull data until their staleTime expired. `staleKeysFor` decides
+      // what actually moved — see the note there about not refetching PRs for free.
+      for (const ref of touched) {
+        for (const key of staleKeysFor(kind ?? '', repoId(ref))) {
+          void qc.invalidateQueries({ queryKey: key })
+        }
+      }
     }
   })
 
@@ -153,7 +177,27 @@ async function wire(qc: QueryClient) {
   // instance, whose own write buffer already flushes on its own schedule and is
   // a far better coalescer than anything written here would be.
   on('term:output', ({ termId, data }) => writeToTerm(termId, b64ToBytes(data)))
-  on('term:exit', ({ termId, code }) => useTerminalStore.getState().exit(termId, code))
+  on('term:exit', ({ termId, code }) => {
+    const store = useTerminalStore.getState()
+    const tab = store.tabs.get(termId)
+    store.exit(termId, code)
+
+    // Toolbox and setup-page operations run in a terminal tab rather than as a
+    // streamed run, so this is where an install finishing is noticed — `run:exit`
+    // above never fires for them. Same three queries, same reason: what is on this
+    // machine just changed.
+    if (tab?.kind === 'package') {
+      void qc.invalidateQueries({ queryKey: keys.packages })
+      void qc.invalidateQueries({ queryKey: keys.setupPlan })
+      void qc.invalidateQueries({ queryKey: keys.packageUpdates })
+      const title = tab.title
+      if (code === 0) toast.success(`${title} finished`)
+      // Not an error toast: a package manager exits non-zero for "nothing to do"
+      // and for a declined sudo prompt as readily as for a real failure, and the
+      // terminal tab is right there with the actual output.
+      else toast.warning(`${title} exited with code ${code}`)
+    }
+  })
 
   // Patch, never invalidate: invalidating means an IPC round trip and a flicker
   // through a loading state on every container or dev-server event.

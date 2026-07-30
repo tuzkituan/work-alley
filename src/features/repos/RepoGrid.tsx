@@ -1,6 +1,6 @@
 import { useMemo, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { FolderOpen, LayoutGrid, Rows3 } from 'lucide-react'
+import { FolderOpen, LayoutGrid, RefreshCw, Rows3 } from 'lucide-react'
 import { CARD_HEIGHT, RepoCard } from './RepoCard'
 import { RepoListHeader, RepoListRow, ROW_HEIGHT } from './RepoListRow'
 import { Button } from '@/components/ui/button'
@@ -11,6 +11,7 @@ import { useUiStore } from '@/stores/ui-store'
 import { useRescanCategory } from '@/hooks/use-category-scan'
 import { RepoDetail } from '@/features/detail/RepoDetail'
 import { buildSections, flattenSections } from '@/domain/sections'
+import { cn } from '@/lib/utils'
 
 const GAP = 12
 const CARD_ROW_HEIGHT = CARD_HEIGHT + GAP
@@ -117,9 +118,13 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                 </Button>
               )}
               <div className="flex items-center gap-0.5 rounded-md border border-adaptive-200 p-0.5">
+                {/* aria-pressed as well as the variant swap: toggled-ness lived
+                    only in `variant`, which CSS cannot distinguish from any other
+                    primary button, so the skin had no way to press these in. */}
                 <Button
                   variant={view === 'list' ? 'waPrimary' : 'waGhost'}
                   size="waIcon"
+                  aria-pressed={view === 'list'}
                   title="List view — dense rows"
                   onClick={() => setView('list')}
                 >
@@ -128,18 +133,24 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                 <Button
                   variant={view === 'cards' ? 'waPrimary' : 'waGhost'}
                   size="waIcon"
+                  aria-pressed={view === 'cards'}
                   title="Card view"
                   onClick={() => setView('cards')}
                 >
                   <LayoutGrid className="size-3.5" />
                 </Button>
               </div>
+              {/* Icon + label, matching the Toolbox's Re-check: this was the only
+                  action in the strip with no icon, sitting beside two icon-only
+                  view toggles. */}
               <Button
                 variant="waOutline"
                 size="waXs"
                 disabled={scanning === expanded}
+                title={`Re-scan every repo in ${expanded}/`}
                 onClick={() => rescan(expanded)}
               >
+                <RefreshCw className={cn('size-3', scanning === expanded && 'animate-spin')} />
                 Rescan
               </Button>
             </div>

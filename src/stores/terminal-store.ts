@@ -5,6 +5,8 @@ import { disposeTerm } from '@/features/terminal/xterm-instance'
 
 export interface TermTab {
   termId: string
+  /** 'shell' | 'script' | 'package'. See TermInfo.kind. */
+  kind: string
   title: string
   cwd: string
   ref: RepoRef | null
@@ -40,6 +42,7 @@ export const useTerminalStore = create<TerminalState>()((set, get) => ({
       const tabs = new Map(s.tabs)
       tabs.set(info.termId, {
         termId: info.termId,
+        kind: info.kind,
         title: info.title,
         cwd: info.cwd,
         ref: info.repo,

@@ -1,24 +1,33 @@
 import { useState } from 'react'
-import { GitBranch, Moon, Search, SquareTerminal, Sun, Wrench } from 'lucide-react'
+import { GitBranch, Moon, Search, SquareTerminal, Sun } from 'lucide-react'
 import { WindowControls } from './WindowControls'
 import { TerminalsMenu } from './TerminalsMenu'
 import { WorkspaceSwitcher } from '@/features/workspace/WorkspacePicker'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuLabel,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { Progress } from '@/components/ui/progress'
 import { KeyCap, Sep } from '@/components/wa/primitives'
-import { useTheme } from '@/hooks/use-theme'
+import { useSkin, useTheme } from '@/hooks/use-theme'
 import { useAppIdentity } from '@/hooks/use-bootstrap'
 import { CheckoutAllDialog } from '@/features/actions/CheckoutAllDialog'
 import { useRunAction } from '@/hooks/use-action'
 import { useUiStore } from '@/stores/ui-store'
 import { useScanStore } from '@/stores/scan-store'
 import type { Bootstrap } from '@/domain/types'
+import type { Skin, ThemeMode } from '@/stores/ui-store'
 
 export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
-  const { toggleTheme, theme } = useTheme()
+  const { theme, setTheme, label: themeLabel } = useTheme()
+  const { skin, setSkin, label: skinLabel } = useSkin()
   const { name } = useAppIdentity()
-  const page = useUiStore((s) => s.page)
-  const setPage = useUiStore((s) => s.setPage)
   const run = useRunAction()
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen)
   const expanded = useUiStore((s) => s.expandedCategory)
@@ -83,25 +92,51 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
         >
           <SquareTerminal className="size-3.5" />
         </Button>
-        <Button
-          variant={page === 'toolbox' ? 'waPrimary' : 'waOutline'}
-          size="waIconLg"
-          className={page === 'toolbox' ? undefined : 'border-adaptive-300'}
-          title={page === 'toolbox' ? 'Back to the workspace' : 'Toolbox — your dev tools'}
-          onClick={() => setPage(page === 'toolbox' ? 'repos' : 'toolbox')}
-        >
-          <Wrench className="size-3.5" />
-        </Button>
-        <Button
-          variant="waOutline"
-          size="waIconLg"
-          // Stronger edge than the page default: see the note on the search field.
-          className="border-adaptive-300"
-          onClick={toggleTheme}
-          title={theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme'}
-        >
-          {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
-        </Button>
+        {/* Toolbox and Guided setup live in the left rail now, above the toolchain
+            card: both are about this machine rather than this workspace, which is
+            exactly what that card already shows. */}
+        {/* A menu rather than the old toggle: appearance and skin are independent,
+            so there are four states, and a control with four states has to *show*
+            which one it is in. The palette keeps a one-keystroke path to both. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="waOutline"
+              size="waIconLg"
+              // Stronger edge than the page default: see the note on the search field.
+              className="border-adaptive-300"
+              title={`Appearance: ${themeLabel} · Skin: ${skinLabel}`}
+            >
+              {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-44">
+            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
+              Appearance
+            </DropdownMenuLabel>
+            <DropdownMenuRadioGroup
+              value={theme}
+              onValueChange={(v) => setTheme(v as ThemeMode)}
+            >
+              <DropdownMenuRadioItem value="light">Light</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="dark">Dark</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
+              Skin
+            </DropdownMenuLabel>
+            <DropdownMenuRadioGroup value={skin} onValueChange={(v) => setSkin(v as Skin)}>
+              <DropdownMenuRadioItem value="classic">
+                Classic
+                <span className="ml-auto text-[10px] text-adaptive-400">hairlines</span>
+              </DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="neumorph">
+                Soft
+                <span className="ml-auto text-[10px] text-adaptive-400">shadows</span>
+              </DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <Button
           variant="waOutline"
           size="wa"

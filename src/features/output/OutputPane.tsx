@@ -12,8 +12,8 @@ import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
 import { useContainerRuntime, useHeadlessScripts } from '@/hooks/use-bootstrap'
 import { TerminalView } from '@/features/terminal/TerminalView'
-import { applyFontSize, applyTheme } from '@/features/terminal/xterm-instance'
-import { buildTermTheme } from '@/features/terminal/term-theme'
+import { applyFontSize } from '@/features/terminal/xterm-instance'
+import { useTermPalette } from '@/features/terminal/use-term-palette'
 import { SEVERITY_CLASS } from './severity-class'
 import { estimateGeometry } from './term-geometry'
 import type { LogLine, RepoRef } from '@/domain/types'
@@ -52,16 +52,11 @@ export function OutputPane() {
   const activeTermId = useTerminalStore((s) => s.activeTermId)
   const setActiveTerm = useTerminalStore((s) => s.setActive)
   const closeTerm = useTerminalStore((s) => s.close)
-  const theme = useUiStore((s) => s.theme)
   const termFontSize = useUiStore((s) => s.termFontSize)
   const scanRepos = useScanStore((s) => s.repos)
   const bodyRef = useRef<HTMLDivElement>(null)
 
-  // xterm repaints on assignment, so this reaches hidden tabs too — no need to
-  // remount anything on a theme toggle.
-  useEffect(() => {
-    applyTheme(buildTermTheme())
-  }, [theme])
+  useTermPalette()
   useEffect(() => {
     applyFontSize(termFontSize)
   }, [termFontSize])

@@ -33,6 +33,8 @@ pub struct SpawnSpec {
     pub kind: String,
     pub title: String,
     pub repo: Option<RepoRef>,
+    /// Every repo the run touches, including for bulk runs where `repo` is None.
+    pub targets: Vec<RepoRef>,
     /// Tags every line, so a bulk run over many repos can be rendered grouped
     /// instead of as one unreadable interleaved stream.
     pub line_repo: Option<String>,
@@ -52,6 +54,7 @@ pub fn spawn_run(app: &AppHandle, spec: SpawnSpec) -> AppResult<String> {
         kind: spec.kind.clone(),
         title: spec.title.clone(),
         repo: spec.repo.clone(),
+        targets: spec.targets.clone(),
         argv: spec.argv.clone(),
         cwd: spec.cwd.clone(),
         started_unix: started,

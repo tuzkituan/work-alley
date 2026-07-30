@@ -96,6 +96,10 @@ export function TerminalView({ termId }: { termId: string }) {
   return (
     <div
       ref={containerRef}
+      // The skin turns this into an inset well. It has to be drawn on an overlay
+      // rather than as `box-shadow: inset` — xterm's canvas is opaque and fills
+      // this box. See wa-skin.css.
+      data-slot="term-surface"
       // min-h-0 so it can actually shrink inside the flex column, and a real
       // height for fit() to measure.
       className="min-h-0 flex-1 overflow-hidden bg-[var(--wa-term-bg)] p-1.5"

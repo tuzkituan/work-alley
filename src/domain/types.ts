@@ -25,6 +25,21 @@ export interface RepoRef {
 export type RepoId = string
 export const repoId = (r: RepoRef): RepoId => `${r.category}/${r.name}`
 
+/**
+ * The inverse, splitting on the *first* slash.
+ *
+ * Lossy, and only a fallback: a repo name can contain a slash (a bare clone in a
+ * nested folder), so this cannot always reconstruct what `repoId` was given.
+ * Prefer `RepoStatus.ref`, which is the ref the backend actually resolved; reach
+ * for this only before anything has been scanned.
+ */
+export const repoRefOf = (id: RepoId): RepoRef => {
+  const at = id.indexOf('/')
+  return at === -1
+    ? { category: '', name: id }
+    : { category: id.slice(0, at), name: id.slice(at + 1) }
+}
+
 export type SyncState =
   | { kind: 'noUpstream' }
   | { kind: 'inSync' }
@@ -79,6 +94,8 @@ export interface RepoStatus {
   shape: RepoShape
   /** Tasks this repo declares — "dev", "storybook". */
   availableTasks: string[]
+  /** One-shot scripts this repo declares — "build", "lint", "format". */
+  availableScripts: string[]
   /** Tasks currently running. A UI library often has dev and storybook both up. */
   tasks: DevServer[]
   /** Set => the rest is best-effort. A scan never fails wholesale. */
@@ -134,6 +151,9 @@ export interface RunSummary {
   kind: string
   title: string
   ref: RepoRef | null
+  // Every repo this run touched. Bulk runs leave `ref` null, so this is what
+  // says which rows went stale.
+  targets: RepoRef[]
   argv: string[]
   cwd: string
   startedUnix: number
@@ -300,6 +320,14 @@ export interface PullRequest {
   updatedUnix: number
   updatedRelative: string
   isMine: boolean
+  /**
+   * CI rolled up to one word. `''` means the repo has no checks configured, which is
+   * not the same as passing and must not render as green.
+   */
+  checks: '' | 'passing' | 'failing' | 'pending'
+  labels: string[]
+  /** gh's mergeable: MERGEABLE / CONFLICTING / UNKNOWN, or ''. */
+  mergeable: string
 }
 
 /** gh is optional and often unauthenticated, so absence is data, not an error. */
@@ -316,6 +344,36 @@ export interface ChangedFile {
   staged: boolean
   untracked: boolean
   conflicted: boolean
+  /**
+   * Lines added and removed, staged and unstaged summed. Both zero for an untracked
+   * file (nothing to diff against), a binary file, or when the diff could not be
+   * read — so zero means "no count", not "no change".
+   */
+  added: number
+  deleted: number
+}
+
+/** One branch, local or remote-only. */
+export interface BranchInfo {
+  /** Without any `origin/` prefix — what you would type to check it out. */
+  name: string
+  /** False => it exists only on the remote, and checking it out creates it here. */
+  local: boolean
+  upstream: string | null
+  /** Relative to `upstream`. Both zero when there is none, or it is `[gone]`. */
+  ahead: number
+  behind: number
+  lastCommitUnix: number | null
+  tipSha: string | null
+  subject: string | null
+}
+
+export interface StashEntry {
+  /** `stash@{0}` — what you would pass to `git stash apply`. */
+  selector: string
+  message: string
+  unix: number
+  relative: string
 }
 
 export type PackageOp = 'install' | 'upgrade' | 'remove'
@@ -339,6 +397,26 @@ export interface PackageStatus {
   version: string | null
   /** False when the managing tool itself is missing, so actions are impossible. */
   managerAvailable: boolean
+}
+
+/** An upgrade a manager reports as available for an installed tool. */
+export interface PackageUpdate {
+  /** Catalog id, matching ToolPackage.id. */
+  id: string
+  /** Null when the manager says "outdated" without naming the new version. */
+  latest: string | null
+}
+
+/**
+ * One update check across every manager on this machine.
+ *
+ * `checked` matters as much as `updates`: only ids listed there have a real
+ * answer, so a manager that could not be reached — or cannot answer at all, like
+ * `bun upgrade` — keeps its Upgrade button rather than looking up to date.
+ */
+export interface UpdateReport {
+  checked: string[]
+  updates: PackageUpdate[]
 }
 
 // --- first-run setup --------------------------------------------------------
@@ -449,6 +527,12 @@ export interface TermSize {
 /** One integrated terminal session, as Rust reports it. */
 export interface TermInfo {
   termId: string
+  /**
+   * What the session is for: 'shell', 'script' or 'package'. Package sessions are
+   * the Toolbox's and the setup page's installs, which is how those full-window
+   * pages know which tabs are theirs to show.
+   */
+  kind: string
   title: string
   argv: string[]
   cwd: string
@@ -480,6 +564,12 @@ export type ActionSpec =
   | { kind: 'devStart'; ref: RepoRef; task?: string }
   | { kind: 'devStop'; ref: RepoRef; task?: string }
   | { kind: 'script'; script: string; args: string[] }
+  /** One of the repo's own package.json scripts. Validated against availableScripts. */
+  | { kind: 'runScript'; ref: RepoRef; script: string }
+  | { kind: 'push'; ref: RepoRef; force?: boolean }
+  | { kind: 'stash'; ref: RepoRef; includeUntracked?: boolean }
+  | { kind: 'stashPop'; ref: RepoRef }
+  | { kind: 'discardChanges'; ref: RepoRef }
   | {
       kind: 'openInTerminal'
       script: string
@@ -503,6 +593,9 @@ export type ActionSpec =
   /** Read-only inspections. These skip the confirmation dialog. */
   | { kind: 'status'; ref: RepoRef }
   | { kind: 'branchList'; ref: RepoRef }
+  | { kind: 'stashList'; ref: RepoRef }
+  | { kind: 'logGraph'; ref: RepoRef }
+  | { kind: 'diff'; ref: RepoRef; staged?: boolean }
   | { kind: 'prList' }
 
 export interface ActionIntent {

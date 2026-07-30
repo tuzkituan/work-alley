@@ -1,5 +1,6 @@
 use crate::model::{
-    CommitEntry, Category, LastCommit, RepoRef, RepoStatus, StaleState, SyncState,
+    BranchInfo, Category, CommitEntry, LastCommit, RepoRef, RepoStatus, StaleState, StashEntry,
+    SyncState,
 };
 use crate::state::AppState;
 use std::path::{Path, PathBuf};
@@ -385,6 +386,7 @@ pub async fn scan_one(
     status.tracked_dep = crate::pkg::read_tracked_dep(&path, tracked_package.as_deref()).await;
     status.dev_port = crate::pkg::detect_port(&path).map(|(p, _)| p);
     status.available_tasks = crate::pkg::available_tasks(&path);
+    status.available_scripts = crate::pkg::available_scripts(&path);
     status.shape = crate::detect::detect(&path);
     status.scan_ms = started.elapsed().as_millis() as u64;
     status
@@ -428,8 +430,31 @@ pub async fn recent_for(
         .collect()
 }
 
+/// How many entries are on the stash. Read-only preflight for stash actions:
+/// "pop" with nothing stashed is an error worth saying up front, and a growing
+/// stack is worth mentioning before pushing another entry onto it.
+pub async fn stash_count(git: &Path, repo: &Path) -> u32 {
+    git_output(git, repo, &["stash", "list"])
+        .await
+        .map(|t| t.lines().filter(|l| !l.trim().is_empty()).count() as u32)
+        .unwrap_or(0)
+}
+
+/// Field separator for the `for-each-ref` format below.
+///
+/// A tab, because every field that can contain arbitrary text is last-but-one and
+/// commit subjects contain almost everything else. `splitn` bounds the damage: a
+/// subject with a tab in it keeps the tab rather than eating the next field.
+const REF_SEP: char = '\t';
+
 /// Local + remote branches, most recently committed first. Read-only.
-pub async fn list_branches(state: &AppState, repo: &RepoRef) -> Result<Vec<String>, String> {
+///
+/// One `for-each-ref` for everything: which branches exist, whether each is local,
+/// its upstream and how far it has drifted, and its tip. This used to return bare
+/// strings with `origin/` stripped and duplicates merged, which threw away the
+/// local-vs-remote distinction and every date — so the UI could list branches and
+/// say nothing whatsoever about them.
+pub async fn list_branches(state: &AppState, repo: &RepoRef) -> Result<Vec<BranchInfo>, String> {
     let git = state
         .toolchain()
         .require("git")
@@ -442,26 +467,130 @@ pub async fn list_branches(state: &AppState, repo: &RepoRef) -> Result<Vec<Strin
         &[
             "for-each-ref",
             "--sort=-committerdate",
-            "--count=60",
-            "--format=%(refname:short)",
+            "--count=120",
+            // Order matters: the subject is free-form text, so it goes last.
+            "--format=%(refname:short)%09%(upstream:short)%09%(upstream:track)%09\
+             %(committerdate:unix)%09%(objectname:short)%09%(contents:subject)",
             "refs/heads",
             "refs/remotes/origin",
         ],
     )
     .await?;
 
-    let mut seen = std::collections::BTreeSet::new();
-    let mut out = Vec::new();
+    Ok(parse_branch_lines(&text))
+}
+
+/// The parse half of `list_branches`, split out so it can be tested without a repo.
+pub fn parse_branch_lines(text: &str) -> Vec<BranchInfo> {
+    let mut out: Vec<BranchInfo> = Vec::new();
+
     for line in text.lines() {
-        let b = line.trim().trim_start_matches("origin/");
-        if b.is_empty() || b == "HEAD" {
+        let line = line.trim_end();
+        if line.trim().is_empty() {
             continue;
         }
-        if seen.insert(b.to_string()) {
-            out.push(b.to_string());
+        let mut f = line.splitn(6, REF_SEP);
+        let refname = f.next().unwrap_or("").trim();
+        let upstream = f.next().unwrap_or("").trim();
+        let track = f.next().unwrap_or("").trim();
+        let date = f.next().unwrap_or("").trim();
+        let sha = f.next().unwrap_or("").trim();
+        let subject = f.next().unwrap_or("").trim();
+
+        // `origin/HEAD` is a symbolic ref to the default branch, not a branch.
+        if refname.is_empty() || refname == "origin/HEAD" {
+            continue;
+        }
+
+        let remote_only = refname.starts_with("origin/");
+        let name = refname.trim_start_matches("origin/").to_string();
+        if name.is_empty() || name == "HEAD" {
+            continue;
+        }
+
+        let (ahead, behind) = parse_track(track);
+        let info = BranchInfo {
+            name,
+            local: !remote_only,
+            // A remote-only branch tracks nothing from here; the field describes the
+            // local branch's configured upstream.
+            upstream: if remote_only || upstream.is_empty() {
+                None
+            } else {
+                Some(upstream.to_string())
+            },
+            ahead,
+            behind,
+            last_commit_unix: date.parse().ok(),
+            tip_sha: if sha.is_empty() { None } else { Some(sha.to_string()) },
+            subject: if subject.is_empty() { None } else { Some(subject.to_string()) },
+        };
+
+        // Local wins on a name held by both. refs/heads is listed first only when it
+        // also sorts first by date, so this cannot rely on ordering: a remote branch
+        // one commit ahead sorts above its local counterpart.
+        match out.iter_mut().find(|b| b.name == info.name) {
+            Some(existing) if !existing.local && info.local => *existing = info,
+            Some(_) => {}
+            None => out.push(info),
         }
     }
-    Ok(out)
+
+    out
+}
+
+/// `[ahead 2, behind 1]` → `(2, 1)`. `[gone]` and an empty field mean no numbers.
+fn parse_track(track: &str) -> (u32, u32) {
+    let inner = track.trim().trim_start_matches('[').trim_end_matches(']');
+    let mut ahead = 0;
+    let mut behind = 0;
+    for part in inner.split(',') {
+        let part = part.trim();
+        if let Some(n) = part.strip_prefix("ahead ") {
+            ahead = n.trim().parse().unwrap_or(0);
+        } else if let Some(n) = part.strip_prefix("behind ") {
+            behind = n.trim().parse().unwrap_or(0);
+        }
+    }
+    (ahead, behind)
+}
+
+/// Stash entries as data, rather than as text in the output pane.
+///
+/// Its own command rather than a field on `RepoStatus`: the scan already runs this
+/// per repo across a whole folder and is the app's latency budget, and only the
+/// detail page ever wants this.
+pub async fn list_stashes(state: &AppState, repo: &RepoRef) -> Result<Vec<StashEntry>, String> {
+    let git = state
+        .toolchain()
+        .require("git")
+        .map_err(|e| e.to_string())?;
+    let path = crate::paths::resolve_repo(&state.workspace_root(), repo)
+        .map_err(|e| e.to_string())?;
+    let text = git_output(
+        &git,
+        &path,
+        &["stash", "list", "--format=%gd%09%ct%09%gs"],
+    )
+    .await?;
+
+    let now = now_unix();
+    Ok(text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter_map(|line| {
+            let mut f = line.splitn(3, REF_SEP);
+            let selector = f.next()?.trim().to_string();
+            let unix: i64 = f.next()?.trim().parse().unwrap_or(0);
+            let message = f.next().unwrap_or("").trim().to_string();
+            Some(StashEntry {
+                selector,
+                message,
+                unix,
+                relative: relative_time(unix, now),
+            })
+        })
+        .collect())
 }
 
 /// Extracts `owner/repo` from a remote URL.
@@ -505,6 +634,19 @@ pub async fn remote_slug(git: &Path, repo: &Path) -> Option<String> {
     parse_remote_slug(out.lines().next()?)
 }
 
+/// `git_output` for callers outside this module.
+///
+/// Deliberately narrow rather than making `git_output` public: everything reachable
+/// through this still goes through `git_cmd`/`harden` and the shared timeout, so a
+/// new read-only query cannot accidentally skip either.
+pub async fn git_output_public(
+    git: &Path,
+    repo: &Path,
+    args: &[&str],
+) -> Result<String, String> {
+    git_output(git, repo, args).await
+}
+
 /// Parses `git status --porcelain=v2` into per-file entries for the detail view.
 pub fn parse_changed_files(input: &str) -> Vec<crate::model::ChangedFile> {
     use crate::model::ChangedFile;
@@ -528,6 +670,8 @@ pub fn parse_changed_files(input: &str) -> Vec<crate::model::ChangedFile> {
                     conflicted: false,
                     code: xy,
                     path,
+                    added: 0,
+                    deleted: 0,
                 });
             }
             // 2 <XY> … <path><tab><origPath>
@@ -544,6 +688,8 @@ pub fn parse_changed_files(input: &str) -> Vec<crate::model::ChangedFile> {
                     conflicted: false,
                     code: xy,
                     path,
+                    added: 0,
+                    deleted: 0,
                 });
             }
             "u" => {
@@ -558,6 +704,8 @@ pub fn parse_changed_files(input: &str) -> Vec<crate::model::ChangedFile> {
                     conflicted: true,
                     code: xy,
                     path,
+                    added: 0,
+                    deleted: 0,
                 });
             }
             "?" => {
@@ -571,6 +719,8 @@ pub fn parse_changed_files(input: &str) -> Vec<crate::model::ChangedFile> {
                     untracked: true,
                     conflicted: false,
                     path,
+                    added: 0,
+                    deleted: 0,
                 });
             }
             _ => {}
@@ -585,7 +735,57 @@ pub async fn changed_files(
     repo: &Path,
 ) -> Result<Vec<crate::model::ChangedFile>, String> {
     let text = git_output(git, repo, &["status", "--porcelain=v2"]).await?;
-    Ok(parse_changed_files(&text))
+    let mut files = parse_changed_files(&text);
+
+    // Line counts come from two separate diffs, because they answer different
+    // questions: `--cached` is what is staged, the bare one is what is not. A file
+    // edited, staged, then edited again has both, so they are summed rather than one
+    // overriding the other.
+    //
+    // Best-effort on purpose: a repo mid-rebase or with no HEAD yet makes these fail,
+    // and a missing count is worth far less than the file list it would take down.
+    let (unstaged, staged) = tokio::join!(
+        git_output(git, repo, &["diff", "--numstat"]),
+        git_output(git, repo, &["diff", "--cached", "--numstat"]),
+    );
+    let mut counts: std::collections::HashMap<String, (u32, u32)> = std::collections::HashMap::new();
+    for text in [unstaged, staged].into_iter().flatten() {
+        for (path, added, deleted) in parse_numstat(&text) {
+            let e = counts.entry(path).or_insert((0, 0));
+            e.0 += added;
+            e.1 += deleted;
+        }
+    }
+    for f in &mut files {
+        if let Some(&(added, deleted)) = counts.get(&f.path) {
+            f.added = added;
+            f.deleted = deleted;
+        }
+    }
+
+    Ok(files)
+}
+
+/// `12\t3\tsrc/main.rs` per line. A binary file reports `-`, which is not a count.
+pub fn parse_numstat(text: &str) -> Vec<(String, u32, u32)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let mut f = line.splitn(3, '\t');
+        let added = f.next().unwrap_or("").trim();
+        let deleted = f.next().unwrap_or("").trim();
+        let path = f.next().unwrap_or("").trim();
+        if path.is_empty() {
+            continue;
+        }
+        // A rename reads `old => new` or `dir/{a => b}/file`; the porcelain status
+        // reports the new path, so anything unmatched simply gets no counts.
+        out.push((
+            path.to_string(),
+            added.parse().unwrap_or(0),
+            deleted.parse().unwrap_or(0),
+        ));
+    }
+    out
 }
 
 /// The requested groups, or every discovered one.
@@ -779,5 +979,69 @@ u UU N... 100644 100644 100644 100644 aaa bbb ccc src/conflict.ts
         assert_eq!(author, "Kim Tuan");
         // splitn(4) keeps the remainder intact.
         assert_eq!(subject, "feat: saved\tviews");
+    }
+}
+
+#[cfg(test)]
+mod branch_tests {
+    use super::*;
+
+    #[test]
+    fn parses_local_and_remote_branches() {
+        // Tab-separated, exactly as the for-each-ref format emits it.
+        let text = "main\torigin/main\t[ahead 2, behind 1]\t1730000000\tabc1234\tfeat: add thing\n\
+                    origin/feature/x\t\t\t1729000000\tdef5678\tfix: a bug\n\
+                    origin/HEAD\t\t\t1730000000\tabc1234\tfeat: add thing\n";
+        let out = parse_branch_lines(text);
+
+        assert_eq!(out.len(), 2, "origin/HEAD is a symbolic ref, not a branch");
+
+        assert_eq!(out[0].name, "main");
+        assert!(out[0].local);
+        assert_eq!(out[0].upstream.as_deref(), Some("origin/main"));
+        assert_eq!((out[0].ahead, out[0].behind), (2, 1));
+        assert_eq!(out[0].last_commit_unix, Some(1730000000));
+        assert_eq!(out[0].subject.as_deref(), Some("feat: add thing"));
+
+        // origin/ is stripped, so the name is what you would check out.
+        assert_eq!(out[1].name, "feature/x");
+        assert!(!out[1].local, "exists only on the remote");
+        assert_eq!(out[1].upstream, None);
+    }
+
+    #[test]
+    fn local_wins_over_remote_regardless_of_order() {
+        // The remote copy is listed first, which is what happens when it is ahead:
+        // for-each-ref sorts by committerdate, not by ref namespace.
+        let text = "origin/main\t\t\t1730000100\taaa\tremote tip\n\
+                    main\torigin/main\t[behind 1]\t1730000000\tbbb\tlocal tip\n";
+        let out = parse_branch_lines(text);
+        assert_eq!(out.len(), 1);
+        assert!(out[0].local, "the local branch must win the merge");
+        assert_eq!(out[0].behind, 1);
+    }
+
+    #[test]
+    fn a_gone_upstream_yields_no_counts() {
+        let out = parse_branch_lines("old\torigin/old\t[gone]\t1720000000\tccc\tsubject\n");
+        assert_eq!((out[0].ahead, out[0].behind), (0, 0));
+    }
+
+    #[test]
+    fn subject_containing_a_tab_does_not_eat_fields() {
+        // splitn(6) is what bounds this: the subject keeps its tab.
+        let out = parse_branch_lines("b\t\t\t1730000000\tsha\tfeat: a\tb\n");
+        assert_eq!(out[0].last_commit_unix, Some(1730000000));
+        assert_eq!(out[0].subject.as_deref(), Some("feat: a\tb"));
+    }
+
+    #[test]
+    fn numstat_sums_and_ignores_binaries() {
+        let text = "12\t3\tsrc/main.rs\n-\t-\tlogo.png\n0\t0\tempty.txt\n";
+        let rows = parse_numstat(text);
+        assert_eq!(rows[0], ("src/main.rs".to_string(), 12, 3));
+        // A binary file reports "-", which parses to no count rather than a panic.
+        assert_eq!(rows[1], ("logo.png".to_string(), 0, 0));
+        assert_eq!(rows.len(), 3);
     }
 }

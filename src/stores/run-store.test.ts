@@ -8,6 +8,7 @@ function summary(runId: string, kind = 'devStart'): RunSummary {
     kind,
     title: `${kind} run`,
     ref: { category: 'fe', name: 'web' },
+    targets: [{ category: 'fe', name: 'web' }],
     argv: ['bun', 'run', 'dev'],
     cwd: '/w/fe/web',
     startedUnix: 1_700_000_000,

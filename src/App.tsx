@@ -19,6 +19,10 @@ import { ConfirmActionDialog } from '@/features/actions/ConfirmActionDialog'
 import { CommandPalette } from '@/features/command/CommandPalette'
 import { WorkspaceWelcome } from '@/features/workspace/WorkspacePicker'
 import { Toolbox } from '@/features/toolbox/Toolbox'
+import {
+  MachineTerminalDock,
+  useHasMachineTerminals,
+} from '@/features/terminal/MachineTerminalDock'
 import { SetupPage } from '@/features/setup/SetupPage'
 import { useUiStore } from '@/stores/ui-store'
 import { useTerminalStore } from '@/stores/terminal-store'
@@ -97,6 +101,9 @@ function Dashboard() {
   const [setupMode, setSetupMode] = useState(false)
   const outputPanelRef = useRef<PanelImperativeHandle | null>(null)
   useGrowForTerminals(outputPanelRef)
+  // Toolbox and setup installs run in a terminal session; the dock below only
+  // exists once one has been opened.
+  const hasMachineTerms = useHasMachineTerminals()
 
   // get_bootstrap paints the entire chrome — real counts, every folder, the
   // real scripts list — before a single git process has run.
@@ -154,7 +161,29 @@ function Dashboard() {
       <TooltipProvider delayDuration={400}>
         <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
           <TopBar boot={boot} />
-          {page === 'setup' ? (
+          {/* Split only once something is running: installs happen in a terminal
+              tab, and until the first one opens the list should have the whole
+              window. Resizable rather than a fixed strip — a dnf transaction is a
+              lot of output, and a sudo prompt has to be readable. */}
+          {hasMachineTerms ? (
+            <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1">
+              <ResizablePanel id="machine-page" minSize="180px">
+                {/* The flex context both pages' `min-h-0 flex-1` scroller needs;
+                    outside the split they get it from the window column. */}
+                <div className="flex h-full min-h-0 flex-col">
+                  {page === 'setup' ? (
+                    <SetupPage toolsReady={boot?.toolsReady ?? false} />
+                  ) : (
+                    <Toolbox toolsReady={boot?.toolsReady ?? false} />
+                  )}
+                </div>
+              </ResizablePanel>
+              <ResizableHandle className="hover:bg-primary data-[dragging]:bg-primary" />
+              <ResizablePanel id="machine-term" defaultSize="340px" minSize="140px">
+                <MachineTerminalDock />
+              </ResizablePanel>
+            </ResizablePanelGroup>
+          ) : page === 'setup' ? (
             <SetupPage toolsReady={boot?.toolsReady ?? false} />
           ) : (
             <Toolbox toolsReady={boot?.toolsReady ?? false} />

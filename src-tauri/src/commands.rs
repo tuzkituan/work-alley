@@ -617,8 +617,19 @@ pub async fn list_dev_servers(state: State<'_, Arc<AppState>>) -> AppResult<Vec<
 pub async fn list_branches(
     repo: RepoRef,
     state: State<'_, Arc<AppState>>,
-) -> AppResult<Vec<String>> {
+) -> AppResult<Vec<BranchInfo>> {
     crate::git::list_branches(state.inner(), &repo)
+        .await
+        .map_err(AppError::Invalid)
+}
+
+/// The stash, as data. Read-only.
+#[tauri::command]
+pub async fn list_stashes(
+    repo: RepoRef,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Vec<StashEntry>> {
+    crate::git::list_stashes(state.inner(), &repo)
         .await
         .map_err(AppError::Invalid)
 }
@@ -791,7 +802,14 @@ pub async fn run_action(
         // is what keeps a free-form shell inside the gate: the argv was built in
         // Rust from the closed ActionSpec enum, not supplied by the caller. See
         // the module doc in pty.rs.
-        "termShell" | "termScript" => {
+        //
+        // `termPackage` joins them: a Toolbox or setup-page operation is exactly
+        // what a pty is for. Root installs need a tty to prompt for a password —
+        // that used to mean throwing the command at whatever terminal emulator the
+        // machine had — and the unprivileged ones were streaming into an output
+        // pane that neither of those full-window pages even renders, so their
+        // output was invisible.
+        "termShell" | "termScript" | "termPackage" => {
             let size = pending.size.unwrap_or(TermSize {
                 cols: crate::pty::DEFAULT_COLS,
                 rows: crate::pty::DEFAULT_ROWS,
@@ -800,6 +818,11 @@ pub async fn run_action(
                 &app,
                 state.inner(),
                 crate::pty::OpenSpec {
+                    kind: match pending.kind.as_str() {
+                        "termShell" => "shell".into(),
+                        "termPackage" => "package".into(),
+                        _ => "script".into(),
+                    },
                     argv: pending.argv,
                     cwd: pending.cwd,
                     env: pending.env,
@@ -821,11 +844,6 @@ pub async fn run_action(
             Ok(String::new())
         }
         "openInTerminal" => {
-            procs::open_terminal(&app, &state.toolchain(), &pending.cwd, &pending.argv)?;
-            Ok(String::new())
-        }
-        "packageInTerminal" => {
-            // dnf needs root, and a GUI cannot ask for a password. The terminal can.
             procs::open_terminal(&app, &state.toolchain(), &pending.cwd, &pending.argv)?;
             Ok(String::new())
         }
@@ -852,6 +870,7 @@ pub async fn run_action(
                     kind: kind.to_string(),
                     title: pending.intent.title.clone(),
                     repo: pending.repo.clone(),
+                    targets: pending.targets.clone(),
                     dev_key: if kind == "devStart" {
                         pending.repo.as_ref().map(|r| {
                             crate::state::task_key(
@@ -1138,13 +1157,10 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             let plan = step.plan;
 
             Ok(Built {
-                // Same dispatch as the Toolbox: a root install cannot happen inside
-                // a GUI, so it is handed to a terminal.
-                kind: if plan.in_terminal {
-                    "packageInTerminal".into()
-                } else {
-                    "package".into()
-                },
+                // Same dispatch as the Toolbox: the integrated terminal, whether or
+                // not this step needs root. `plan.in_terminal` no longer selects the
+                // destination — it only records that a password prompt is coming.
+                kind: "termPackage".into(),
                 title: format!("Set up — {}", step.title),
                 description: plan.description,
                 argv: plan.argv,
@@ -1200,12 +1216,12 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             };
 
             Ok(Built {
-                // Terminal operations are dispatched like openInTerminal.
-                kind: if plan.in_terminal {
-                    "packageInTerminal".into()
-                } else {
-                    "package".into()
-                },
+                // Always the integrated terminal, root or not. Two reasons, and the
+                // second applies to every package operation: sudo needs a tty to ask
+                // for a password, and the Toolbox is a full-window page with no
+                // output pane — a streamed run there produced no visible output at
+                // all.
+                kind: "termPackage".into(),
                 title: match &version {
                     Some(v) => format!("{verb} {} {v}", entry.label),
                     None => format!("{verb} {}", entry.label),
@@ -1408,6 +1424,408 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 env: vec![],
                 danger: if dirty > 0 { Danger::Medium } else { Danger::Low },
                 warnings,
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::Push { repo, force } => {
+            let git = tc.require("git")?;
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+            let mut warnings = Vec::new();
+
+            let status = crate::git::scan_one(
+                git.clone(),
+                repo.clone(),
+                cwd.clone(),
+                cfg.stale_days,
+                None,
+            )
+            .await;
+
+            let branch = status.branch.clone();
+            let no_upstream = matches!(status.sync, SyncState::NoUpstream);
+
+            if status.detached {
+                // There is no branch to push, and `-u HEAD` would be a surprise.
+                return Err(AppError::Invalid(
+                    "HEAD is detached — check out a branch before pushing".into(),
+                ));
+            }
+            match &status.sync {
+                SyncState::Diverged { ahead, behind } if *behind == 0 => {
+                    warnings.push(format!("{ahead} commit(s) will be pushed."))
+                }
+                SyncState::Diverged { ahead, behind } if *ahead == 0 => warnings.push(format!(
+                    "This branch is {behind} behind and has nothing to push."
+                )),
+                SyncState::Diverged { ahead, behind } => warnings.push(format!(
+                    "This branch has diverged — {ahead} ahead, {behind} behind. \
+                     Pull first unless you mean to force."
+                )),
+                SyncState::NoUpstream => warnings.push(format!(
+                    "No upstream yet — this creates origin/{} and tracks it.",
+                    branch.clone().unwrap_or_else(|| "HEAD".into())
+                )),
+                SyncState::InSync => {
+                    warnings.push("Already up to date with the upstream — nothing to push.".into())
+                }
+            }
+            let dirty = status.dirty_count + status.untracked_count;
+            if dirty > 0 {
+                // Not a blocker, but the usual reason a push "didn't include my fix".
+                warnings.push(format!(
+                    "{dirty} uncommitted change(s) stay local — a push only sends commits."
+                ));
+            }
+            if force {
+                warnings.push(
+                    "--force-with-lease overwrites the remote branch. It refuses if someone \
+                     else pushed since your last fetch, but your own remote commits are lost."
+                        .into(),
+                );
+            }
+
+            let mut argv = vec![git.display().to_string(), "push".into()];
+            if force {
+                // Never a bare --force: the lease is what makes this recoverable.
+                argv.push("--force-with-lease".into());
+            }
+            if no_upstream {
+                argv.push("--set-upstream".into());
+                argv.push("origin".into());
+                argv.push(branch.clone().unwrap_or_else(|| "HEAD".into()));
+            }
+
+            Ok(Built {
+                kind: "push".into(),
+                title: if force {
+                    format!("Force-push {}", repo.key())
+                } else {
+                    format!("Push {}", repo.key())
+                },
+                description: format!(
+                    "Push {} to origin.",
+                    branch.clone().unwrap_or_else(|| "HEAD".into())
+                ),
+                argv,
+                cwd,
+                env: vec![],
+                danger: if force { Danger::High } else { Danger::Medium },
+                warnings,
+                typed_confirm: force.then(|| "force".to_string()),
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::Stash {
+            repo,
+            include_untracked,
+        } => {
+            let git = tc.require("git")?;
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+
+            let status = crate::git::scan_one(
+                git.clone(),
+                repo.clone(),
+                cwd.clone(),
+                cfg.stale_days,
+                None,
+            )
+            .await;
+
+            // Tracked changes alone are what plain `git stash` moves; untracked ones
+            // only count when -u is on. Refusing early beats a run that prints
+            // "No local changes to save" and exits 0.
+            let stashable = status.dirty_count + if include_untracked { status.untracked_count } else { 0 };
+            if stashable == 0 {
+                return Err(AppError::Invalid(if status.untracked_count > 0 {
+                    format!(
+                        "{} has only untracked files — use \"Stash including untracked\"",
+                        repo.key()
+                    )
+                } else {
+                    format!("{} has nothing to stash", repo.key())
+                }));
+            }
+
+            let existing = crate::git::stash_count(&git, &cwd).await;
+            let mut warnings = vec![format!(
+                "{stashable} change(s) move onto the stash — recover with \"Pop stash\"."
+            )];
+            if !include_untracked && status.untracked_count > 0 {
+                warnings.push(format!(
+                    "{} untracked file(s) are left in place.",
+                    status.untracked_count
+                ));
+            }
+            if existing > 0 {
+                warnings.push(format!(
+                    "{existing} entr(y/ies) already on the stash — this becomes stash@{{0}}."
+                ));
+            }
+
+            let mut argv = vec![git.display().to_string(), "stash".into(), "push".into()];
+            if include_untracked {
+                argv.push("--include-untracked".into());
+            }
+
+            Ok(Built {
+                kind: "stash".into(),
+                title: format!("Stash {}", repo.key()),
+                description: "Move uncommitted changes onto the stash.".into(),
+                argv,
+                cwd,
+                env: vec![],
+                danger: Danger::Medium,
+                warnings,
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::StashPop { repo } => {
+            let git = tc.require("git")?;
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+
+            let existing = crate::git::stash_count(&git, &cwd).await;
+            if existing == 0 {
+                return Err(AppError::Invalid(format!(
+                    "{} has an empty stash",
+                    repo.key()
+                )));
+            }
+
+            let status = crate::git::scan_one(
+                git.clone(),
+                repo.clone(),
+                cwd.clone(),
+                cfg.stale_days,
+                None,
+            )
+            .await;
+
+            let mut warnings = Vec::new();
+            if existing > 1 {
+                warnings.push(format!(
+                    "{existing} entries on the stash — only the newest is applied."
+                ));
+            }
+            if status.dirty_count > 0 {
+                // `pop` merges into the working tree and can leave conflicts behind.
+                warnings.push(format!(
+                    "{} uncommitted change(s) here already — applying may conflict, \
+                     and a conflicted pop keeps the entry on the stash.",
+                    status.dirty_count
+                ));
+            }
+
+            Ok(Built {
+                kind: "stashPop".into(),
+                title: format!("Pop stash — {}", repo.key()),
+                description: "Re-apply the newest stash entry and drop it.".into(),
+                argv: vec![git.display().to_string(), "stash".into(), "pop".into()],
+                cwd,
+                env: vec![],
+                danger: Danger::Medium,
+                warnings,
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::StashList { repo } => {
+            let git = tc.require("git")?;
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+            Ok(Built {
+                kind: "stashList".into(),
+                title: format!("Stash — {}", repo.key()),
+                description: "Read-only.".into(),
+                argv: vec![
+                    git.display().to_string(),
+                    "stash".into(),
+                    "list".into(),
+                    "--stat".into(),
+                ],
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: true,
+                size: None,
+            })
+        }
+
+        ActionSpec::LogGraph { repo } => {
+            let git = tc.require("git")?;
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+            Ok(Built {
+                kind: "logGraph".into(),
+                title: format!("Log — {}", repo.key()),
+                description: "Read-only.".into(),
+                argv: vec![
+                    git.display().to_string(),
+                    "log".into(),
+                    "--graph".into(),
+                    "--oneline".into(),
+                    "--decorate".into(),
+                    "--all".into(),
+                    "--max-count=200".into(),
+                ],
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: true,
+                size: None,
+            })
+        }
+
+        ActionSpec::Diff { repo, staged } => {
+            let git = tc.require("git")?;
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+            let mut argv = vec![git.display().to_string(), "diff".into(), "--stat".into()];
+            if staged {
+                argv.push("--staged".into());
+            }
+            Ok(Built {
+                kind: "diff".into(),
+                title: if staged {
+                    format!("Staged diff — {}", repo.key())
+                } else {
+                    format!("Diff — {}", repo.key())
+                },
+                description: "Read-only.".into(),
+                argv,
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: true,
+                size: None,
+            })
+        }
+
+        ActionSpec::DiscardChanges { repo } => {
+            let git = tc.require("git")?;
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+
+            let status = crate::git::scan_one(
+                git.clone(),
+                repo.clone(),
+                cwd.clone(),
+                cfg.stale_days,
+                None,
+            )
+            .await;
+
+            let dirty = status.dirty_count + status.untracked_count;
+            if dirty == 0 {
+                return Err(AppError::Invalid(format!(
+                    "{} has no local changes to discard",
+                    repo.key()
+                )));
+            }
+
+            Ok(Built {
+                kind: "discardChanges".into(),
+                title: format!("Discard changes — {}", repo.key()),
+                description: "Reset tracked files and delete untracked ones.".into(),
+                // Two commands, because neither half does the other's job: reset
+                // --hard leaves untracked files, clean -fd leaves modifications.
+                argv: vec![
+                    "bash".to_string(),
+                    "-c".into(),
+                    format!(
+                        "{g} reset --hard && {g} clean -fd",
+                        g = shell_single_quote(&git.display().to_string())
+                    ),
+                ],
+                cwd,
+                env: vec![],
+                danger: Danger::High,
+                warnings: vec![
+                    format!(
+                        "{} modified file(s) revert to HEAD and {} untracked file(s) are DELETED.",
+                        status.dirty_count, status.untracked_count
+                    ),
+                    "This cannot be undone. \"Stash\" keeps the work instead.".into(),
+                ],
+                typed_confirm: Some("discard".to_string()),
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::RunScript { repo, script } => {
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+            let key = repo.key();
+
+            // Same gate as DevStart: the name must be one this repo declares, so a
+            // caller cannot turn this into "run an arbitrary command".
+            if !crate::pkg::available_scripts(&cwd).contains(&script) {
+                return Err(AppError::Invalid(format!(
+                    "{key} has no \"{script}\" script in package.json"
+                )));
+            }
+
+            let fallback = tc.preferred_package_manager().unwrap_or("npm");
+            let (tool, args) = crate::pkg::task_command(&cwd, &script, fallback)
+                .ok_or_else(|| AppError::Invalid(format!("{key} has no package.json")))?;
+            let bin = tc.require(&tool)?;
+            let mut argv = vec![bin.display().to_string()];
+            argv.extend(args);
+
+            Ok(Built {
+                kind: "runScript".into(),
+                title: format!("{script} — {key}"),
+                description: format!("Run the \"{script}\" script with {tool}."),
+                argv,
+                cwd,
+                env: vec![],
+                // One-shot and repo-local. It can still write to the working tree —
+                // `format` and `lint:fix` exist to — so not read_only.
+                danger: Danger::Low,
+                warnings: vec![],
                 typed_confirm: None,
                 repo: Some(repo.clone()),
                 targets: vec![repo],
@@ -2249,6 +2667,17 @@ pub async fn list_packages(state: State<'_, Arc<AppState>>) -> AppResult<Vec<Pac
     Ok(crate::packages::list(&state.toolchain()).await)
 }
 
+/// Which installed tools have a newer version available. Read-only.
+///
+/// Separate from `list_packages` because it is the slow half: one bulk query per
+/// manager, each of which may hit a mirror or a registry. Never an error — a
+/// manager that cannot be reached is left out of `checked`, and the Toolbox then
+/// keeps offering Upgrade rather than claiming those tools are current.
+#[tauri::command]
+pub async fn check_package_updates(state: State<'_, Arc<AppState>>) -> AppResult<UpdateReport> {
+    Ok(crate::packages::updates(&state.toolchain()).await)
+}
+
 /// The first-run setup path: every step, in order, with what is already done.
 ///
 /// Never returns Err — a machine with no package manager, no git and no Node is
@@ -2394,7 +2823,11 @@ pub async fn list_pull_requests(
         "--limit",
         "50",
         "--json",
-        "number,title,author,headRefName,baseRefName,isDraft,reviewDecision,url,additions,deletions,changedFiles,updatedAt",
+        // statusCheckRollup, labels and mergeable ride along on the call that was
+        // already being made — gh charges the same round trip for twelve fields or
+        // fifteen, and "is CI green" is the first thing anyone asks of a PR list.
+        "number,title,author,headRefName,baseRefName,isDraft,reviewDecision,url,\
+         additions,deletions,changedFiles,updatedAt,statusCheckRollup,labels,mergeable",
     ])
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::piped())
@@ -2517,6 +2950,22 @@ pub fn parse_gh_prs(stdout: &str, me: Option<&str>) -> Vec<PullRequest> {
                 additions: v.get("additions").and_then(|n| n.as_u64()).unwrap_or(0),
                 deletions: v.get("deletions").and_then(|n| n.as_u64()).unwrap_or(0),
                 changed_files: v.get("changedFiles").and_then(|n| n.as_u64()).unwrap_or(0),
+                checks: rollup_state(v.get("statusCheckRollup")),
+                labels: v
+                    .get("labels")
+                    .and_then(|l| l.as_array())
+                    .map(|arr| {
+                        arr.iter()
+                            .filter_map(|l| l.get("name").and_then(|n| n.as_str()))
+                            .map(str::to_string)
+                            .collect()
+                    })
+                    .unwrap_or_default(),
+                mergeable: v
+                    .get("mergeable")
+                    .and_then(|m| m.as_str())
+                    .unwrap_or("")
+                    .to_string(),
                 updated_relative: if updated_unix > 0 {
                     crate::git::relative_time(updated_unix, now)
                 } else {
@@ -2526,6 +2975,52 @@ pub fn parse_gh_prs(stdout: &str, me: Option<&str>) -> Vec<PullRequest> {
             })
         })
         .collect()
+}
+
+/// Collapses gh's per-check array into one word: `passing`, `failing`, `pending`.
+///
+/// A rollup, because that is the only useful shape at list density — and the array
+/// mixes two schemas: CheckRun entries carry `conclusion`/`status`, StatusContext
+/// entries carry `state`. Both are read, so a repo using either still reports.
+///
+/// Empty string means "no checks configured", which is not the same as passing and
+/// must not be rendered as green.
+fn rollup_state(v: Option<&serde_json::Value>) -> String {
+    let Some(arr) = v.and_then(|v| v.as_array()) else {
+        return String::new();
+    };
+    if arr.is_empty() {
+        return String::new();
+    }
+
+    let mut pending = false;
+    for c in arr {
+        // CheckRun: status COMPLETED/IN_PROGRESS/QUEUED, conclusion SUCCESS/FAILURE/…
+        let status = c.get("status").and_then(|s| s.as_str()).unwrap_or("");
+        let conclusion = c
+            .get("conclusion")
+            .and_then(|s| s.as_str())
+            // StatusContext has no conclusion; its `state` plays the same role.
+            .or_else(|| c.get("state").and_then(|s| s.as_str()))
+            .unwrap_or("");
+
+        match conclusion.to_ascii_uppercase().as_str() {
+            "FAILURE" | "ERROR" | "TIMED_OUT" | "CANCELLED" | "ACTION_REQUIRED" | "STARTUP_FAILURE" => {
+                // One red check is the answer, whatever the rest say.
+                return "failing".into();
+            }
+            // Neutral and skipped are deliberately not failures: a skipped job is
+            // how most workflows express "not applicable to this PR".
+            "SUCCESS" | "NEUTRAL" | "SKIPPED" => {}
+            "" | "PENDING" | "EXPECTED" => pending = true,
+            _ => pending = true,
+        }
+        if status.eq_ignore_ascii_case("IN_PROGRESS") || status.eq_ignore_ascii_case("QUEUED") {
+            pending = true;
+        }
+    }
+
+    if pending { "pending".into() } else { "passing".into() }
 }
 
 /// Minimal ISO-8601 -> unix. Avoids pulling in chrono for one field.
@@ -2560,6 +3055,47 @@ pub async fn list_changed_files(
     let git = state.toolchain().require("git")?;
     let path = crate::paths::resolve_repo(&root, &repo)?;
     crate::git::changed_files(&git, &path)
+        .await
+        .map_err(AppError::Invalid)
+}
+
+/// The patch for one changed file, for the inline diff viewer. Read-only.
+///
+/// `path` is caller-supplied, so it is checked against the repo's *own* changed-file
+/// list before it reaches git — the same closed-set invariant `RunScript` holds
+/// against `available_scripts` and `DevStart` against `available_tasks`. That is
+/// what keeps this from becoming "read any file git will show you": a path outside
+/// the repo, or a `../` escape, simply is not in the list.
+#[tauri::command]
+pub async fn file_diff(
+    repo: RepoRef,
+    path: String,
+    staged: bool,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<String> {
+    let root = state.workspace_root();
+    let git = state.toolchain().require("git")?;
+    let cwd = crate::paths::resolve_repo(&root, &repo)?;
+
+    let changed = crate::git::changed_files(&git, &cwd)
+        .await
+        .map_err(AppError::Invalid)?;
+    if !changed.iter().any(|f| f.path == path) {
+        return Err(AppError::Invalid(format!(
+            "{path} is not a changed file in {}",
+            repo.key()
+        )));
+    }
+
+    let mut argv = vec!["diff", "--no-color", "--patch"];
+    if staged {
+        argv.push("--cached");
+    }
+    // `--` so a path that looks like a revision is still treated as a path.
+    argv.push("--");
+    argv.push(&path);
+
+    crate::git::git_output_public(&git, &cwd, &argv)
         .await
         .map_err(AppError::Invalid)
 }

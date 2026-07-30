@@ -23,7 +23,8 @@ export function RecentCommitsPanel({
           {scope ? `across ${repoCount} repos in ${scope}/` : 'no folder open'}
         </span>
       }
-      className="max-h-[320px]"
+      /* Capped only while the panels are stacked; side by side it fills the tab. */
+      className="max-h-[320px] lg:max-h-none"
     >
       {commits.length === 0 ? (
         scope && scanning === scope ? (

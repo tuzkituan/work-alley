@@ -107,6 +107,9 @@ pub struct RepoStatus {
     pub shape: RepoShape,
     /// Tasks this repo declares in package.json — "dev", "storybook".
     pub available_tasks: Vec<String>,
+    /// One-shot scripts this repo declares — "build", "lint", "format". Also the
+    /// closed set a `runScript` action is validated against.
+    pub available_scripts: Vec<String>,
     /// Tasks currently running for this repo. Not a single `dev_server`, because a
     /// UI library commonly has dev and storybook up at the same time.
     pub tasks: Vec<DevServer>,
@@ -133,11 +136,44 @@ impl RepoStatus {
             dev_port: None,
             shape: RepoShape::default(),
             available_tasks: Vec::new(),
+            available_scripts: Vec::new(),
             tasks: Vec::new(),
             error: Some(msg.into()),
             scan_ms: 0,
         }
     }
+}
+
+/// One branch, local or remote-only.
+///
+/// Replaces the bare `String` the branch list used to return: that flattened
+/// `origin/x` into `x`, merged duplicates, and dropped every date — so the UI could
+/// only ever render a list of names.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BranchInfo {
+    /// Without any `origin/` prefix, so it is what you would type to check it out.
+    pub name: String,
+    /// False => it exists only on the remote, and checking it out creates it here.
+    pub local: bool,
+    /// The configured upstream of a local branch, e.g. `origin/main`.
+    pub upstream: Option<String>,
+    /// Relative to `upstream`. Both zero when there is none, or when it is `[gone]`.
+    pub ahead: u32,
+    pub behind: u32,
+    pub last_commit_unix: Option<i64>,
+    pub tip_sha: Option<String>,
+    pub subject: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StashEntry {
+    /// `stash@{0}` — what you would pass to `git stash apply`.
+    pub selector: String,
+    pub message: String,
+    pub unix: i64,
+    pub relative: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -219,6 +255,10 @@ pub struct RunSummary {
     pub title: String,
     #[serde(rename = "ref")]
     pub repo: Option<RepoRef>,
+    /// Every repo this run touched. A bulk action leaves `repo` unset — its work
+    /// spans the whole list — so this is what tells the frontend which rows went
+    /// stale and need a rescan. Single-repo runs list just their own repo.
+    pub targets: Vec<RepoRef>,
     pub argv: Vec<String>,
     pub cwd: PathBuf,
     pub started_unix: i64,
@@ -353,6 +393,12 @@ pub struct PullRequest {
     pub updated_unix: i64,
     pub updated_relative: String,
     pub is_mine: bool,
+    /// CI, rolled up: "passing" / "failing" / "pending", or "" when the repo has no
+    /// checks configured — which is not the same as passing.
+    pub checks: String,
+    pub labels: Vec<String>,
+    /// gh's mergeable: MERGEABLE / CONFLICTING / UNKNOWN, or "".
+    pub mergeable: String,
 }
 
 /// `gh` is optional and often unauthenticated, so absence is modelled as data.
@@ -383,6 +429,11 @@ pub struct ChangedFile {
     pub staged: bool,
     pub untracked: bool,
     pub conflicted: bool,
+    /// Lines added and removed, staged and unstaged summed. Both zero when the file
+    /// is untracked (there is nothing to diff it against), binary, or when the diff
+    /// could not be read — see the note in `git::changed_files`.
+    pub added: u32,
+    pub deleted: u32,
 }
 
 // --- repo shape -------------------------------------------------------------
@@ -509,6 +560,34 @@ pub struct PackageStatus {
     pub version: Option<String>,
     /// False when the managing tool itself is missing, so actions are impossible.
     pub manager_available: bool,
+}
+
+/// An upgrade a manager reports as available for an already-installed tool.
+///
+/// Kept separate from `PackageStatus` because the two have very different costs:
+/// listing what is installed probes local binaries, while asking "is there a newer
+/// one" talks to repositories and registries. The Toolbox renders the list first
+/// and folds these in when they arrive.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PackageUpdate {
+    /// Catalog id, matching `ToolPackage::id`.
+    pub id: String,
+    /// None when the manager says "outdated" without naming the new version.
+    pub latest: Option<String>,
+}
+
+/// The result of one update check across every manager on this machine.
+///
+/// `checked` matters as much as `updates`: a manager that could not be asked — no
+/// network, a registry timeout, or one that simply cannot answer the question —
+/// must not make its tools look up to date. Only ids listed in `checked` have a
+/// real answer; the rest keep an always-available Upgrade button.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateReport {
+    pub checked: Vec<String>,
+    pub updates: Vec<PackageUpdate>,
 }
 
 // --- bootstrap --------------------------------------------------------------
@@ -711,6 +790,39 @@ pub enum ActionSpec {
         #[serde(default)]
         args: Vec<String>,
     },
+    /// One of a repo's own one-shot package.json scripts — build, lint, format.
+    ///
+    /// `script` is caller-supplied but checked against `pkg::available_scripts` for
+    /// that repo before it runs, exactly as `DevStart` checks `task`, so it can
+    /// only ever name a script the repo already declares.
+    RunScript {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        script: String,
+    },
+    Push {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        /// Rewrite the remote branch with --force-with-lease.
+        #[serde(default)]
+        force: bool,
+    },
+    Stash {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        #[serde(default)]
+        include_untracked: bool,
+    },
+    /// Re-apply the newest stash entry and drop it.
+    StashPop {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+    },
+    /// Throw away all uncommitted work in one repo. High danger, typed confirm.
+    DiscardChanges {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+    },
     OpenInTerminal {
         script: String,
         #[serde(rename = "ref")]
@@ -784,6 +896,23 @@ pub enum ActionSpec {
     BranchList {
         #[serde(rename = "ref")]
         repo: RepoRef,
+    },
+    StashList {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+    },
+    /// `git log` for one repo, as a graph. Read-only.
+    LogGraph {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+    },
+    /// `git diff` of the working tree. Read-only.
+    Diff {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        /// Show the staged diff instead of the unstaged one.
+        #[serde(default)]
+        staged: bool,
     },
     PrList,
 }

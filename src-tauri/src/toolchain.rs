@@ -4,8 +4,11 @@ use std::path::PathBuf;
 use std::process::Stdio;
 
 /// The tools we resolve once at startup and then only ever invoke by absolute path.
-pub const TOOLS: [&str; 11] = [
-    "git", "bun", "npm", "yarn", "node", "gh", "docker", "podman", "jq", "ss", "lsof",
+pub const TOOLS: [&str; 12] = [
+    // pnpm belongs here even though `preferred_package_manager` lists it: without a
+    // resolved path, `require("pnpm")` fails for every repo whose lockfile or
+    // `packageManager` field asks for it, and no script in it can be run at all.
+    "git", "bun", "npm", "pnpm", "yarn", "node", "gh", "docker", "podman", "jq", "ss", "lsof",
 ];
 
 #[derive(Debug, Clone, Default)]

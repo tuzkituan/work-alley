@@ -62,7 +62,7 @@
   --primary-900: var(--primary);
   --primary-950: var(--primary);
 
-  --font-sans: 'Inter Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'IBM Plex Sans Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     monospace;
 
@@ -72,6 +72,29 @@
 
   /* The hover/focus ring, as one token so every interactive surface agrees. */
   --shadow-focus-ring: 0 0 0 3px var(--adaptive-300);
+
+  /* --- elevation vocabulary --------------------------------------------
+   *
+   * Classic has none: its depth cue is a 1px border, so these are transparent
+   * no-ops. They exist here rather than only in the skin because theme.css maps
+   * them into `@theme inline`, which resolves *live* — an unset var would emit an
+   * invalid `box-shadow` the moment the skin is off. `wa-skin.css` overrides
+   * them; see the note there about what each depth means.
+   */
+  --wa-raise-1: 0 0 #0000;
+  --wa-raise-2: 0 0 #0000;
+  --wa-inset-1: 0 0 #0000;
+  --wa-inset-2: 0 0 #0000;
+  --wa-pressed: 0 0 #0000;
+  /* The two floats keep classic's stock shadcn shadows, which dialogs and
+     popovers already rely on. */
+  --wa-float-1: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+  --wa-float-2: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+
+  /* One level of indirection so the skin can move the thumb without inheriting
+     whatever the contrast ramp did. Classic's values are the ramp, unchanged. */
+  --wa-scroll-thumb: var(--adaptive-300);
+  --wa-scroll-thumb-hover: var(--adaptive-400);
 
   /* --- integrated terminal palette --------------------------------------
    *
@@ -178,7 +201,7 @@
 /* Custom scrollbars — the virtualized panes cannot use Radix ScrollArea. */
 .wa-scroll {
   scrollbar-width: thin;
-  scrollbar-color: var(--adaptive-300) transparent;
+  scrollbar-color: var(--wa-scroll-thumb) transparent;
 }
 .wa-scroll::-webkit-scrollbar {
   width: 10px;
@@ -188,13 +211,13 @@
   background: transparent;
 }
 .wa-scroll::-webkit-scrollbar-thumb {
-  background: var(--adaptive-300);
+  background: var(--wa-scroll-thumb);
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: content-box;
 }
 .wa-scroll::-webkit-scrollbar-thumb:hover {
-  background: var(--adaptive-400);
+  background: var(--wa-scroll-thumb-hover);
   border: 3px solid transparent;
   background-clip: content-box;
 }
@@ -234,8 +257,8 @@ body,
     96px
     76px
     84px
-    88px
-    124px;
+    96px
+    116px;
 }
 
 /* Not every workspace has a shared package to track, so that column is dropped
@@ -248,8 +271,8 @@ body,
     minmax(80px, 1fr)
     96px
     76px
-    88px
-    124px;
+    96px
+    116px;
 }
 
 @container (max-width: 900px) {
@@ -259,10 +282,129 @@ body,
       minmax(160px, 2.6fr)
       minmax(70px, 1fr)
       92px
-      84px
-      120px;
+      88px
+      116px;
   }
   .wa-col-optional {
+    display: none;
+  }
+}
+
+/* Narrower still — a half-width window or a side-by-side layout. Dev goes next:
+   its state is also on the row's own dot and in the detail pane, whereas the
+   actions group is the only way to act on a repo from here, so that track is
+   never dropped. 116px is exactly four 26px icon buttons plus their gaps, which
+   is why the row actions are icons rather than labels. */
+@container (max-width: 640px) {
+  .wa-cols {
+    grid-template-columns:
+      18px
+      minmax(120px, 2.6fr)
+      minmax(60px, 1fr)
+      84px
+      116px;
+  }
+  .wa-col-dev {
+    display: none;
+  }
+}
+
+/* Last resort: name and actions only. Below this the branch and change counts
+   are unreadable anyway, and a name you cannot read makes the list useless. */
+@container (max-width: 460px) {
+  .wa-cols {
+    grid-template-columns:
+      18px
+      minmax(90px, 1fr)
+      116px;
+  }
+  .wa-col-narrow {
+    display: none;
+  }
+}
+
+/* --- repo detail page ------------------------------------------------------
+ *
+ * The detail page shares the resizable centre panel with the table above, so the
+ * same rule applies: it must lay out against its own width, never the window's.
+ * It previously used viewport `lg:` — which is how a 1400px window with the
+ * output pane dragged wide left this panel at 430px, still matched `lg`, and put
+ * the PR row's +/- counts on top of the review column.
+ *
+ * Named container, unlike `.wa-table`: the detail page nests panels inside it and
+ * an anonymous query would resolve against whichever ancestor happened to be
+ * closest.
+ */
+.wa-detail {
+  container-type: inline-size;
+  container-name: detail;
+}
+
+.wa-pr-cols {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: 46px minmax(0, 1fr) 132px 116px 44px 16px;
+}
+.wa-file-cols {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  /* The last track carries "+12 −3" plus the reveal button. */
+  grid-template-columns: 44px minmax(0, 1fr) 96px;
+}
+.wa-commit-cols {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: 56px minmax(0, 1fr) 128px 44px;
+}
+.wa-branch-cols {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) 92px 72px 44px;
+}
+.wa-run-cols {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: 10px minmax(0, 1fr) 64px 52px 44px;
+}
+.wa-stat-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+@container detail (max-width: 760px) {
+  .wa-pr-cols {
+    grid-template-columns: 46px minmax(0, 1fr) 116px 44px 16px;
+  }
+  .wa-commit-cols {
+    grid-template-columns: 56px minmax(0, 1fr) 44px;
+  }
+  .wa-branch-cols {
+    grid-template-columns: minmax(0, 1fr) 92px 44px;
+  }
+  /* The PR diffstat and the commit author: useful, but never the reason you
+     opened the tab. */
+  .wa-d-optional {
+    display: none;
+  }
+}
+
+@container detail (max-width: 560px) {
+  .wa-stat-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .wa-pr-cols {
+    grid-template-columns: 46px minmax(0, 1fr) 44px 16px;
+  }
+  .wa-file-cols {
+    grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .wa-d-narrow {
     display: none;
   }
 }

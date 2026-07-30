@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { Archive, ArrowRight, CircleAlert, GitBranch, Trash2 } from 'lucide-react'
+import { ArrowRight, CircleAlert, GitBranch } from 'lucide-react'
 import {
   Dialog,
   DialogContent,
@@ -16,36 +16,8 @@ import { api } from '@/ipc/commands'
 import { keys } from '@/queries/keys'
 import { useRunAction } from '@/hooks/use-action'
 import { repoId, type CheckoutPreview, type DirtyPolicy, type RepoRef } from '@/domain/types'
+import { POLICIES } from './checkout-policy'
 
-const POLICIES: {
-  id: DirtyPolicy
-  label: string
-  detail: string
-  icon: typeof Archive
-  tone: string
-}[] = [
-  {
-    id: 'skip',
-    label: 'Leave them alone',
-    detail: 'Those repos stay on their current branch. Nothing is lost.',
-    icon: ArrowRight,
-    tone: 'text-adaptive-700',
-  },
-  {
-    id: 'stash',
-    label: 'Stash the changes',
-    detail: 'git stash push -u, including untracked files. Recover with git stash pop.',
-    icon: Archive,
-    tone: 'text-sev-warn',
-  },
-  {
-    id: 'discard',
-    label: 'Discard the changes',
-    detail: 'git reset --hard and git clean -fd. Cannot be undone.',
-    icon: Trash2,
-    tone: 'text-sev-err',
-  },
-]
 
 /**
  * Switch a set of repos to one branch: each repo's own default, or a name typed in.

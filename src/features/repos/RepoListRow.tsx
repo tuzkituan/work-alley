@@ -1,4 +1,5 @@
 import { memo } from 'react'
+import { ArrowDownToLine, FileText, Play, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { KindTag, StatusDot } from '@/components/wa/primitives'
@@ -32,15 +33,15 @@ export function RepoListHeader() {
     >
       <span />
       <span>Repo</span>
-      <span>Branch</span>
-      <span>Changes</span>
+      <span className="wa-col-narrow">Branch</span>
+      <span className="wa-col-narrow">Changes</span>
       <span className="wa-col-optional">Sync</span>
       {trackedPackage && (
         <span className="wa-col-optional truncate" title={trackedPackage}>
           {shortPackageName(trackedPackage)}
         </span>
       )}
-      <span>Dev</span>
+      <span className="wa-col-dev wa-col-narrow">Dev</span>
       <span className="text-right">Actions</span>
     </div>
   )
@@ -107,21 +108,23 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
 
       {status ? (
         <span
-          className="truncate font-mono text-[11.5px] text-adaptive-700"
+          className="wa-col-narrow truncate font-mono text-[11.5px] text-adaptive-700"
           title={status.branch ?? undefined}
         >
           {status.detached ? '(detached)' : (status.branch ?? '—')}
         </span>
       ) : (
-        <Skeleton className="h-3 w-28" />
+        <Skeleton className="wa-col-narrow h-3 w-28" />
       )}
 
       {d ? (
-        <span className={cn('wa-num font-mono text-[11.5px]', TONE_TEXT[d.dirtyTone])}>
+        <span
+          className={cn('wa-col-narrow wa-num font-mono text-[11.5px]', TONE_TEXT[d.dirtyTone])}
+        >
           {d.dirtyLabel}
         </span>
       ) : (
-        <Skeleton className="h-3 w-16" />
+        <Skeleton className="wa-col-narrow h-3 w-16" />
       )}
 
       {d ? (
@@ -151,7 +154,7 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
 
       <span
         className={cn(
-          'wa-num truncate font-mono text-[11.5px]',
+          'wa-col-dev wa-col-narrow wa-num truncate font-mono text-[11.5px]',
           dev?.state === 'crashed' || sb?.state === 'crashed'
             ? 'text-sev-err'
             : dev || sb
@@ -165,40 +168,49 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
           .join(' ') || 'stopped'}
       </span>
 
+      {/* Icons, not labels: "Pull Status Dev" needed ~200px and the Actions track
+          is 124px, so the group used to spill left over the Dev column. Every one
+          carries a native `title` — see the note on the repo name above for why
+          these are not Radix tooltips. */}
       <div className="flex items-center justify-end gap-1">
         <Button
           variant="waOutline"
-          size="waXs"
+          size="waIcon"
           className="shrink-0"
+          title="Pull (rebase onto upstream)"
+          aria-label="Pull"
           onClick={(e) => {
             e.stopPropagation()
             run({ kind: 'pull', ref: repo })
           }}
         >
-          Pull
+          <ArrowDownToLine className="size-3.5" />
         </Button>
         <Button
           variant="waOutline"
-          size="waXs"
+          size="waIcon"
           className="shrink-0"
+          title="Show git status"
+          aria-label="Status"
           onClick={(e) => {
             e.stopPropagation()
             run({ kind: 'status', ref: repo })
           }}
         >
-          Status
+          <FileText className="size-3.5" />
         </Button>
         <Button
           variant={devUp ? 'waDanger' : 'waOutline'}
-          size="waXs"
+          size="waIcon"
           className="shrink-0"
           title={devUp ? 'Stop the dev server' : 'Start the dev server'}
+          aria-label={devUp ? 'Stop dev server' : 'Start dev server'}
           onClick={(e) => {
             e.stopPropagation()
             run({ kind: devUp ? 'devStop' : 'devStart', ref: repo, task: 'dev' })
           }}
         >
-          {devUp ? 'Stop' : 'Dev'}
+          {devUp ? <Square className="size-3" /> : <Play className="size-3.5" />}
         </Button>
         <RepoMenu repo={repo} status={status} />
       </div>
