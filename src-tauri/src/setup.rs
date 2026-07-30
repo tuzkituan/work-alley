@@ -195,11 +195,25 @@ const STEPS: &[Step] = &[
     },
     Step {
         id: "databases",
-        title: "Database clients",
-        summary: "psql, sqlite3 and redis-cli.",
+        title: "Database and queue clients",
+        summary: "mysql, redis-cli and kcat.",
         why: "Clients only, never servers — a dashboard should not quietly start a \
-              daemon listening on a port. Run the servers in containers instead.",
-        kind: Kind::System(&["psql", "sqlite", "redis-cli"]),
+              daemon listening on a port. Run the servers in containers instead. \
+              Chosen from what the services in be/ actually connect to: MySQL, Redis \
+              and Kafka. Postgres and SQLite are in the Toolbox if you need them.",
+        kind: Kind::System(&["mysql", "redis-cli", "kcat"]),
+        optional: true,
+        note: None,
+    },
+    Step {
+        id: "backend",
+        title: "Backend tooling",
+        summary: "The NestJS CLI, and the MongoDB shell.",
+        why: "Every service in be/ is NestJS, so `nest generate` is a daily command, \
+              and most of them store in MongoDB — mongosh is the only way to look at \
+              what they wrote. Both come from npm: neither is packaged by a \
+              distribution in a version worth having.",
+        kind: Kind::NpmGlobal(&["nest", "mongosh"]),
         optional: true,
         note: None,
     },

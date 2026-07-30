@@ -38,6 +38,11 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
 
   const repoCount = boot?.repos.length ?? 0
   const scriptCount = boot?.scripts.length ?? 0
+  // The bar is shown on the machine pages too, where there may be no workspace at
+  // all. Everything scoped to one is hidden rather than shown empty or disabled:
+  // "0 repos · 0 scripts" says nothing, and greyed-out Pull All / Checkout buttons
+  // are three controls to read and dismiss before finding the one that works.
+  const hasWorkspace = boot?.hasWorkspace ?? false
 
   // Bulk actions follow the open folder. "Pull All" across every repo when
   // is looking at one folder would act well outside what they can see.
@@ -60,27 +65,33 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
 
         <WorkspaceSwitcher boot={boot} />
 
-        <div
-          data-tauri-drag-region
-          className="flex min-w-0 items-center gap-1.5 font-mono text-xs text-adaptive-500"
-        >
-          <span className="wa-num">{repoCount} repos</span>
-          <Sep />
-          <span className="wa-num">{scriptCount} scripts</span>
-        </div>
+        {hasWorkspace && (
+          <div
+            data-tauri-drag-region
+            className="flex min-w-0 items-center gap-1.5 font-mono text-xs text-adaptive-500"
+          >
+            <span className="wa-num">{repoCount} repos</span>
+            <Sep />
+            <span className="wa-num">{scriptCount} scripts</span>
+          </div>
+        )}
 
         {/* Double-clicking a drag region toggles maximize, as a title bar should. */}
         <div data-tauri-drag-region className="h-full flex-1" />
 
-        <button
-          type="button"
-          onClick={() => setPaletteOpen(true)}
-          className="flex h-[30px] items-center gap-2 rounded-md border border-adaptive-300 bg-background px-2.5 text-xs text-adaptive-400 transition-shadow hover:border-adaptive-950 hover:shadow-focus-ring"
-        >
-          <Search className="size-3" />
-          <span>Search repos, branches, scripts</span>
-          <KeyCap>⌘K</KeyCap>
-        </button>
+        {/* Everything it searches — repos, branches, scripts — comes from a
+            workspace, and the palette is not even mounted outside the dashboard. */}
+        {hasWorkspace && (
+          <button
+            type="button"
+            onClick={() => setPaletteOpen(true)}
+            className="flex h-[30px] items-center gap-2 rounded-md border border-adaptive-300 bg-background px-2.5 text-xs text-adaptive-400 transition-shadow hover:border-adaptive-950 hover:shadow-focus-ring"
+          >
+            <Search className="size-3" />
+            <span>Search repos, branches, scripts</span>
+            <KeyCap>⌘K</KeyCap>
+          </button>
+        )}
 
         <Button
           variant="waOutline"
@@ -136,39 +147,48 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
             </DropdownMenuRadioGroup>
           </DropdownMenuContent>
         </DropdownMenu>
-        <Button
-          variant="waOutline"
-          size="wa"
-          className="border-adaptive-300"
-          disabled={targets.length === 0}
-          // Scoped to the open folder. This previously said "Fetch sa/" but sent
-          // ref: null, which fetches every repo in the workspace — the label and
-          // the action disagreed.
-          onClick={() =>
-            run(expanded ? { kind: 'fetchMany', refs: targets } : { kind: 'fetchAll', ref: null })
-          }
-        >
-          Fetch {scopeLabel}
-        </Button>
-        <Button
-          variant="waPrimary"
-          size="wa"
-          disabled={targets.length === 0}
-          onClick={() => run({ kind: 'pullMany', refs: targets })}
-        >
-          Pull {scopeLabel}
-        </Button>
-        <Button
-          variant="waOutline"
-          size="wa"
-          className="border-adaptive-300"
-          disabled={targets.length === 0}
-          title={`Check out a branch across every repo in ${scopeLabel}`}
-          onClick={() => setCheckoutOpen(true)}
-        >
-          <GitBranch className="size-3.5" />
-          Checkout
-        </Button>
+        {/* The bulk actions, all three of which need repos to act on. */}
+        {hasWorkspace && (
+          <>
+            <Button
+              variant="waOutline"
+              size="wa"
+              className="border-adaptive-300"
+              disabled={targets.length === 0}
+              // Scoped to the open folder. This previously said "Fetch sa/" but sent
+              // ref: null, which fetches every repo in the workspace — the label and
+              // the action disagreed.
+              onClick={() =>
+                run(
+                  expanded
+                    ? { kind: 'fetchMany', refs: targets }
+                    : { kind: 'fetchAll', ref: null }
+                )
+              }
+            >
+              Fetch {scopeLabel}
+            </Button>
+            <Button
+              variant="waPrimary"
+              size="wa"
+              disabled={targets.length === 0}
+              onClick={() => run({ kind: 'pullMany', refs: targets })}
+            >
+              Pull {scopeLabel}
+            </Button>
+            <Button
+              variant="waOutline"
+              size="wa"
+              className="border-adaptive-300"
+              disabled={targets.length === 0}
+              title={`Check out a branch across every repo in ${scopeLabel}`}
+              onClick={() => setCheckoutOpen(true)}
+            >
+              <GitBranch className="size-3.5" />
+              Checkout
+            </Button>
+          </>
+        )}
 
         <span className="mx-1 h-5 w-px bg-adaptive-200" />
         <WindowControls />

@@ -177,6 +177,7 @@ const CATALOG: &[Entry] = &[
     Entry { id: "vercel", label: "Vercel CLI", description: "Deploy and manage Vercel projects.", group: "Web dev", manager: Manager::NpmGlobal, package: "vercel", aliases: &[], bin: "vercel", removable: true },
     Entry { id: "firebase", label: "Firebase CLI", description: "Deploy and manage Firebase projects.", group: "Web dev", manager: Manager::NpmGlobal, package: "firebase-tools", aliases: &[], bin: "firebase", removable: true },
     Entry { id: "serve", label: "serve", description: "Static file server for checking a build output.", group: "Web dev", manager: Manager::NpmGlobal, package: "serve", aliases: &[], bin: "serve", removable: true },
+    Entry { id: "nest", label: "NestJS CLI", description: "nest generate/build, for the backend services.", group: "Web dev", manager: Manager::NpmGlobal, package: "@nestjs/cli", aliases: &[], bin: "nest", removable: true },
 
     // --- git & github -------------------------------------------------------
     Entry { id: "git", label: "Git", description: "Required — the whole dashboard reads git state.", group: "Git", manager: Manager::System, package: "git", aliases: &[], bin: "git", removable: false },
@@ -228,6 +229,7 @@ const CATALOG: &[Entry] = &[
     // --- api & service tooling ----------------------------------------------
     Entry { id: "curl", label: "curl", description: "HTTP client. A great many tools shell out to it.", group: "API", manager: Manager::System, package: "curl", aliases: &[], bin: "curl", removable: false },
     Entry { id: "yq", label: "yq", description: "YAML processor, the jq of config files.", group: "API", manager: Manager::System, package: "yq", aliases: &[("pacman", "go-yq")], bin: "yq", removable: true },
+    Entry { id: "kcat", label: "kcat", description: "Produce to and consume from Kafka, without a JVM.", group: "API", manager: Manager::System, package: "kcat", aliases: &[("pacman", ""), ("zypper", "")], bin: "kcat", removable: true },
     Entry { id: "grpcurl", label: "grpcurl", description: "curl for gRPC services.", group: "API", manager: Manager::System, package: "grpcurl", aliases: &[("apt-get", ""), ("zypper", ""), ("apk", "")], bin: "grpcurl", removable: true },
     Entry { id: "pm2", label: "PM2", description: "Process manager for long-running Node services.", group: "API", manager: Manager::NpmGlobal, package: "pm2", aliases: &[], bin: "pm2", removable: true },
     Entry { id: "nodemon", label: "nodemon", description: "Restarts a Node process when files change.", group: "API", manager: Manager::NpmGlobal, package: "nodemon", aliases: &[], bin: "nodemon", removable: true },
