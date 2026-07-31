@@ -5,6 +5,7 @@ mod clone;
 mod commands;
 mod config;
 mod creds;
+mod deps;
 mod detect;
 mod docker;
 mod error;
@@ -261,6 +262,9 @@ pub fn run() {
             commands::list_packages,
             commands::list_package_versions,
             commands::check_package_updates,
+            commands::list_repo_packages,
+            commands::check_repo_package_updates,
+            commands::list_dep_versions,
             commands::list_setup_plan,
             commands::refresh_toolchain,
             commands::complete_onboarding,

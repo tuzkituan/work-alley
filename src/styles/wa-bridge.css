@@ -401,6 +401,14 @@ body,
   gap: 8px;
   grid-template-columns: minmax(0, 1fr) 92px 72px 44px;
 }
+/* name / declared range / installed / latest / action. The last two never drop:
+   "what am I on and what is there" is the reason the tab exists. */
+.wa-dep-cols {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: 10px minmax(0, 1fr) 84px 84px 84px 96px;
+}
 .wa-run-cols {
   display: grid;
   align-items: center;
@@ -423,6 +431,11 @@ body,
   .wa-branch-cols {
     grid-template-columns: minmax(0, 1fr) 92px 44px;
   }
+  /* The declared range goes first: it is the one column you can still read off
+     package.json in a second. */
+  .wa-dep-cols {
+    grid-template-columns: 10px minmax(0, 1fr) 84px 84px 96px;
+  }
   /* The PR diffstat and the commit author: useful, but never the reason you
      opened the tab. */
   .wa-d-optional {
@@ -439,6 +452,9 @@ body,
   }
   .wa-file-cols {
     grid-template-columns: 44px minmax(0, 1fr);
+  }
+  .wa-dep-cols {
+    grid-template-columns: 10px minmax(0, 1fr) 84px 96px;
   }
   .wa-d-narrow {
     display: none;

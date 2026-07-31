@@ -494,6 +494,56 @@ export interface UpdateReport {
   updates: PackageUpdate[]
 }
 
+// --- repo dependencies ------------------------------------------------------
+
+/** Which block of package.json declares a dependency. Decides the install flag. */
+export type DepField = 'dependencies' | 'devDependencies' | 'peerDependencies'
+
+/** One line of a repo's dependency table. */
+export interface RepoDep {
+  name: string
+  field: DepField
+  /** Verbatim from package.json: "^1.2.3", "workspace:*", a git URL. */
+  range: string
+  /** From node_modules/<name>/package.json. Null when it is not installed here. */
+  installed: string | null
+  /** A location range — workspace:/file:/link:/git/http. Not upgradable from here. */
+  linked: boolean
+}
+
+export interface RepoPackages {
+  hasManifest: boolean
+  /** npm / pnpm / yarn / bun. Null when the repo has no manifest. */
+  manager: string | null
+  /** Whether node_modules exists — "nothing installed" vs "this one is missing". */
+  installedTree: boolean
+  deps: RepoDep[]
+}
+
+export interface DepUpdate {
+  name: string
+  /** Null when the manager reported the row without naming a version. */
+  latest: string | null
+  /** The newest version the declared range already allows. */
+  wanted: string | null
+}
+
+/**
+ * What one repo's package manager says is out of date.
+ *
+ * `checked` carries the same weight as UpdateReport's: false means nobody could be
+ * asked — offline, a timeout, Yarn PnP — and the panel must say so rather than
+ * render every dependency as current.
+ */
+export interface DepUpdateReport {
+  checked: boolean
+  /** Which tool answered: npm / pnpm / yarn. Empty when none did. */
+  source: string
+  updates: DepUpdate[]
+  /** Why nothing could be checked, shown as a note rather than an error. */
+  reason: string | null
+}
+
 // --- first-run setup --------------------------------------------------------
 
 /** One thing a setup step is responsible for: a package, or half of the identity. */
@@ -674,6 +724,13 @@ export type ActionSpec =
   | { kind: 'checkout'; refs: RepoRef[]; branch?: string; dirty: DirtyPolicy }
   | { kind: 'openInEditor'; ref: RepoRef; editor: string }
   | { kind: 'package'; id: string; op: PackageOp; version?: string }
+  /**
+   * Install one of a repo's declared dependencies. `version` omitted = latest.
+   *
+   * Validated against that repo's package.json in Rust, which also picks the
+   * manager and the --save-dev/--save-peer flag from the field it is declared in.
+   */
+  | { kind: 'upgradeDep'; ref: RepoRef; package: string; version?: string }
   /** One step of the first-run setup. The id is resolved against the step table. */
   | { kind: 'setupStep'; id: string }
   | { kind: 'gitIdentity'; name: string; email: string }

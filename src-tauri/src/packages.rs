@@ -698,6 +698,15 @@ pub fn parse_npm_versions(json: &str) -> Vec<PackageVersion> {
         _ => return Vec::new(),
     };
 
+    shape_versions(list)
+}
+
+/// A registry's version list (oldest first) as a menu: newest first, no
+/// pre-releases, capped, with the head tagged.
+///
+/// Shared with the per-repo dependency menu, which reaches the same registry
+/// through whichever manager is installed.
+pub fn shape_versions(list: Vec<String>) -> Vec<PackageVersion> {
     let mut out: Vec<PackageVersion> = list
         .into_iter()
         .rev()
@@ -1216,7 +1225,7 @@ async fn node_update(tc: &Toolchain) -> Option<Option<String>> {
     Some((new > cur).then_some(latest))
 }
 
-async fn capture(
+pub(crate) async fn capture(
     program: &std::path::Path,
     args: &[&str],
     path_env: &str,
@@ -1229,7 +1238,7 @@ async fn capture(
 ///
 /// The code is what separates "nothing to upgrade" from "the mirror is
 /// unreachable" for most managers, and both print nothing on stdout.
-async fn capture_status(
+pub(crate) async fn capture_status(
     program: &std::path::Path,
     args: &[&str],
     path_env: &str,

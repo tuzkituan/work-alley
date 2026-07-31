@@ -18,7 +18,15 @@ describe('staleKeysFor', () => {
 
   it('invalidates every per-repo view after a pull', () => {
     expect(heads('pull').sort()).toEqual(
-      ['branches', 'changedFiles', 'prs', 'repoCommits', 'runs'].sort()
+      [
+        'branches',
+        'changedFiles',
+        'prs',
+        'repoCommits',
+        'repoPackages',
+        'repoPackageUpdates',
+        'runs',
+      ].sort()
     )
   })
 
@@ -32,10 +40,28 @@ describe('staleKeysFor', () => {
     expect(h).toContain('repoCommits')
   })
 
-  it('invalidates only the file list after stashing or running a script', () => {
-    for (const kind of ['stash', 'stashPop', 'discardChanges', 'runScript']) {
+  it('invalidates only the file list after stashing', () => {
+    for (const kind of ['stash', 'stashPop', 'discardChanges']) {
       expect(heads(kind).sort()).toEqual(['changedFiles', 'runs'])
     }
+  })
+
+  it('refetches the dependency table after a script, which can move a lockfile', () => {
+    // Not the outdated answer: a script rewriting a lockfile does not change what
+    // the registry considers latest, and that key is a registry round trip.
+    const h = heads('runScript')
+    expect(h.sort()).toEqual(['changedFiles', 'repoPackages', 'runs'].sort())
+    expect(h).not.toContain('repoPackageUpdates')
+  })
+
+  it('refetches both dependency keys after an upgrade, and no git views', () => {
+    const h = heads('upgradeDep')
+    expect(h.sort()).toEqual(
+      ['changedFiles', 'repoPackages', 'repoPackageUpdates', 'runs'].sort()
+    )
+    // Nothing here runs git, so HEAD and the branch cannot have moved.
+    expect(h).not.toContain('repoCommits')
+    expect(h).not.toContain('branches')
   })
 
   it('refetches the log and the branch after a commit, but not the PRs', () => {

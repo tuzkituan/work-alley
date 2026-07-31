@@ -1,7 +1,79 @@
 use crate::model::TrackedDep;
+use serde::Serialize;
 use std::path::Path;
 
-const DEP_FIELDS: [&str; 3] = ["dependencies", "devDependencies", "peerDependencies"];
+pub(crate) const DEP_FIELDS: [&str; 3] = ["dependencies", "devDependencies", "peerDependencies"];
+
+/// Which block of `package.json` declares a dependency.
+///
+/// Carried around rather than inferred later because it decides the install flag:
+/// `npm install pkg@1` on a devDependency silently relocates it to `dependencies`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum DepField {
+    Dependencies,
+    DevDependencies,
+    PeerDependencies,
+}
+
+impl DepField {
+    fn from_manifest_key(key: &str) -> Option<Self> {
+        match key {
+            "dependencies" => Some(Self::Dependencies),
+            "devDependencies" => Some(Self::DevDependencies),
+            "peerDependencies" => Some(Self::PeerDependencies),
+            _ => None,
+        }
+    }
+}
+
+/// Every declared dependency, in manifest order, as `(name, field, raw range)`.
+///
+/// Distinct from `Manifest::deps`, which is only names and only exists to answer
+/// "who depends on the tracked package".
+pub fn declared_deps(repo: &Path) -> Vec<(String, DepField, String)> {
+    let Ok(text) = std::fs::read_to_string(repo.join("package.json")) else {
+        return Vec::new();
+    };
+    parse_declared_deps(&text)
+}
+
+/// The parsing half of `declared_deps`, so it can be tested without a file.
+pub fn parse_declared_deps(text: &str) -> Vec<(String, DepField, String)> {
+    let Ok(json) = serde_json::from_str::<serde_json::Value>(text) else {
+        return Vec::new();
+    };
+
+    let mut out = Vec::new();
+    for key in DEP_FIELDS {
+        let Some(field) = DepField::from_manifest_key(key) else {
+            continue;
+        };
+        let Some(obj) = json.get(key).and_then(|v| v.as_object()) else {
+            continue;
+        };
+        for (name, range) in obj {
+            // A non-string range is a malformed manifest; skipping the row beats
+            // rendering "null" as something you could upgrade.
+            if let Some(range) = range.as_str() {
+                out.push((name.clone(), field, range.to_string()));
+            }
+        }
+    }
+    out
+}
+
+/// One dependency, looked up by name.
+///
+/// This is the closed set the upgrade action gates on: a package name arriving
+/// from the frontend is only ever *matched* against the manifest, never composed
+/// into argv on its own. Same discipline as `available_scripts` for RunScript.
+pub fn declared_dep(repo: &Path, name: &str) -> Option<(DepField, String)> {
+    declared_deps(repo)
+        .into_iter()
+        .find(|(n, _, _)| n == name)
+        .map(|(_, field, range)| (field, range))
+}
 
 /// What a repo's `package.json` says about itself and what it depends on.
 pub struct Manifest {
@@ -382,6 +454,51 @@ mod tests {
         assert_eq!(clean_version("workspace:*"), None);
         assert_eq!(clean_version("*"), None);
         assert_eq!(clean_version("git+ssh://x/y.git"), None);
+    }
+
+    #[test]
+    fn lists_declared_deps_with_their_field_and_raw_range() {
+        let json = r#"{
+            "dependencies":{"react":"^18.2.0","@acme/ui":"workspace:*"},
+            "devDependencies":{"vite":"~5.0.0"},
+            "peerDependencies":{"typescript":">=5"},
+            "optionalDependencies":{"fsevents":"*"}
+        }"#;
+        let deps = parse_declared_deps(json);
+        // Field order is DEP_FIELDS order; optionalDependencies is out of scope.
+        assert_eq!(
+            deps.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["@acme/ui", "react", "vite", "typescript"]
+        );
+        assert_eq!(deps[0].2, "workspace:*");
+        assert_eq!(deps[2].1, DepField::DevDependencies);
+        assert_eq!(deps[3].1, DepField::PeerDependencies);
+    }
+
+    #[test]
+    fn declared_deps_survives_a_broken_manifest() {
+        assert!(parse_declared_deps("not json").is_empty());
+        assert!(parse_declared_deps("{}").is_empty());
+        // A non-string range is skipped rather than rendered as an upgradable row.
+        assert!(parse_declared_deps(r#"{"dependencies":{"react":{"x":1}}}"#).is_empty());
+    }
+
+    #[test]
+    fn looks_up_one_declared_dep() {
+        let d = std::env::temp_dir().join(format!("wa-dep-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(
+            d.join("package.json"),
+            r#"{"devDependencies":{"@types/node":"^20.1.0"}}"#,
+        )
+        .unwrap();
+
+        let (field, range) = declared_dep(&d, "@types/node").expect("declared");
+        assert_eq!(field, DepField::DevDependencies);
+        assert_eq!(range, "^20.1.0");
+        // The gate: a name this repo does not declare has no answer.
+        assert_eq!(declared_dep(&d, "react"), None);
     }
 
     #[test]

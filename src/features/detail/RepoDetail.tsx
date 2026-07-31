@@ -6,6 +6,7 @@ import { useDetailRepo } from './use-detail-repo'
 import { BranchesPanel } from './panels/BranchesPanel'
 import { ChangesPanel } from './panels/ChangesPanel'
 import { CommitsPanel } from './panels/CommitsPanel'
+import { PackagesPanel } from './panels/PackagesPanel'
 import { PullRequestsPanel } from './panels/PullRequestsPanel'
 import { RunsPanel } from './panels/RunsPanel'
 
@@ -45,6 +46,7 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
           <TabsTrigger value="changes">Changes</TabsTrigger>
           <TabsTrigger value="commits">Commits</TabsTrigger>
           <TabsTrigger value="branches">Branches</TabsTrigger>
+          <TabsTrigger value="packages">Packages</TabsTrigger>
           <TabsTrigger value="prs">Pull requests</TabsTrigger>
           <TabsTrigger value="runs">Runs</TabsTrigger>
         </TabsList>
@@ -59,6 +61,9 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
         </TabsContent>
         <TabsContent value="branches" className="flex min-h-0 flex-1 flex-col">
           <BranchesPanel repo={ctx.repo} id={id} />
+        </TabsContent>
+        <TabsContent value="packages" className="flex min-h-0 flex-1 flex-col">
+          <PackagesPanel repo={ctx.repo} id={id} />
         </TabsContent>
         <TabsContent value="prs" className="flex min-h-0 flex-1 flex-col">
           <PullRequestsPanel repo={ctx.repo} id={id} />

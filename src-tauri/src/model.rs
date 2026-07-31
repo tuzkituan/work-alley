@@ -668,6 +668,66 @@ pub struct UpdateReport {
     pub updates: Vec<PackageUpdate>,
 }
 
+// --- repo dependencies ------------------------------------------------------
+
+/// One line of a repo's package.json dependency table.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoDep {
+    pub name: String,
+    pub field: crate::pkg::DepField,
+    /// Verbatim from package.json: `"^1.2.3"`, `"workspace:*"`, a git URL.
+    pub range: String,
+    /// From `node_modules/<name>/package.json`. None = not installed here.
+    pub installed: Option<String>,
+    /// A `workspace:`/`file:`/`link:`/`portal:`/git/http range. Not a registry
+    /// install, so there is nothing this app can upgrade it to.
+    pub linked: bool,
+}
+
+/// Everything the dependency table can know without touching the network.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RepoPackages {
+    pub has_manifest: bool,
+    /// `pkg::package_manager` for this repo. None when there is no manifest.
+    pub manager: Option<String>,
+    /// Whether `node_modules` exists at all — the difference between "nothing is
+    /// installed yet" and "this one dependency is missing".
+    pub installed_tree: bool,
+    pub deps: Vec<RepoDep>,
+}
+
+/// A newer published version of one dependency.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepUpdate {
+    pub name: String,
+    /// What the registry considers newest. None when the manager reported the row
+    /// without naming a version.
+    pub latest: Option<String>,
+    /// The newest version the declared range already allows — an in-range bump.
+    pub wanted: Option<String>,
+}
+
+/// The result of asking one repo's package manager what is out of date.
+///
+/// `checked` carries the same weight it does in `UpdateReport`: a manager that
+/// could not be asked — offline, a registry timeout, Yarn PnP, which cannot answer
+/// at all — must never make a dependency look current. When it is false the panel
+/// says so and keeps every Upgrade button, rather than rendering "up to date".
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DepUpdateReport {
+    pub checked: bool,
+    /// Which tool answered: `npm`, `pnpm`, `yarn`. Empty when none did.
+    pub source: String,
+    /// Only the rows that are behind; a checked repo with none is up to date.
+    pub updates: Vec<DepUpdate>,
+    /// Why nothing could be checked, rendered as a note rather than an error.
+    pub reason: Option<String>,
+}
+
 // --- bootstrap --------------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize)]
@@ -979,6 +1039,20 @@ pub enum ActionSpec {
     GitIdentity {
         name: String,
         email: String,
+    },
+    /// Install one of a repo's *declared* dependencies at a chosen version.
+    ///
+    /// `package` is caller-supplied but looked up with `pkg::declared_dep` for that
+    /// repo before any argv exists, the same closed-set gate `RunScript` holds
+    /// against `available_scripts`. The manager, the install flag and the field all
+    /// come from that lookup — none of them from the caller.
+    UpgradeDep {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        package: String,
+        /// None means whatever the registry considers latest.
+        #[serde(default)]
+        version: Option<String>,
     },
     Package {
         id: String,

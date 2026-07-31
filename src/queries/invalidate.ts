@@ -20,6 +20,8 @@ export function staleKeysFor(kind: string, id: RepoId): readonly unknown[][] {
   const commits = ['repoCommits', id]
   const branches = [...keys.branches(id)]
   const prs = [...keys.prs(id)]
+  const deps = [...keys.repoPackages(id)]
+  const depUpdates = [...keys.repoPackageUpdates(id)]
 
   // The run list itself always moved: a run just finished.
   const always = [[...keys.runs]]
@@ -30,7 +32,9 @@ export function staleKeysFor(kind: string, id: RepoId): readonly unknown[][] {
     case 'pullMany':
     case 'push':
     case 'checkout':
-      return [changed, commits, branches, prs, ...always]
+      // package.json moves with the working tree, and with it every version in
+      // the dependency table.
+      return [changed, commits, branches, prs, deps, depUpdates, ...always]
 
     // A fetch moves remote refs only — the working tree is untouched, so the
     // changed-file list cannot have changed.
@@ -52,7 +56,13 @@ export function staleKeysFor(kind: string, id: RepoId): readonly unknown[][] {
     // A `format` or `lint:fix` rewrites files, and almost any script can touch a
     // lockfile. Commits and branches cannot move without a git command.
     case 'runScript':
-      return [changed, ...always]
+      return [changed, deps, ...always]
+
+    // An install rewrites package.json and the lockfile, so the changed-file list,
+    // the installed column and the outdated answer have all moved. Not the commit
+    // or branch keys: nothing here runs git.
+    case 'upgradeDep':
+      return [changed, deps, depUpdates, ...always]
 
     case 'prList':
       return [prs, ...always]

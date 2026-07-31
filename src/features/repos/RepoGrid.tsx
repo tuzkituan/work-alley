@@ -19,7 +19,7 @@ import { useReposInView } from "@/hooks/use-repos-in-view";
 import { RepoDetail } from "@/features/detail/RepoDetail";
 import { CheckoutAllDialog } from "@/features/actions/CheckoutAllDialog";
 import { useRunAction } from "@/hooks/use-action";
-import { buildSections, flattenSections } from "@/domain/sections";
+import { buildSections, flattenSections, type ListItem } from "@/domain/sections";
 import { cn } from "@/lib/utils";
 
 const GAP = 12;
@@ -75,27 +75,6 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
     () => flattenSections(buildSections(visible, statuses), perRow),
     [visible, statuses, perRow],
   );
-
-  const cardsView = view === "cards";
-
-  const virtualizer = useVirtualizer({
-    count: items.length,
-    getScrollElement: () => scrollRef.current,
-    estimateSize: (i) =>
-      items[i]?.kind === "header"
-        ? HEADER_HEIGHT
-        : cardsView
-          ? CARD_ROW_HEIGHT
-          : ROW_HEIGHT,
-    overscan: cardsView ? 2 : 6,
-    // Cards are measured because their content can grow (a hard-coded height once
-    // clipped the action row out of the card). List rows are a known fixed height,
-    // so measuring them would mean a ResizeObserver per visible row and a forced
-    // layout per render, for a number we already know.
-    ...(cardsView
-      ? { measureElement: (el: Element) => el.getBoundingClientRect().height }
-      : {}),
-  });
 
   const filtered = Boolean(filterText || filterChip);
 
@@ -236,80 +215,108 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                   ? `Nothing is cloned in ${inView.label} yet.`
                   : "No repositories match the current filters."}
               </div>
-            ) : view === "list" ? (
-              <div className="wa-table overflow-hidden rounded-lg border border-adaptive-200 bg-card">
-                <RepoListHeader />
-                <div
-                  style={{
-                    height: virtualizer.getTotalSize(),
-                    position: "relative",
-                  }}
-                >
-                  {virtualizer.getVirtualItems().map((vi) => {
-                    const item = items[vi.index]!;
-                    return (
-                      <div
-                        key={vi.key}
-                        className="absolute inset-x-0"
-                        style={{ top: vi.start, height: vi.size }}
-                      >
-                        {item.kind === "header" ? (
-                          <SectionHeader
-                            label={item.label}
-                            count={item.count}
-                          />
-                        ) : (
-                          <RepoListRow repo={item.repos[0]!} />
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
             ) : (
-              <div
-                style={{
-                  height: virtualizer.getTotalSize(),
-                  position: "relative",
-                }}
-              >
-                {virtualizer.getVirtualItems().map((vi) => {
-                  const item = items[vi.index]!;
-                  return (
-                    <div
-                      key={vi.key}
-                      data-index={vi.index}
-                      ref={virtualizer.measureElement}
-                      className="absolute inset-x-0"
-                      style={{ top: vi.start }}
-                    >
-                      {item.kind === "header" ? (
-                        <SectionHeader
-                          label={item.label}
-                          count={item.count}
-                          boxed
-                        />
-                      ) : (
-                        // items-stretch keeps both cards in a row the same height
-                        // as the taller of the two; paddingBottom carries the grid
-                        // gap into the measurement.
-                        <div
-                          className="grid grid-cols-2 items-stretch gap-3"
-                          style={{ paddingBottom: GAP }}
-                        >
-                          {item.repos.map((r) => (
-                            <RepoCard key={repoId(r)} repo={r} />
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+              // `key={view}` is load-bearing. The virtualizer caches a measured
+              // size per item *index*, and only clears that cache on unmount — so
+              // one shared instance carried the 180px card heights back into 40px
+              // list rows, on indices that meant a different item anyway once
+              // `perRow` went 2 -> 1. Remounting hands each view an empty cache
+              // before its first paint, which `virtualizer.measure()` in an effect
+              // cannot do.
+              <VirtualBody
+                key={view}
+                scrollRef={scrollRef}
+                items={items}
+                cardsView={view === "cards"}
+              />
             )}
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * The virtualized list, in whichever shape the current view asks for.
+ *
+ * Its own component so the `useVirtualizer` instance can be remounted per view —
+ * see the `key` at the call site. The scroll element stays the parent's, because
+ * that is the element that actually scrolls.
+ */
+function VirtualBody({
+  scrollRef,
+  items,
+  cardsView,
+}: {
+  scrollRef: React.RefObject<HTMLDivElement | null>;
+  items: ListItem[];
+  cardsView: boolean;
+}) {
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => scrollRef.current,
+    estimateSize: (i) =>
+      items[i]?.kind === "header"
+        ? HEADER_HEIGHT
+        : cardsView
+          ? CARD_ROW_HEIGHT
+          : ROW_HEIGHT,
+    overscan: cardsView ? 2 : 6,
+    // Cards are measured because their content can grow (a hard-coded height once
+    // clipped the action row out of the card). List rows are a known fixed height,
+    // so measuring them would mean a ResizeObserver per visible row and a forced
+    // layout per render, for a number we already know.
+    ...(cardsView
+      ? { measureElement: (el: Element) => el.getBoundingClientRect().height }
+      : {}),
+  });
+
+  const body = (
+    <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
+      {virtualizer.getVirtualItems().map((vi) => {
+        const item = items[vi.index]!;
+        return (
+          <div
+            key={vi.key}
+            data-index={vi.index}
+            ref={cardsView ? virtualizer.measureElement : undefined}
+            className="absolute inset-x-0"
+            style={{ top: vi.start, height: cardsView ? undefined : vi.size }}
+          >
+            {item.kind === "header" ? (
+              <SectionHeader
+                label={item.label}
+                count={item.count}
+                boxed={cardsView}
+              />
+            ) : cardsView ? (
+              // items-stretch keeps both cards in a row the same height as the
+              // taller of the two; paddingBottom carries the grid gap into the
+              // measurement.
+              <div
+                className="grid grid-cols-2 items-stretch gap-3"
+                style={{ paddingBottom: GAP }}
+              >
+                {item.repos.map((r) => (
+                  <RepoCard key={repoId(r)} repo={r} />
+                ))}
+              </div>
+            ) : (
+              <RepoListRow repo={item.repos[0]!} />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+
+  if (cardsView) return body;
+
+  return (
+    <div className="wa-table overflow-hidden rounded-lg border border-adaptive-200 bg-card">
+      <RepoListHeader />
+      {body}
     </div>
   );
 }

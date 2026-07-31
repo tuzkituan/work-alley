@@ -1998,6 +1998,79 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
+        ActionSpec::UpgradeDep {
+            repo,
+            package,
+            version,
+        } => {
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+            let key = repo.key();
+
+            // The same closed-set gate RunScript holds against available_scripts:
+            // the name has to be one this repo's own package.json declares, and the
+            // field it is declared in — not the caller — picks the install flag.
+            let (field, range) = crate::pkg::declared_dep(&cwd, &package).ok_or_else(|| {
+                AppError::Invalid(format!("{key} does not declare \"{package}\""))
+            })?;
+
+            // A workspace/file/git range names a location, not a registry version.
+            // Installing over it would silently swap a local link for a published
+            // copy, which is a package.json edit, not an upgrade.
+            if crate::deps::is_linked(&range) {
+                return Err(AppError::Invalid(format!(
+                    "{package} is declared as \"{range}\" — change that in package.json instead"
+                )));
+            }
+
+            // Strict semver or nothing. Every offered value comes from the version
+            // menu, so this only ever rejects a hand-built request.
+            let version = match version {
+                Some(v) => Some(
+                    crate::deps::clean_target_version(&v)
+                        .ok_or_else(|| AppError::Invalid(format!("not a version: {v}")))?,
+                ),
+                None => None,
+            };
+
+            let fallback = tc.preferred_package_manager().unwrap_or("npm");
+            let tool = crate::pkg::package_manager(&cwd, fallback)
+                .ok_or_else(|| AppError::Invalid(format!("{key} has no package.json")))?;
+            let bin = tc.require(&tool)?;
+
+            let mut argv = vec![bin.display().to_string()];
+            argv.extend(crate::deps::add_argv(
+                &tool,
+                &cwd,
+                &package,
+                version.as_deref(),
+                field,
+            ));
+
+            let target = version.as_deref().unwrap_or("latest");
+            Ok(Built {
+                kind: "upgradeDep".into(),
+                title: format!("{package} → {target} — {key}"),
+                description: format!("Runs {tool} in {key}."),
+                argv,
+                cwd,
+                env: vec![],
+                // Medium, not Low: an install executes the package's own lifecycle
+                // scripts, which is a bigger step than any repo-local script.
+                danger: Danger::Medium,
+                warnings: vec![
+                    "This rewrites package.json and the lockfile, and runs the package's install scripts."
+                        .into(),
+                ],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
         ActionSpec::RunChore { repo, chore } => {
             let cwd = crate::paths::resolve_repo(&root, &repo)?;
             let key = repo.key();
@@ -3437,6 +3510,57 @@ pub fn parse_iso8601(s: &str) -> Option<i64> {
     let days = era * 146_097 + doe - 719_468;
 
     Some(days * 86_400 + h * 3_600 + mi * 60 + sec)
+}
+
+// -------------------------------------------------------------- packages --
+
+/// One repo's dependency table: declared range, installed version, field.
+///
+/// Local only — manifest and `node_modules`, nothing over the network. Read-only.
+#[tauri::command]
+pub async fn list_repo_packages(
+    repo: RepoRef,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<RepoPackages> {
+    let root = state.workspace_root();
+    let path = crate::paths::resolve_repo(&root, &repo)?;
+    Ok(crate::deps::list(&path, &state.toolchain()).await)
+}
+
+/// Which of this repo's dependencies have a newer published version. Read-only.
+///
+/// Split from `list_repo_packages` for the same reason `check_package_updates` is
+/// split from `list_packages`: this is the half that talks to a registry and can
+/// take half a minute on a large repo. Never an error — a manager that could not be
+/// asked comes back as `checked: false` with a reason, and the panel keeps offering
+/// Upgrade instead of claiming everything is current.
+#[tauri::command]
+pub async fn check_repo_package_updates(
+    repo: RepoRef,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<DepUpdateReport> {
+    let root = state.workspace_root();
+    let path = crate::paths::resolve_repo(&root, &repo)?;
+    Ok(crate::deps::check_updates(&path, &state.toolchain()).await)
+}
+
+/// Published versions of one dependency, for the version menu. Read-only.
+///
+/// An undeclared package is an empty list rather than an error: the menu having
+/// nothing to offer is the same honest outcome as a registry that did not answer,
+/// and it keeps a stale frontend from producing a dialog.
+#[tauri::command]
+pub async fn list_dep_versions(
+    repo: RepoRef,
+    package: String,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Vec<PackageVersion>> {
+    let root = state.workspace_root();
+    let path = crate::paths::resolve_repo(&root, &repo)?;
+    if crate::pkg::declared_dep(&path, &package).is_none() {
+        return Ok(Vec::new());
+    }
+    Ok(crate::deps::versions(&path, &state.toolchain(), &package).await)
 }
 
 #[tauri::command]

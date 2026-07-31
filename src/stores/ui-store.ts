@@ -41,7 +41,14 @@ export type Page = 'repos' | 'toolbox' | 'setup'
  * Changes leads: the question you open a repo with is far more often "what have I
  * got here" than "what are the open PRs".
  */
-export const DETAIL_TABS = ['changes', 'commits', 'branches', 'prs', 'runs'] as const
+export const DETAIL_TABS = [
+  'changes',
+  'commits',
+  'branches',
+  'packages',
+  'prs',
+  'runs',
+] as const
 export type DetailTab = (typeof DETAIL_TABS)[number]
 
 /**

@@ -8,6 +8,7 @@ import type {
   ChangedFile,
   CheckoutPreview,
   CommitEntry,
+  DepUpdateReport,
   PackageStatus,
   PackageVersion,
   PullRequestsResult,
@@ -16,6 +17,7 @@ import type {
   DockerStatus,
   FolderPick,
   ParsedUrls,
+  RepoPackages,
   RepoRef,
   RepoStatus,
   RunLogPage,
@@ -104,6 +106,20 @@ export const api = {
    * listPackages.
    */
   checkPackageUpdates: () => call<UpdateReport>('check_package_updates'),
+
+  /** One repo's dependency table. Local only: manifest plus node_modules. */
+  listRepoPackages: (repo: RepoRef) => call<RepoPackages>('list_repo_packages', { repo }),
+  /**
+   * Which of a repo's dependencies are behind. The slow half — it asks the repo's
+   * package manager, which asks a registry — so it is its own call, and a manager
+   * that could not answer comes back as `checked: false` rather than an error.
+   */
+  checkRepoPackageUpdates: (repo: RepoRef) =>
+    call<DepUpdateReport>('check_repo_package_updates', { repo }),
+  /** Published versions of one declared dependency. Empty when nobody could list them. */
+  listDepVersions: (repo: RepoRef, pkg: string) =>
+    call<PackageVersion[]>('list_dep_versions', { repo, package: pkg }),
+
   listPullRequests: (repo: RepoRef) => call<PullRequestsResult>('list_pull_requests', { repo }),
   listChangedFiles: (repo: RepoRef) => call<ChangedFile[]>('list_changed_files', { repo }),
   repoCommits: (repo: RepoRef, limit?: number) =>
