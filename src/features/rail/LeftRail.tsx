@@ -34,6 +34,7 @@ import { useUiStore, type Page } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
 import { api } from '@/ipc/commands'
 import { CiSection } from './CiSection'
+import { RepoShortcuts } from './RepoShortcuts'
 import { ToolchainCard } from './ToolchainCard'
 
 /**
@@ -63,6 +64,11 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
       className="flex h-full flex-col gap-4 border-r border-adaptive-200 bg-adaptive-100 px-2.5 py-3"
     >
       <div className="wa-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+        {/* Above Folders, because the rail's own organisation is by folder — the
+            right shape for finding a repo you have not thought about, and the
+            wrong one for the four you are in every day. */}
+        <RepoShortcuts />
+
         <div className="flex flex-col gap-1">
           <div className="flex items-center justify-between px-1.5 pb-1">
             <SectionLabel>Folders</SectionLabel>

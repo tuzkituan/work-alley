@@ -99,8 +99,8 @@ export function monoFontStack(id: MonoFont): string {
  * got here" than "what are the open PRs".
  */
 export const DETAIL_TABS = [
-  'changes',
   'commits',
+  'changes',
   'branches',
   'packages',
   'prs',
@@ -318,7 +318,7 @@ export const useUiStore = create<UiState>()(
       allRepos: false,
       activeRepoId: null,
       detailRepoId: null,
-      detailTab: 'changes',
+      detailTab: DETAIL_TABS[0],
       detailHeaderCollapsed: false,
       outputScope: null,
       setupFocusStepId: null,

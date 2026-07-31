@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test'
 import {
+  DETAIL_TABS,
   migrateUiState,
   MONO_FONTS,
   SKINS,
@@ -133,7 +134,7 @@ describe('ui store — a remembered folder belongs to a workspace', () => {
     // for a question you did not ask, about a repo you have not looked at yet.
     useUiStore.getState().setDetailTab('prs')
     useUiStore.getState().openDetail('fe/web')
-    expect(useUiStore.getState().detailTab).toBe('changes')
+    expect(useUiStore.getState().detailTab).toBe(DETAIL_TABS[0])
   })
 
   it('stamps a folder selection with the open workspace', () => {

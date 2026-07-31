@@ -206,3 +206,57 @@ describe('clear', () => {
     expect(shouldReplay(useRunStore.getState().runs.get('r1')!)).toBe(true)
   })
 })
+
+describe('a run that continues a finished one', () => {
+  beforeEach(() => {
+    useRunStore.setState({ runs: new Map(), order: [], activeRunId: null, runningByScope: {} })
+  })
+
+  const s = () => useRunStore.getState()
+  const done = (runId: string) =>
+    s().exit(runId, { status: { kind: 'exited', code: 0 }, endedUnix: 1 })
+
+  it('appends into the same entry rather than opening a second chip', () => {
+    s().start(summary('r1', 'runScript'))
+    s().append('r1', [line(0, 'built')])
+    done('r1')
+
+    s().start(summary('r2', 'runScript'))
+    s().append('r2', [line(0, 'linted')])
+
+    expect(s().order).toEqual(['r2'])
+    const run = s().runs.get('r2')!
+    // Both commands, in order, with a blank line so the next `$ …` reads as a new
+    // command rather than as more output from the last.
+    expect(run.lines.map((l) => l.text)).toEqual(['built', '', 'linted'])
+    expect(s().activeRunId).toBe('r2')
+    // Re-keyed, so Cancel and the exit event address the live process.
+    expect(s().runs.has('r1')).toBe(false)
+  })
+
+  it('leaves a live run its own entry', () => {
+    s().start(summary('r1', 'devStart'))
+    s().append('r1', [line(0, 'listening')])
+
+    s().start(summary('r2', 'runScript'))
+
+    // Merging here would give one status, one cancel button and one exit code for
+    // two processes that are both real.
+    expect(s().order).toEqual(['r1', 'r2'])
+    expect(s().runs.get('r1')!.lines.map((l) => l.text)).toEqual(['listening'])
+  })
+
+  it('keeps the continued entry in its place in the strip', () => {
+    // A live dev server first, so the entry that gets continued is not the last
+    // one — that is the case where "append in place" and "append at the end"
+    // differ, and the chip must not jump.
+    s().start(summary('r1', 'devStart'))
+    s().start(summary('r2', 'runScript'))
+    done('r2')
+
+    s().start(summary('r3', 'runScript'))
+
+    expect(s().order).toEqual(['r1', 'r3'])
+    expect(s().runs.has('r2')).toBe(false)
+  })
+})

@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, Check, CircleSlash, Loader2, X } from 'lucide-react'
 import { openUrl } from '@/lib/open-url'
@@ -43,8 +43,24 @@ export function LogView({
   // memory, and per-line attribution now arrives from Rust on every bulk run.
   const lines = repoFilter ? run.lines.filter((l) => l.repo === repoFilter) : run.lines
 
+  // Keyed by the line, not by its index.
+  //
+  // Rows are *measured* here, because a long line wraps to two or three, and the
+  // measurement cache is keyed by whatever this returns. With the default — the
+  // index — switching to another run left row 12's 57px cached against row 12 of
+  // the new log, so a one-line row was given three lines of space and its
+  // neighbours were drawn on top of each other.
+  //
+  // `droppedHead + i` rather than `i`: past 20k lines the head is trimmed and
+  // every index shifts, which is the same bug arriving a different way.
+  const getItemKey = useCallback(
+    (i: number) => `${run.runId}:${repoFilter ?? ''}:${run.droppedHead + i}`,
+    [run.runId, run.droppedHead, repoFilter]
+  )
+
   const virtualizer = useVirtualizer({
     count: lines.length,
+    getItemKey,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => 19,
     overscan: 20,

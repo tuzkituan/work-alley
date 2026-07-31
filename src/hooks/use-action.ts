@@ -4,7 +4,6 @@ import { api } from '@/ipc/commands'
 import { IpcError } from '@/ipc/errors'
 import { toolFix } from '@/domain/tool-fix'
 import { useManagerStore } from '@/stores/manager-store'
-import { useRunStore } from '@/stores/run-store'
 import { useUiStore } from '@/stores/ui-store'
 import { repoId, type ActionIntent, type ActionSpec } from '@/domain/types'
 
@@ -207,13 +206,13 @@ function withManager(spec: ActionSpec): ActionSpec {
 
 export function useRunAction() {
   const request = useActionStore((s) => s.request)
-  const setActive = useRunStore((s) => s.setActive)
   return (raw: ActionSpec) => {
     const spec = withManager(raw)
-    void request(spec).then(() => {
-      const order = useRunStore.getState().order
-      const last = order[order.length - 1]
-      if (last) setActive(last)
-    })
+    // Selection is the store's, set by `start` when `run:started` lands. This used
+    // to grab `order[order.length - 1]` after the request resolved, which was only
+    // ever "probably the newest" — and is now wrong outright, since a run that
+    // continues a finished one keeps that entry's place in the strip rather than
+    // moving to the end.
+    void request(spec)
   }
 }

@@ -4,6 +4,16 @@ import { repoId, type LogLine, type RunStatus, type RunSummary } from '@/domain/
 /** Head-dropped past this. An unbounded array eventually OOMs the webview. */
 const MAX_LINES = 20_000
 
+/** The blank line between one finished command and the next. */
+const SPACER: LogLine = {
+  seq: -1,
+  stream: 'meta',
+  severity: 'out',
+  text: '',
+  unix: 0,
+  repo: null,
+}
+
 /**
  * The busy-map key for anything not scoped to one repo.
  *
@@ -122,6 +132,54 @@ export const useRunStore = create<RunState>()((set) => ({
   start: (summary) =>
     set((s) => {
       const runs = new Map(s.runs)
+
+      // Continue the log you are looking at, rather than starting a third chip.
+      //
+      // Only when it has *finished*: a live run keeps its own entry, because its
+      // output is still arriving and merging a second process into it would make
+      // one status, one cancel button and one exit code describe two things. Once
+      // it is done, though, there is nothing left to keep separate — the next
+      // command appends the way it would in a terminal, and each command still
+      // announces itself with the `$ …` line Rust writes first.
+      const prev = s.activeRunId ? s.runs.get(s.activeRunId) : undefined
+      const sameScope =
+        prev && prev.scopeKeys[0] === runScopeKeys(summary)[0]
+      const continues =
+        prev && sameScope && prev.summary.status.kind !== 'running' && !prev.cancelling
+
+      if (prev && continues) {
+        // Re-keyed to the new run rather than aliased: Cancel, Clear and the exit
+        // event all address a run by id, and an entry keyed by a dead process
+        // would point every one of them at the wrong place.
+        runs.delete(prev.runId)
+        runs.set(summary.runId, {
+          ...prev,
+          runId: summary.runId,
+          summary,
+          // A blank line so the next `$ …` reads as a new command rather than as
+          // more output from the last one.
+          lines: prev.lines.length > 0 ? [...prev.lines, SPACER] : prev.lines,
+          // The new process numbers its lines from zero.
+          lastSeq: -1,
+          follow: true,
+          cleared: false,
+          cancelling: false,
+          scopeKeys: runScopeKeys(summary),
+        })
+
+        const runningByScope = { ...s.runningByScope }
+        for (const key of runScopeKeys(summary)) {
+          runningByScope[key] = (runningByScope[key] ?? 0) + 1
+        }
+        return {
+          runs,
+          // In place, so the chip does not jump to the end of the strip.
+          order: s.order.map((id) => (id === prev.runId ? summary.runId : id)),
+          activeRunId: summary.runId,
+          runningByScope,
+        }
+      }
+
       runs.set(summary.runId, {
         runId: summary.runId,
         summary,

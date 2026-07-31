@@ -29,6 +29,8 @@ import { isTauri } from '@/ipc/guard'
 import { InitWorkspace } from '@/features/workspace/InitWorkspace'
 import { keepRememberedCategory } from '@/features/workspace/remembered-category'
 import { learnNamePrefixes } from '@/domain/severity'
+import { repoId } from '@/domain/types'
+import { useRepoLists } from '@/stores/repo-lists'
 import { useCategoryScan } from '@/hooks/use-category-scan'
 import { IpcError } from '@/ipc/errors'
 import { keys } from '@/queries/keys'
@@ -97,6 +99,15 @@ function Dashboard() {
   // workspace's repos happen to share. That has to be learned from the names
   // themselves before anything renders one.
   learnNamePrefixes(useMemo(() => (boot?.repos ?? []).map((r) => r.name), [boot?.repos]))
+
+  // Pins and recents outlive a launch, so a repo that has since been deleted or
+  // renamed would sit in the rail forever pointing at nothing. Bootstrap is the
+  // authority on what exists.
+  const prune = useRepoLists((s) => s.prune)
+  useEffect(() => {
+    if (!boot?.workspaceRoot) return
+    prune(boot.workspaceRoot, new Set(boot.repos.map(repoId)))
+  }, [boot, prune])
 
   // The open workspace, mirrored into the store so a folder selection can be
   // stamped with the workspace it was made in. Not persisted — see the field.

@@ -33,12 +33,14 @@ export function ScopeTabs({
 }) {
   return (
     <div
-      // A skin handle, and the scroll container. Horizontal scroll rather than wrap,
-      // so the pane's header height never changes with the number of scopes.
+      // A skin handle, and the scroll container. Horizontal scroll rather than
+      // wrap, so the pane's header height never changes with the number of scopes
+      // — and with the bar hidden, because a 10px scrollbar in a 28px row is drawn
+      // over the labels rather than under them.
       data-slot="scope-tabs"
       role="tablist"
       aria-label="Output scope"
-      className="wa-scroll flex h-7 flex-none items-stretch overflow-x-auto border-b border-adaptive-200"
+      className="wa-scroll-hidden flex h-7 flex-none items-stretch overflow-x-auto border-b border-adaptive-200"
     >
       {options.map((o) => {
         const selected = o.id === scope
@@ -49,6 +51,7 @@ export function ScopeTabs({
             role="tab"
             aria-selected={selected}
             data-slot="scope-tab"
+            // The full name, since the label above may be cut.
             title={
               o.id
                 ? `Runs and terminals in ${o.label}`
@@ -56,7 +59,11 @@ export function ScopeTabs({
             }
             onClick={() => onSelect(o.id)}
             className={cn(
-              'flex flex-none items-center gap-1 border-r border-adaptive-200 px-2 font-mono text-[11px] whitespace-nowrap',
+              // Capped, or a repo called `blazeup-subapp-sa-user-groups-permissions`
+              // takes the whole row and every other scope is off-screen. `truncate`
+              // on the label alone did nothing: the button is `flex-none`, so it
+              // simply grew to fit.
+              'flex max-w-[11rem] flex-none items-center gap-1 border-r border-adaptive-200 px-2 font-mono text-[11px] whitespace-nowrap',
               // The selected tab is marked by an inset bottom edge rather than a
               // background, so it stays legible under the metro skin — which fills
               // pressed controls solid and would otherwise fight a tint here.
@@ -65,7 +72,7 @@ export function ScopeTabs({
                 : 'text-adaptive-500 hover:bg-adaptive-100/60 hover:text-adaptive-700'
             )}
           >
-            <span className="truncate">{o.label}</span>
+            <span className="min-w-0 truncate">{o.label}</span>
             {/* Counts on the tab, so activity in a scope you are not looking at is
                 visible without switching to it — the one thing the old toggle could
                 never show. */}

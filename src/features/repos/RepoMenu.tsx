@@ -20,6 +20,7 @@ import { useRunAction } from '@/hooks/use-action'
 import { useRescanRepo } from '@/hooks/use-rescan-repo'
 import { buildTarget, choresByGroup, runTarget, taskOf } from '@/domain/severity'
 import { repoId, type RepoRef, type RepoStatus } from '@/domain/types'
+import { useRepoLists } from '@/stores/repo-lists'
 import { useUiStore } from '@/stores/ui-store'
 import { CheckoutRepoDialog } from '@/features/actions/CheckoutRepoDialog'
 import { RunCommandDialog } from '@/features/detail/RunCommandDialog'
@@ -57,6 +58,15 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
   const dirty = (status?.dirtyCount ?? 0) + (status?.untrackedCount ?? 0)
   // Only to label the Push item with a count; the real preflight happens in Rust.
   const ahead = status?.sync.kind === 'diverged' ? status.sync.ahead : 0
+  const root = useUiStore((s) => s.workspaceRoot)
+  const togglePin = useRepoLists((s) => s.togglePin)
+  // A boolean, computed *inside* the selector. Returning `?? []` from one mints a
+  // fresh array on every call, which zustand compares by reference — so the store
+  // reported a change on every render, on every one of 113 rows, and the app
+  // rendered itself into a blank window.
+  const isPinned = useRepoLists((s) =>
+    (s.byRoot[root]?.pinned ?? []).some((r) => repoId(r) === repoId(repo))
+  )
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [runCmdOpen, setRunCmdOpen] = useState(false)
 
@@ -212,6 +222,10 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
             <span className="ml-auto font-mono text-[10px] text-adaptive-400">{build.label}</span>
           </DropdownMenuItem>
         )}
+
+        <DropdownMenuItem onClick={() => togglePin(root, repo)}>
+          {isPinned ? 'Unpin from the rail' : 'Pin to the rail'}
+        </DropdownMenuItem>
 
         <DropdownMenuItem onClick={() => void rescanRepo(repo)}>
           Rescan this repo

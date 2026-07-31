@@ -1,5 +1,7 @@
+import { useEffect } from 'react'
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import type { RepoId } from '@/domain/types'
+import { useRepoLists } from '@/stores/repo-lists'
 import { useUiStore, type DetailTab } from '@/stores/ui-store'
 import { RepoHeader } from './RepoHeader'
 import { useDetailRepo } from './use-detail-repo'
@@ -29,6 +31,17 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
   const setTab = useUiStore((s) => s.setDetailTab)
   const ctx = useDetailRepo(id)
 
+  // Opening a repo is what makes it recent. Recorded here rather than in
+  // `openDetail`, because this is the one place that runs for every route in —
+  // the list, a card, the palette, the rail's own CI rows.
+  const root = useUiStore((s) => s.workspaceRoot)
+  const touch = useRepoLists((s) => s.touch)
+  useEffect(() => {
+    if (root) touch(root, ctx.repo)
+    // The ref is a fresh object per scan; the id is the identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, root])
+
   return (
     // `min-h-0 flex-1`, not `h-full`: this replaces RepoGrid in the same flex slot
     // and has to size the same way it does.
@@ -47,8 +60,8 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
             scrolls rather than shortening labels — "PRs" and "Pkgs" save 60px and
             cost the two tabs nobody visits daily. */}
         <TabsList variant="line" className="wa-scroll flex-none overflow-x-auto">
-          <TabsTrigger value="changes">Changes</TabsTrigger>
           <TabsTrigger value="commits">Commits</TabsTrigger>
+          <TabsTrigger value="changes">Changes</TabsTrigger>
           <TabsTrigger value="branches">Branches</TabsTrigger>
           <TabsTrigger value="packages">Packages</TabsTrigger>
           <TabsTrigger value="prs">Pull requests</TabsTrigger>
@@ -60,11 +73,11 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
 
         {/* Each TabsContent has to carry the flex chain itself — Radix renders only
             the active one, so a height set on the list would not reach the panel. */}
-        <TabsContent value="changes" className="flex min-h-0 flex-1 flex-col">
-          <ChangesPanel repo={ctx.repo} id={id} />
-        </TabsContent>
         <TabsContent value="commits" className="flex min-h-0 flex-1 flex-col">
           <CommitsPanel repo={ctx.repo} id={id} />
+        </TabsContent>
+        <TabsContent value="changes" className="flex min-h-0 flex-1 flex-col">
+          <ChangesPanel repo={ctx.repo} id={id} />
         </TabsContent>
         <TabsContent value="branches" className="flex min-h-0 flex-1 flex-col">
           <BranchesPanel repo={ctx.repo} id={id} />

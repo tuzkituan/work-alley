@@ -271,6 +271,19 @@ html[data-skin] [data-slot][data-split='right'] {
   font-variant-numeric: tabular-nums;
 }
 
+/* Scrollable, with no bar drawn.
+ *
+ * For strips that are shorter than a scrollbar is thick: the output pane's scope
+ * row is 28px and `.wa-scroll`'s 10px bar was painted straight over the tab
+ * labels. Scrolling still works by wheel, trackpad and keyboard — what goes is
+ * only the indicator, and the row's own overflow is the hint. */
+.wa-scroll-hidden {
+  scrollbar-width: none;
+}
+.wa-scroll-hidden::-webkit-scrollbar {
+  display: none;
+}
+
 /* Custom scrollbars — the virtualized panes cannot use Radix ScrollArea. */
 .wa-scroll {
   scrollbar-width: thin;
