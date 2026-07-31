@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
@@ -27,6 +28,7 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
   const { name } = useAppIdentity()
   const run = useRunAction()
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen)
+  const setPage = useUiStore((s) => s.setPage)
   const phase = useScanStore((s) => s.phase)
   const total = useScanStore((s) => s.total)
   const received = useScanStore((s) => s.received)
@@ -138,6 +140,12 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
                 </DropdownMenuRadioItem>
               ))}
             </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+            {/* This menu stays the one-click path for the two things people flip
+                hourly; fonts, scanning and background fetch are a page away. */}
+            <DropdownMenuItem onClick={() => setPage('settings')}>
+              More settings…
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
         {/* Fetch / Pull / Checkout used to sit here. They are scoped to the open

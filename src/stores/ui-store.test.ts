@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'bun:test'
-import { migrateUiState, SKINS, useUiStore, type Skin } from './ui-store'
+import {
+  migrateUiState,
+  MONO_FONTS,
+  SKINS,
+  UI_FONTS,
+  useUiStore,
+  type Skin,
+} from './ui-store'
+import { keepRememberedCategory } from '@/features/workspace/remembered-category'
 
 /**
  * `migrateUiState` is the function that can silently corrupt state: it runs
@@ -70,6 +78,74 @@ describe('ui store — skin', () => {
     for (const skin of SKINS) {
       expect(migrate({ skin }).skin).toBe(skin satisfies Skin)
     }
+  })
+})
+
+describe('ui store — fonts', () => {
+  it('defaults to the two families the app has always used', () => {
+    expect(useUiStore.getState().uiFont).toBe('archivo')
+    expect(useUiStore.getState().monoFont).toBe('jetbrains')
+  })
+
+  it('keeps every id the tables offer, so a new family is covered for free', () => {
+    for (const f of UI_FONTS) expect(migrate({ uiFont: f.id }).uiFont).toBe(f.id)
+    for (const f of MONO_FONTS) expect(migrate({ monoFont: f.id }).monoFont).toBe(f.id)
+  })
+
+  it('falls back rather than storing an id with no stack behind it', () => {
+    // A label instead of an id, a family this build does not bundle, and values of
+    // the wrong type. Any of these stored verbatim writes a --font-sans that
+    // resolves to nothing, i.e. Times.
+    for (const bad of ['Inter', 'comic-sans', 42, null, {}]) {
+      expect(migrate({ uiFont: bad }).uiFont).toBe('archivo')
+      expect(migrate({ monoFont: bad }).monoFont).toBe('jetbrains')
+    }
+  })
+
+  it('carries a whole v9 payload across the v10 bump', () => {
+    // Every key v9 wrote. `migrateUiState` drops what it does not return, so a
+    // missing branch here reads to the user as "the app forgot my settings".
+    const v9 = {
+      theme: 'dark',
+      skin: 'adwaita',
+      view: 'cards',
+      expandedCategory: 'fe',
+      allRepos: true,
+      termFontSize: 15,
+      detailTab: 'branches',
+      detailHeaderCollapsed: true,
+    }
+    const out = migrate(v9)
+    expect(out).toMatchObject(v9)
+    // And the new keys arrive at their defaults rather than undefined.
+    expect(out.uiFont).toBe('archivo')
+    expect(out.monoFont).toBe('jetbrains')
+    expect(out.expandedCategoryRoot).toBeNull()
+  })
+})
+
+describe('ui store — a remembered folder belongs to a workspace', () => {
+  it('stamps a folder selection with the open workspace', () => {
+    useUiStore.getState().setWorkspaceRoot('/home/me/work')
+    useUiStore.getState().setCategory('fe')
+    expect(useUiStore.getState().expandedCategoryRoot).toBe('/home/me/work')
+
+    useUiStore.getState().setAllRepos(true)
+    expect(useUiStore.getState().expandedCategoryRoot).toBeNull()
+  })
+
+  it('keeps a selection only when the workspace and the folder both still match', () => {
+    const cats = ['fe', 'be']
+    expect(keepRememberedCategory('fe', '/a', '/a', cats)).toBe(true)
+    // Same folder name, different workspace — the case a bare name cannot catch.
+    expect(keepRememberedCategory('fe', '/a', '/b', cats)).toBe(false)
+    // Right workspace, folder gone.
+    expect(keepRememberedCategory('fe', '/a', '/a', ['be'])).toBe(false)
+    // No stamp: from before the key existed, so the folder check alone decides.
+    expect(keepRememberedCategory('fe', null, '/a', cats)).toBe(true)
+    expect(keepRememberedCategory('fe', null, '/a', ['be'])).toBe(false)
+    // Nothing selected is nothing to clear.
+    expect(keepRememberedCategory(null, null, '/a', [])).toBe(true)
   })
 })
 

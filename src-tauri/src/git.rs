@@ -401,8 +401,27 @@ pub async fn scan_one(
     status.dev_port = runnable.first().and_then(|t| t.port).map(|(p, _)| p);
     status.runnable = runnable.iter().map(|t| t.info()).collect();
 
+    // One `git remote get-url` per repo per scan, on the same budget as the rest of
+    // the scan. Resolved here rather than in the UI because the frontend has never
+    // known a repo's remote at all — a slug only reached it through `gh`.
+    status.remote_web_base = remote_web_base(&git, &path).await;
+
     status.available_scripts = crate::pkg::available_scripts(&path);
-    status.chores = crate::chores::chores(&path).iter().map(|c| c.info()).collect();
+    let chore_list = crate::chores::chores(&path);
+    status.chores = chore_list.iter().map(|c| c.info()).collect();
+    // The declared script wins: a repo that ships a `build` script has already said
+    // what building means there, and it is usually more than `cargo build`.
+    status.primary_build = if status.available_scripts.iter().any(|s| s == "build") {
+        Some(crate::model::BuildTarget::Script {
+            name: "build".into(),
+            label: "build".into(),
+        })
+    } else {
+        crate::chores::pick_build(&chore_list).map(|c| crate::model::BuildTarget::Chore {
+            id: c.id.clone(),
+            label: c.label.clone(),
+        })
+    };
     status.shape = crate::detect::detect(&path);
     status.scan_ms = started.elapsed().as_millis() as u64;
     status
@@ -648,6 +667,98 @@ pub fn parse_remote_slug(url: &str) -> Option<String> {
 pub async fn remote_slug(git: &Path, repo: &Path) -> Option<String> {
     let out = git_output(git, repo, &["remote", "get-url", "origin"]).await.ok()?;
     parse_remote_slug(out.lines().next()?)
+}
+
+/// The host part of a remote URL, lowercased. `parse_remote_slug` throws it away.
+///
+/// SSH aliases are normalised — `git@github.com-work:acme/ui` is a `~/.ssh/config`
+/// Host, not a domain, and the suffix after the first dot-segment match is what the
+/// alias adds. Anything unrecognisable stays as-is and simply fails to match a
+/// known forge below, which is the safe direction.
+pub fn parse_remote_host(url: &str) -> Option<String> {
+    let u = url.trim();
+    let host = if let Some(after) = u.split("://").nth(1) {
+        // scheme://[user@]host/...
+        after.split('/').next()?
+    } else {
+        // [user@]host:owner/repo
+        u.split(':').next()?
+    };
+    let host = host.rsplit('@').next()?.trim();
+    if host.is_empty() {
+        return None;
+    }
+    let host = host.to_ascii_lowercase();
+
+    // github.com-work / gitlab.com-personal: an ssh alias built by suffixing a real
+    // domain, which is common enough that failing on it means no links for anyone
+    // who juggles two accounts.
+    for known in ["github.com", "gitlab.com", "bitbucket.org"] {
+        if host == known || host.starts_with(&format!("{known}-")) {
+            return Some(known.to_string());
+        }
+    }
+    Some(host)
+}
+
+/// The web address of a repo, for linking a commit or a branch.
+///
+/// Only the forges the opener capability allows — see
+/// `capabilities/default.json`. An unknown or self-hosted host returns None, and
+/// the UI renders plain text rather than a link that would be silently refused.
+pub fn web_base(host: &str, slug: &str) -> Option<String> {
+    matches!(host, "github.com" | "gitlab.com" | "bitbucket.org")
+        .then(|| format!("https://{host}/{slug}"))
+}
+
+/// `base` plus the path each forge uses for one commit.
+pub fn commit_url(base: &str, sha: &str) -> String {
+    // GitLab nests everything under `/-/` so a group can be named `commit`;
+    // Bitbucket pluralises. Getting either wrong yields a 404, not an error.
+    if base.contains("://gitlab.com/") {
+        format!("{base}/-/commit/{sha}")
+    } else if base.contains("://bitbucket.org/") {
+        format!("{base}/commits/{sha}")
+    } else {
+        format!("{base}/commit/{sha}")
+    }
+}
+
+/// `base` plus the path each forge uses for one branch.
+pub fn branch_url(base: &str, branch: &str) -> String {
+    let b = urlencode_path(branch);
+    if base.contains("://gitlab.com/") {
+        format!("{base}/-/tree/{b}")
+    } else if base.contains("://bitbucket.org/") {
+        format!("{base}/src/{b}")
+    } else {
+        format!("{base}/tree/{b}")
+    }
+}
+
+/// Percent-encodes a branch name for a URL path.
+///
+/// Slashes stay: `feat/x` is a path segment pair on every forge. `#` and `?` are
+/// the ones that must not, since a branch may legally contain neither in git but
+/// the encoder is cheap insurance against the ones it can.
+fn urlencode_path(s: &str) -> String {
+    s.chars()
+        .map(|c| match c {
+            '#' => "%23".to_string(),
+            '?' => "%3F".to_string(),
+            ' ' => "%20".to_string(),
+            c => c.to_string(),
+        })
+        .collect()
+}
+
+/// The repo's web address, if it has one this app can open.
+pub async fn remote_web_base(git: &Path, repo: &Path) -> Option<String> {
+    let out = git_output(git, repo, &["remote", "get-url", "origin"]).await.ok()?;
+    let line = out.lines().next()?;
+    let host = parse_remote_host(line)?;
+    let slug = parse_remote_slug(line)?;
+    web_base(&host, &slug)
 }
 
 /// `git_output` for callers outside this module.
@@ -979,6 +1090,71 @@ mod tests {
             Some("owner/repo")
         );
         assert_eq!(parse_remote_slug("not a url"), None);
+    }
+
+    #[test]
+    fn reads_the_host_an_ssh_alias_stands_for() {
+        // The alias is a ~/.ssh/config Host, not a domain. Failing to normalise it
+        // means no links at all for anyone juggling two accounts — which is exactly
+        // who has aliases.
+        assert_eq!(
+            parse_remote_host("git@github.com-work:acme/ui.git").as_deref(),
+            Some("github.com")
+        );
+        assert_eq!(
+            parse_remote_host("https://gitlab.com/acme/ui.git").as_deref(),
+            Some("gitlab.com")
+        );
+        assert_eq!(
+            parse_remote_host("ssh://git@bitbucket.org/acme/ui").as_deref(),
+            Some("bitbucket.org")
+        );
+        // Case is not information in a hostname.
+        assert_eq!(
+            parse_remote_host("git@GitHub.com:acme/ui").as_deref(),
+            Some("github.com")
+        );
+        // A self-hosted forge comes back as itself and simply matches nothing.
+        assert_eq!(
+            parse_remote_host("git@git.internal.example:acme/ui").as_deref(),
+            Some("git.internal.example")
+        );
+    }
+
+    #[test]
+    fn only_hosts_the_app_may_open_get_a_base() {
+        assert_eq!(
+            web_base("github.com", "acme/ui").as_deref(),
+            Some("https://github.com/acme/ui")
+        );
+        // Not in the opener capability, so a link would be silently refused — the
+        // UI needs None here to know to render plain text instead.
+        assert_eq!(web_base("git.internal.example", "acme/ui"), None);
+        assert_eq!(web_base("gitea.example.com", "acme/ui"), None);
+    }
+
+    #[test]
+    fn each_forge_spells_its_paths_differently() {
+        let gh = "https://github.com/acme/ui";
+        let gl = "https://gitlab.com/acme/ui";
+        let bb = "https://bitbucket.org/acme/ui";
+
+        assert_eq!(commit_url(gh, "abc123"), "https://github.com/acme/ui/commit/abc123");
+        // GitLab nests project routes under /-/ so a group can be named `commit`.
+        assert_eq!(commit_url(gl, "abc123"), "https://gitlab.com/acme/ui/-/commit/abc123");
+        assert_eq!(commit_url(bb, "abc123"), "https://bitbucket.org/acme/ui/commits/abc123");
+
+        assert_eq!(branch_url(gh, "main"), "https://github.com/acme/ui/tree/main");
+        assert_eq!(branch_url(gl, "main"), "https://gitlab.com/acme/ui/-/tree/main");
+        assert_eq!(branch_url(bb, "main"), "https://bitbucket.org/acme/ui/src/main");
+
+        // A slash is a path separator on every forge and must survive; a `#` would
+        // end the path.
+        assert_eq!(
+            branch_url(gh, "feat/new-thing"),
+            "https://github.com/acme/ui/tree/feat/new-thing"
+        );
+        assert_eq!(branch_url(gh, "fix/#12"), "https://github.com/acme/ui/tree/fix/%2312");
     }
 
     #[test]

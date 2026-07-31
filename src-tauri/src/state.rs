@@ -295,6 +295,46 @@ impl AppState {
         self.dev_meta.lock().unwrap().remove(key);
     }
 
+    /// The task has no live run any more, but its row stays so the state is
+    /// readable.
+    ///
+    /// The counterpart to `remove_dev`, which is for a stop that worked. Splitting
+    /// them is the whole fix for the stuck-forever row: `self.dev` means "we are
+    /// supervising a run", and `DevStart` gates on exactly that — so a crashed
+    /// entry used to block the restart that would have cleared it. Only `dev_meta`
+    /// survives, carrying the state that explains what happened.
+    pub fn retire_dev(&self, key: &str, to: DevState) -> Option<DevServer> {
+        // Same lock order as `remove_dev`: dev, then dev_meta.
+        self.dev.lock().unwrap().remove(key);
+        let mut m = self.dev_meta.lock().unwrap();
+        let s = m.get_mut(key)?;
+        s.state = to;
+        Some(s.clone())
+    }
+
+    /// Registers the live run for a task. The `dev_meta` half follows separately.
+    ///
+    /// Called from `spawn_run` before the supervising task can exist, because a
+    /// command that fails to spawn reaches `finish()` immediately — and `finish`
+    /// looks the task up *here*. Registering afterwards left a row stuck on
+    /// "starting" with nothing alive to clear it.
+    pub fn claim_dev(&self, key: &str, run_id: &str) {
+        self.dev
+            .lock()
+            .unwrap()
+            .insert(key.to_string(), run_id.to_string());
+    }
+
+    /// The run id currently supervised for this task, if any.
+    pub fn live_dev_run(&self, key: &str) -> Option<String> {
+        self.dev.lock().unwrap().get(key).cloned()
+    }
+
+    /// Task keys with a live run, for the liveness sweep.
+    pub fn supervised_dev_keys(&self) -> std::collections::HashSet<String> {
+        self.dev.lock().unwrap().keys().cloned().collect()
+    }
+
     /// Every live run, for the shutdown sweep.
     pub fn all_runs(&self) -> Vec<Arc<RunHandle>> {
         self.runs.lock().unwrap().values().cloned().collect()
@@ -312,33 +352,91 @@ impl AppState {
             .collect()
     }
 
-    /// Persists dev-server identities so a crash can be recovered from.
-    #[allow(clippy::needless_return)]
-    pub fn persist_dev_runs(&self) {
-        #[derive(serde::Serialize)]
-        struct Rec {
-            key: String,
-            pid: u32,
-            argv: Vec<String>,
-            started_unix: i64,
-        }
-        let recs: Vec<Rec> = self
-            .dev_meta
-            .lock()
-            .unwrap()
-            .values()
-            .filter(|d| d.state != DevState::Crashed)
-            .map(|d| Rec {
-                key: task_key(&d.repo.key(), &d.task),
-                pid: d.pid,
-                argv: d.command.clone(),
-                started_unix: d.started_unix,
-            })
-            .collect();
+    // A `persist_dev_runs` used to live here, writing `runs.json` synchronously
+    // on every dev state transition so a crash "could be recovered from". Nothing
+    // ever read it back, and its record could not have been read back: it stored a
+    // task key, and rebuilding a `DevServer` needs a `RepoRef`. `kill_all_now` on
+    // exit already reaps every server this app owns, so after a normal quit there
+    // is nothing to recover. Reconciliation, if it is ever wanted, needs a record
+    // carrying the ref, the task and the port — and an adopt-by-pid path in
+    // devStop to go with it.
+}
 
-        let _ = std::fs::create_dir_all(&self.app_dir);
-        if let Ok(s) = serde_json::to_string_pretty(&recs) {
-            let _ = std::fs::write(self.app_dir.join("runs.json"), s);
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{DevState, RepoRef};
+
+    fn state() -> AppState {
+        let d = std::env::temp_dir().join(format!("wa-state-{}", std::process::id()));
+        AppState::new(d.clone(), d.clone(), Config::defaults(d), Toolchain::default())
+    }
+
+    fn server(task: &str, run_id: &str) -> DevServer {
+        DevServer {
+            repo: RepoRef {
+                category: "fe".into(),
+                name: "web".into(),
+            },
+            task: task.into(),
+            run_id: run_id.into(),
+            pid: 0,
+            command: vec!["npm".into(), "run".into(), task.into()],
+            port: None,
+            port_source: None,
+            state: DevState::Starting,
+            url: None,
+            started_unix: 0,
         }
+    }
+
+    #[test]
+    fn retiring_keeps_the_row_but_frees_the_task() {
+        let s = state();
+        s.upsert_dev(server("dev", "r1"));
+        assert_eq!(s.live_dev_run("fe/web#dev").as_deref(), Some("r1"));
+
+        let after = s.retire_dev("fe/web#dev", DevState::Crashed).expect("row");
+        assert_eq!(after.state, DevState::Crashed);
+        // The row survives so the crash is readable…
+        assert!(s.dev_server_for("fe/web#dev").is_some());
+        // …but nothing claims a live run, which is what `DevStart` gates on. This is
+        // the whole bug: a crashed entry used to block the restart that fixes it.
+        assert_eq!(s.live_dev_run("fe/web#dev"), None);
+    }
+
+    #[test]
+    fn a_stop_that_worked_takes_the_row_with_it() {
+        let s = state();
+        s.upsert_dev(server("dev", "r1"));
+        s.remove_dev("fe/web#dev");
+        assert!(s.dev_server_for("fe/web#dev").is_none());
+        assert_eq!(s.live_dev_run("fe/web#dev"), None);
+    }
+
+    #[test]
+    fn restarting_over_a_crashed_row_claims_it_again() {
+        let s = state();
+        s.upsert_dev(server("dev", "r1"));
+        s.retire_dev("fe/web#dev", DevState::Crashed);
+
+        s.upsert_dev(server("dev", "r2"));
+        assert_eq!(s.live_dev_run("fe/web#dev").as_deref(), Some("r2"));
+        assert_eq!(
+            s.dev_server_for("fe/web#dev").map(|d| d.state),
+            Some(DevState::Starting)
+        );
+    }
+
+    #[test]
+    fn claim_dev_registers_the_run_before_any_row_exists() {
+        // What `spawn_run` does: a command that fails to spawn reaches `finish`
+        // before `register_dev` has written the meta half, and `finish` finds the
+        // task through this map.
+        let s = state();
+        s.claim_dev("fe/web#dev", "r1");
+        assert_eq!(s.live_dev_run("fe/web#dev").as_deref(), Some("r1"));
+        assert!(s.supervised_dev_keys().contains("fe/web#dev"));
+        assert!(s.dev_server_for("fe/web#dev").is_none());
     }
 }

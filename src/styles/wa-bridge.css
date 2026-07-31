@@ -14,18 +14,33 @@
  */
 
 :root {
-  /* --- adaptive ramp: light mode reads low -> high contrast ------------- */
-  --adaptive-50: oklch(0.985 0 0);
-  --adaptive-100: oklch(0.97 0 0);
-  --adaptive-200: oklch(0.922 0 0);
+  /* --- adaptive ramp: light mode reads low -> high contrast -------------
+   *
+   * Said through shadcn's own tokens wherever one exists, rather than repeating
+   * its numbers. The values were already identical — both are Tailwind's neutral
+   * scale — but as literals they were a *copy*, so restyling the app through the
+   * shadcn tokens left every surface painted from this ramp exactly where it was.
+   * Now `--muted`, `--border` and `--foreground` reach the rows, rails and
+   * dividers that spell themselves `adaptive`.
+   *
+   * Only the *surface and text* tokens, and deliberately not `--primary` or
+   * `--ring`: a skin is free to make those its brand colour — Metro's blue,
+   * Adwaita's orange — and `text-adaptive-900` is body text. Mapping a ramp step
+   * onto an accent turns every label in the app that colour the moment someone
+   * picks a skin.
+   *
+   * The midtones stay literal; shadcn has no token in that range. */
+  --adaptive-50: var(--background);
+  --adaptive-100: var(--muted);
+  --adaptive-200: var(--border);
   --adaptive-300: oklch(0.87 0 0);
   --adaptive-400: oklch(0.708 0 0);
-  --adaptive-500: oklch(0.556 0 0);
+  --adaptive-500: var(--muted-foreground);
   --adaptive-600: oklch(0.439 0 0);
   --adaptive-700: oklch(0.371 0 0);
   --adaptive-800: oklch(0.269 0 0);
   --adaptive-900: oklch(0.205 0 0);
-  --adaptive-950: oklch(0.145 0 0);
+  --adaptive-950: var(--foreground);
 
   /* --- status colours: Tailwind's 500s, used at full strength for text and
          at /[0.12] and /[0.38] for the pill fills and borders ------------ */
@@ -71,8 +86,12 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
 
-  /* The hover/focus ring, as one token so every interactive surface agrees. */
-  --shadow-focus-ring: 0 0 0 3px var(--adaptive-300);
+  /* The hover/focus ring, as one token so every interactive surface agrees.
+   *
+   * `--ring` rather than a ramp step: shadcn's focus affordance is this colour at
+   * 50%, and a control that rings grey while the input beside it rings `--ring` is
+   * the sort of difference nobody can name but everybody sees. */
+  --shadow-focus-ring: 0 0 0 3px color-mix(in oklch, var(--ring) 50%, transparent);
 
   /* One level of indirection so the skin can move the thumb without inheriting
      whatever the contrast ramp did. Classic's values are the ramp, unchanged. */
@@ -114,17 +133,31 @@
 .dark {
   /* The ramp inverts wholesale. This is the whole point of `adaptive`: a border
    * written as `border-adaptive-200` is a faint border in both themes, and no
-   * component needs a `dark:` variant to say so. */
-  --adaptive-50: oklch(0.145 0 0);
+   * component needs a `dark:` variant to say so.
+   *
+   * Through shadcn's dark tokens for the same reason as `:root`. Two notes on the
+   * ones that are *not* a straight swap:
+   *
+   * `--adaptive-100` stays a literal 0.205 rather than `--muted` (0.269). It is
+   * the rail and table-header grey, and at 0.269 those read as the same surface
+   * as a popover — shadcn's dark `--card` is the 0.205 this wants, but so is a
+   * card, and painting furniture from `--card` says the wrong thing.
+   *
+   * `--adaptive-200` stays opaque. shadcn's dark `--border` is `oklch(1 0 0 /
+   * 15%)`, and this token is also a *fill* (`bg-adaptive-200` is the hover on
+   * every ghost control) — a translucent fill over a tinted row compounds with
+   * whatever is beneath it, so a hovered row in a crashed repo would tint twice.
+   */
+  --adaptive-50: var(--background);
   --adaptive-100: oklch(0.205 0 0);
   --adaptive-200: oklch(0.269 0 0);
   --adaptive-300: oklch(0.371 0 0);
   --adaptive-400: oklch(0.556 0 0);
-  --adaptive-500: oklch(0.708 0 0);
+  --adaptive-500: var(--muted-foreground);
   --adaptive-600: oklch(0.87 0 0);
   --adaptive-700: oklch(0.922 0 0);
   --adaptive-800: oklch(0.97 0 0);
-  --adaptive-900: oklch(0.985 0 0);
+  --adaptive-900: var(--foreground);
   --adaptive-950: oklch(1 0 0);
 
   /* Slightly lighter status colours, so they hold up against a dark surface. */
@@ -173,6 +206,63 @@
 @keyframes wa-spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+/* Split controls: two buttons that have to read as one.
+ *
+ * Not Tailwind's `rounded-r-none`, and that is the bug this replaces: the Adwaita
+ * skin pins every `[data-slot='button']` to a 6px radius, and
+ * `html[data-skin='adwaita'] [data-slot='button']` outspecifies any single utility
+ * class — so the corner override silently lost and every Upgrade button rendered as
+ * two separate pills.
+ *
+ * `[data-slot]` by presence rather than by value, because a split half can be a
+ * Radix trigger rendered `asChild`, and which of the two `data-slot`s survives the
+ * clone is not something this rule should depend on. `html[data-skin]` puts it at
+ * (0,3,1), above both skins' (0,2,1), whichever is active; the bare selector
+ * repeats it for the frame before the attribute is stamped on. */
+[data-split='left'],
+html[data-skin] [data-slot][data-split='left'] {
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+[data-split='right'],
+html[data-skin] [data-slot][data-split='right'] {
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+  border-left-width: 0;
+}
+
+/* Entering a view: a short rise and fade.
+ *
+ * Enter only, no exit. An exit animation means keeping the outgoing tree mounted
+ * and coordinating the swap, which for a page that is being replaced buys a
+ * cross-fade and costs a whole presence layer — and 140ms of movement is what
+ * makes the change legible either way.
+ *
+ * The class runs the animation once per mount, so a re-render never replays it.
+ * `both` holds the end state, which is `transform: none` — nothing is left with a
+ * lingering transform that would become a containing block for a fixed-position
+ * popover. */
+@keyframes wa-view-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.wa-view-enter {
+  animation: wa-view-in 140ms ease-out both;
+}
+
+/* Movement is the first thing to go when it has been asked to. */
+@media (prefers-reduced-motion: reduce) {
+  .wa-view-enter {
+    animation: none;
   }
 }
 
@@ -254,9 +344,10 @@ body,
     minmax(80px, 1fr)
     96px
     76px
+    64px
     84px
     96px
-    116px;
+    176px;
 }
 
 /* Not every workspace has a shared package to track, so that column is dropped
@@ -269,8 +360,9 @@ body,
     minmax(80px, 1fr)
     96px
     76px
+    64px
     96px
-    116px;
+    176px;
 }
 
 /* Both selectors, and `.wa-no-tracked` explicitly: `.wa-cols.wa-no-tracked` is
@@ -289,7 +381,7 @@ body,
       minmax(70px, 1fr)
       92px
       88px
-      116px;
+      176px;
   }
   .wa-col-optional {
     display: none;
@@ -299,8 +391,8 @@ body,
 /* Narrower still — a half-width window or a side-by-side layout. Dev goes next:
    its state is also on the row's own dot and in the detail pane, whereas the
    actions group is the only way to act on a repo from here, so that track is
-   never dropped. 116px is exactly four 26px icon buttons plus their gaps, which
-   is why the row actions are icons rather than labels. */
+   never dropped. 176px is five 26px icon buttons, Build's chevron and their gaps —
+   the same at every width, because the row actions are icons at every width. */
 @container (max-width: 640px) {
   .wa-cols,
   .wa-cols.wa-no-tracked {
@@ -309,7 +401,7 @@ body,
       minmax(120px, 2.6fr)
       minmax(60px, 1fr)
       84px
-      116px;
+      176px;
   }
   .wa-col-dev {
     display: none;
@@ -323,7 +415,7 @@ body,
     grid-template-columns:
       18px
       minmax(90px, 1fr)
-      116px;
+      176px;
   }
   .wa-col-narrow {
     display: none;

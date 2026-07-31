@@ -24,7 +24,7 @@ async fn build_bootstrap(state: &Arc<AppState>) -> AppResult<Bootstrap> {
     let cfg = state.config();
     let tc = state.toolchain();
 
-    let declared = declared_counts(&root);
+    let declared = declared_repos(&root);
     let discovered = crate::paths::discover_groups(&root);
     let workspace_label = root
         .file_name()
@@ -46,23 +46,33 @@ async fn build_bootstrap(state: &Arc<AppState>) -> AppResult<Bootstrap> {
             },
             present: true,
             repo_count: *count,
-            declared_count: *declared.get(group.as_str()).unwrap_or(&0),
+            declared_count: declared.get(group.as_str()).map_or(0, |v| v.len() as u32),
         });
         repos.extend(found.into_iter().map(|(r, _)| r));
     }
 
     // Groups named in repos.json but with nothing cloned yet still deserve a row,
     // so "0 of 38 cloned" is visible rather than the group simply missing.
-    for (group, n) in &declared {
-        if *n > 0 && !categories.iter().any(|c| &c.category == group) {
-            categories.push(CategoryInfo {
-                category: group.clone(),
-                label: group.clone(),
-                present: crate::paths::category_dir(&root, group).is_dir(),
-                repo_count: 0,
-                declared_count: *n,
-            });
+    //
+    // Unless every repo it names is already cloned somewhere else here — then the
+    // folder was renamed or reorganised, and repos.json is describing a layout that
+    // no longer exists. Renaming `be/` to `backend/` used to leave a permanent
+    // `be  0 / 38` in the rail with nothing behind it and no way to clear it.
+    let cloned: std::collections::HashSet<&str> = repos.iter().map(|r| r.name.as_str()).collect();
+    for (group, names) in &declared {
+        if names.is_empty() || categories.iter().any(|c| &c.category == group) {
+            continue;
         }
+        if renamed_away(names, &cloned) {
+            continue;
+        }
+        categories.push(CategoryInfo {
+            category: group.clone(),
+            label: group.clone(),
+            present: crate::paths::category_dir(&root, group).is_dir(),
+            repo_count: 0,
+            declared_count: names.len() as u32,
+        });
     }
 
     // Before the struct literal, which moves `cfg`.
@@ -151,7 +161,22 @@ pub(crate) fn tracked_package(root: &std::path::Path, cfg: &Config) -> Option<cr
 ///
 /// Any top-level key whose value is an array of objects with a `name` is treated
 /// as a group, so this works for a repos.json with different group names.
-fn declared_counts(root: &std::path::Path) -> std::collections::BTreeMap<String, u32> {
+/// Whether a declared category has simply moved.
+///
+/// Every repo it names is cloned somewhere else in this workspace, so the folder
+/// was renamed or reorganised and repos.json is describing a layout that no longer
+/// exists. Conservative by construction — one repo still missing and this is a
+/// folder you have genuinely not finished cloning, which is worth a row.
+fn renamed_away(names: &[String], cloned: &std::collections::HashSet<&str>) -> bool {
+    !names.is_empty() && names.iter().all(|n| cloned.contains(n.as_str()))
+}
+
+/// The repo *names* repos.json declares, per category.
+///
+/// Names rather than a count, because a count cannot tell "you have not cloned
+/// these yet" from "you renamed the folder they were in" — and the rail showed both
+/// as `0 / 38`. See the declared-only loop in `build_bootstrap`.
+fn declared_repos(root: &std::path::Path) -> std::collections::BTreeMap<String, Vec<String>> {
     let mut out = std::collections::BTreeMap::new();
     let Ok(text) = std::fs::read_to_string(root.join("repos.json")) else {
         return out;
@@ -169,7 +194,11 @@ fn declared_counts(root: &std::path::Path) -> std::collections::BTreeMap<String,
                 .iter()
                 .all(|v| v.get("name").and_then(|n| n.as_str()).is_some());
             if looks_like_repos && !arr.is_empty() {
-                out.insert(key.clone(), arr.len() as u32);
+                let names: Vec<String> = arr
+                    .iter()
+                    .filter_map(|v| v.get("name")?.as_str().map(str::to_string))
+                    .collect();
+                out.insert(key.clone(), names);
             }
         }
     }
@@ -188,6 +217,79 @@ pub async fn set_config(
 ) -> AppResult<Config> {
     let mut cfg = state.config();
     patch.apply(&mut cfg);
+    let _ = cfg.save(&state.app_dir());
+    state.set_config(cfg.clone());
+    Ok(cfg)
+}
+
+/// What one runnable task would execute, and whatever overrides it.
+///
+/// Read-only, and deliberately not `prepare_action` despite that returning an
+/// `argvPreview`: preparing parks a single-use intent that then has to be
+/// cancelled, it refuses with `DevAlreadyRunning` for a task that is up — which is
+/// exactly when you want to edit its command — and it returns the *override* when
+/// one exists, so it could never show the baseline being overridden.
+#[tauri::command]
+pub async fn preview_run_command(
+    repo: RepoRef,
+    task: String,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<RunCommandPreview> {
+    let root = state.workspace_root();
+    let cwd = crate::paths::resolve_repo(&root, &repo)?;
+    let key = repo.key();
+    let tc = state.toolchain();
+
+    // The same closed-set gate DevStart applies: only a task this repo actually
+    // offers can be previewed, let alone overridden.
+    let spec = crate::runner::find(&cwd, &task)
+        .ok_or_else(|| AppError::Invalid(format!("{key} has no \"{task}\" task")))?;
+    let task_key = crate::state::task_key(&key, &task);
+
+    Ok(RunCommandPreview {
+        task_key: task_key.clone(),
+        label: spec.label.clone(),
+        default_argv: crate::runner::argv(&cwd, &spec, &tc)?,
+        override_argv: state.config().dev_command_overrides.get(&task_key).cloned(),
+        cwd,
+    })
+}
+
+/// Sets or clears the command one task runs. `None` or an empty argv clears it.
+///
+/// Targeted rather than a `set_config` whole-map patch: the read-modify-write
+/// happens here, against the config the backend owns, so a frontend holding a
+/// stale snapshot cannot clobber a key it never saw.
+///
+/// The *task* is validated; the argv deliberately is not, and cannot be — being
+/// able to run something the detector would not choose is the entire feature. It
+/// reaches the child as a vector, never through a shell, so a quote in it is just
+/// a quote.
+#[tauri::command]
+pub async fn set_run_command(
+    repo: RepoRef,
+    task: String,
+    argv: Option<Vec<String>>,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Config> {
+    let root = state.workspace_root();
+    let cwd = crate::paths::resolve_repo(&root, &repo)?;
+    let key = repo.key();
+
+    if crate::runner::find(&cwd, &task).is_none() {
+        return Err(AppError::Invalid(format!("{key} has no \"{task}\" task")));
+    }
+    let task_key = crate::state::task_key(&key, &task);
+
+    let mut cfg = state.config();
+    match argv {
+        Some(v) if !v.is_empty() => {
+            cfg.dev_command_overrides.insert(task_key, v);
+        }
+        _ => {
+            cfg.dev_command_overrides.remove(&task_key);
+        }
+    }
     let _ = cfg.save(&state.app_dir());
     state.set_config(cfg.clone());
     Ok(cfg)
@@ -281,6 +383,13 @@ pub async fn close_workspace(
     // An empty root is the same state as first run, so every "no workspace" path
     // in the UI already handles it.
     state.set_workspace_root(PathBuf::new());
+    // Persisted, not just held in memory. `set_workspace_root` zeroes the in-memory
+    // config's root, so the next `set_config` — changing any unrelated number —
+    // would write that empty root to disk anyway. Saving here makes it deliberate:
+    // "I closed it, so there is nothing to reopen", which is exactly what the
+    // reopen-on-launch flag should see. `recent_roots` is untouched, so the folder
+    // is still offered on the welcome screen.
+    let _ = state.config().save(&state.app_dir());
     let _ = app.emit(events::WORKSPACE_CHANGED, ());
     build_bootstrap(state.inner()).await
 }
@@ -625,8 +734,57 @@ pub async fn docker_status(state: State<'_, Arc<AppState>>) -> AppResult<DockerS
 // ---------------------------------------------------------------------- dev --
 
 #[tauri::command]
-pub async fn list_dev_servers(state: State<'_, Arc<AppState>>) -> AppResult<Vec<DevServer>> {
+pub async fn list_dev_servers(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Vec<DevServer>> {
+    // Re-seed against reality first. This is what the frontend calls on connect, so
+    // it is exactly the moment a row left behind by a previous webview's supervisor
+    // would otherwise be handed back as though it were live.
+    crate::devwatch::sweep(&app, state.inner()).await;
     Ok(state.dev_servers())
+}
+
+/// Clears a finished dev row.
+///
+/// A plain command rather than an `ActionSpec`, for the same reason `dismiss_run`
+/// is one: it touches no process and no disk. It refuses while a run is still live
+/// — the button for that is Stop, and hiding a running server is how you lose one.
+/// `task: None` clears every finished row for the repo.
+#[tauri::command]
+pub async fn forget_dev(
+    repo: RepoRef,
+    task: Option<String>,
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<()> {
+    let key = repo.key();
+    let targets: Vec<String> = match task {
+        Some(t) => vec![crate::state::task_key(&key, &t)],
+        None => state
+            .dev_servers_for_repo(&key)
+            .into_iter()
+            .map(|s| crate::state::task_key(&key, &s.task))
+            .collect(),
+    };
+
+    let mut cleared = false;
+    for tkey in targets {
+        if state.live_dev_run(&tkey).is_some() {
+            continue;
+        }
+        state.remove_dev(&tkey);
+        cleared = true;
+    }
+    if cleared {
+        let _ = app.emit(
+            events::DEV_CHANGED,
+            events::DevChanged {
+                servers: state.dev_servers(),
+            },
+        );
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -697,7 +855,11 @@ pub async fn cancel_run(run_id: String, state: State<'_, Arc<AppState>>) -> AppR
 }
 
 #[tauri::command]
-pub async fn dismiss_run(run_id: String, state: State<'_, Arc<AppState>>) -> AppResult<()> {
+pub async fn dismiss_run(
+    run_id: String,
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<()> {
     let still_running = state
         .run(&run_id)
         .map(|h| matches!(h.summary.lock().unwrap().status, RunStatus::Running))
@@ -708,6 +870,24 @@ pub async fn dismiss_run(run_id: String, state: State<'_, Arc<AppState>>) -> App
         ));
     }
     state.runs.lock().unwrap().remove(&run_id);
+
+    // A dev row points at this run, and dismissing the log while leaving the red
+    // row behind means the crash is still on screen with nothing left to read.
+    let orphan: Option<String> = state
+        .dev_servers()
+        .into_iter()
+        .find(|d| d.run_id == run_id)
+        .map(|d| crate::state::task_key(&d.repo.key(), &d.task))
+        .filter(|k| state.live_dev_run(k).is_none());
+    if let Some(key) = orphan {
+        state.remove_dev(&key);
+        let _ = app.emit(
+            events::DEV_CHANGED,
+            events::DevChanged {
+                servers: state.dev_servers(),
+            },
+        );
+    }
     Ok(())
 }
 
@@ -797,13 +977,27 @@ pub async fn run_action(
             let repo = pending.repo.clone().ok_or(AppError::IntentUnknown)?;
             let task = pending.task.clone().unwrap_or_else(|| "dev".to_string());
             let tkey = crate::state::task_key(&repo.key(), &task);
-            let run_id = state
-                .dev
-                .lock()
-                .unwrap()
-                .get(&tkey)
-                .cloned()
-                .ok_or_else(|| AppError::DevNotRunning(tkey.clone()))?;
+            // The run has to still be *running*, not merely registered. Cancelling a
+            // run that already finished is how a row used to park on "exiting"
+            // forever: `finish` cannot fire a second time, so nothing would ever
+            // clear the state this line sets.
+            let live = state.live_dev_run(&tkey).filter(|rid| {
+                state
+                    .run(rid)
+                    .map(|h| matches!(h.summary.lock().unwrap().status, RunStatus::Running))
+                    .unwrap_or(false)
+            });
+            let Some(run_id) = live else {
+                // Already gone. Clearing the row is the honest answer to "stop it".
+                state.remove_dev(&tkey);
+                let _ = app.emit(
+                    events::DEV_CHANGED,
+                    events::DevChanged {
+                        servers: state.dev_servers(),
+                    },
+                );
+                return Ok(String::new());
+            };
             state.patch_dev(&tkey, |d| d.state = DevState::Stopping);
             let _ = app.emit(
                 events::DEV_CHANGED,
@@ -1008,7 +1202,6 @@ async fn register_dev(
         url: port.map(|p| format!("http://localhost:{p}")),
         started_unix: crate::git::now_unix(),
     });
-    state.persist_dev_runs();
 
     let _ = app.emit(
         events::DEV_CHANGED,
@@ -2460,10 +2653,15 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             let task = match task {
                 Some(t) => t,
                 None => {
+                    // Live tasks only. A crashed row is still in `dev_meta` — that
+                    // is what makes the crash readable — but counting it here would
+                    // make Stop ambiguous for a repo whose `dev` died while its
+                    // storybook is still up, i.e. exactly when you want to stop one.
                     let mut running: Vec<String> = state
                         .dev_servers()
                         .into_iter()
                         .filter(|s| s.repo.key() == key)
+                        .filter(|s| !matches!(s.state, DevState::Crashed))
                         .map(|s| s.task)
                         .collect();
                     if running.len() != 1 {
@@ -3726,6 +3924,30 @@ pub async fn repo_commits(
 mod tests {
     use super::*;
 
+    fn name_set<'a>(names: &[&'a str]) -> std::collections::HashSet<&'a str> {
+        names.iter().copied().collect()
+    }
+
+    #[test]
+    fn a_folder_whose_repos_all_live_elsewhere_has_been_renamed() {
+        let declared = vec!["api".to_string(), "auth".to_string()];
+        // `be/` was renamed to `backend/`, so both are cloned — under another name.
+        assert!(renamed_away(&declared, &name_set(&["api", "auth", "web"])));
+    }
+
+    #[test]
+    fn a_folder_you_have_not_finished_cloning_keeps_its_row() {
+        let declared = vec!["api".to_string(), "auth".to_string()];
+        // The whole point of the declared-only row: "0 of 2 cloned" is information.
+        assert!(!renamed_away(&declared, &name_set(&["api"])));
+        assert!(!renamed_away(&declared, &name_set(&[])));
+    }
+
+    #[test]
+    fn a_category_declaring_nothing_is_not_a_rename() {
+        assert!(!renamed_away(&[], &name_set(&["api"])));
+    }
+
     /// A fixed POSIX shell, so these assertions do not depend on `$SHELL`.
     fn posix() -> &'static Shell {
         crate::platform::test_shell(crate::platform::ShellKind::Posix)
@@ -3953,6 +4175,30 @@ mod tests {
 mod golden {
     use super::*;
     use crate::model::DirtyPolicy;
+
+    fn name_set<'a>(names: &[&'a str]) -> std::collections::HashSet<&'a str> {
+        names.iter().copied().collect()
+    }
+
+    #[test]
+    fn a_folder_whose_repos_all_live_elsewhere_has_been_renamed() {
+        let declared = vec!["api".to_string(), "auth".to_string()];
+        // `be/` was renamed to `backend/`, so both are cloned — under another name.
+        assert!(renamed_away(&declared, &name_set(&["api", "auth", "web"])));
+    }
+
+    #[test]
+    fn a_folder_you_have_not_finished_cloning_keeps_its_row() {
+        let declared = vec!["api".to_string(), "auth".to_string()];
+        // The whole point of the declared-only row: "0 of 2 cloned" is information.
+        assert!(!renamed_away(&declared, &name_set(&["api"])));
+        assert!(!renamed_away(&declared, &name_set(&[])));
+    }
+
+    #[test]
+    fn a_category_declaring_nothing_is_not_a_rename() {
+        assert!(!renamed_away(&[], &name_set(&["api"])));
+    }
 
     /// A fixed POSIX shell, so these assertions do not depend on `$SHELL`.
     fn posix() -> &'static Shell {

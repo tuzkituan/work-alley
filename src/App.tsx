@@ -1,6 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import type { PanelImperativeHandle } from 'react-resizable-panels'
 import {
   ResizableHandle,
   ResizablePanel,
@@ -20,14 +19,15 @@ import { CommandPalette } from '@/features/command/CommandPalette'
 import { WorkspaceWelcome } from '@/features/workspace/WorkspacePicker'
 import { Toolbox } from '@/features/toolbox/Toolbox'
 import { SetupPage } from '@/features/setup/SetupPage'
+import { SettingsPage } from '@/features/settings/SettingsPage'
 import { MachinePage } from '@/features/setup/MachinePage'
 import { shouldOnboard } from '@/features/setup/should-onboard'
 import { useUiStore } from '@/stores/ui-store'
-import { useTerminalStore } from '@/stores/terminal-store'
 import { api } from '@/ipc/commands'
 import { connectBridge } from '@/ipc/bridge'
 import { isTauri } from '@/ipc/guard'
 import { InitWorkspace } from '@/features/workspace/InitWorkspace'
+import { keepRememberedCategory } from '@/features/workspace/remembered-category'
 import { learnNamePrefixes } from '@/domain/severity'
 import { useCategoryScan } from '@/hooks/use-category-scan'
 import { IpcError } from '@/ipc/errors'
@@ -60,32 +60,11 @@ function saveLayout(layout: Record<string, number>) {
   }
 }
 
-/** Below this the output pane is under ~50 columns, and vim assumes 80. */
-const TERMINAL_MIN_PX = 720
-const TERMINAL_OPEN_PX = 760
-
-/**
- * Widens the output pane the first time a terminal opens.
- *
- * At the design's 372px default the pane is roughly 44 columns of JetBrains Mono
- * 12 — fine for a log, cramped to the point of uselessness for htop or vim. The
- * resize is imperative, so `onLayoutChanged` reports `isUserInteraction: false`
- * and `saveLayout` correctly does not persist it: the user's own chosen width
- * survives, and dragging it back narrower sticks.
- */
-function useGrowForTerminals(panelRef: React.RefObject<PanelImperativeHandle | null>) {
-  useEffect(
-    () =>
-      useTerminalStore.subscribe((state, prev) => {
-        if (state.order.length === 0 || state.order.length <= prev.order.length) return
-        const panel = panelRef.current
-        if (!panel) return
-        if (panel.getSize().inPixels >= TERMINAL_MIN_PX) return
-        panel.resize(`${TERMINAL_OPEN_PX}px`)
-      }),
-    [panelRef]
-  )
-}
+// The output pane used to widen itself to 760px whenever a terminal opened, on the
+// theory that 44 columns is too few for vim. It also fired on every webview reload,
+// because the bridge re-opens restored pty sessions one at a time — so the pane
+// jumped out from under a width the user had deliberately chosen. The width is
+// theirs; a terminal opening is not a reason to move it.
 
 function Dashboard() {
   const qc = useQueryClient()
@@ -95,8 +74,6 @@ function Dashboard() {
   const setPage = useUiStore((s) => s.setPage)
   const { theme } = useTheme()
   const [setupMode, setSetupMode] = useState(false)
-  const outputPanelRef = useRef<PanelImperativeHandle | null>(null)
-  useGrowForTerminals(outputPanelRef)
   // Toolbox and setup installs run in a terminal session; the dock below only
   // exists once one has been opened.
 
@@ -121,15 +98,27 @@ function Dashboard() {
   // themselves before anything renders one.
   learnNamePrefixes(useMemo(() => (boot?.repos ?? []).map((r) => r.name), [boot?.repos]))
 
-  // The selected folder is remembered across launches, so it can name a folder
-  // that no longer exists — a different workspace, or a renamed directory. Clearing
-  // it here stops the scan hook chasing a folder that is not there.
+  // The open workspace, mirrored into the store so a folder selection can be
+  // stamped with the workspace it was made in. Not persisted — see the field.
+  const setWorkspaceRoot = useUiStore((s) => s.setWorkspaceRoot)
+  useEffect(() => {
+    if (boot) setWorkspaceRoot(boot.workspaceRoot)
+  }, [boot, setWorkspaceRoot])
+
+  // The selected folder is remembered across launches, so it can name a folder that
+  // no longer exists — or one that belongs to a different workspace entirely, now
+  // that launching straight into the last one is an option. Clearing it here stops
+  // the scan hook chasing either.
   const setCategory = useUiStore((s) => s.setCategory)
   const selected = useUiStore((s) => s.expandedCategory)
+  const categoryRoot = useUiStore((s) => s.expandedCategoryRoot)
   useEffect(() => {
-    if (!boot || selected === null) return
-    if (!boot.categories.some((c) => c.category === selected)) setCategory(null)
-  }, [boot, selected, setCategory])
+    if (!boot) return
+    const categories = boot.categories.map((c) => c.category)
+    if (!keepRememberedCategory(selected, categoryRoot, boot.workspaceRoot, categories)) {
+      setCategory(null)
+    }
+  }, [boot, selected, categoryRoot, setCategory])
 
   // Scans the open folder, once a folder is open *and* the toolchain is resolved.
   useCategoryScan(boot?.toolsReady ?? false)
@@ -154,17 +143,23 @@ function Dashboard() {
   //
   // Checked before `hasWorkspace` on purpose: that is what makes Guided setup
   // reachable from the workspace picker on a machine that cannot clone yet.
-  if (page === 'toolbox' || page === 'setup') {
+  if (page === 'toolbox' || page === 'setup' || page === 'settings') {
     return (
       <TooltipProvider delayDuration={400}>
         <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
           <TopBar boot={boot} />
           <MachinePage>
-            {page === 'setup' ? (
-              <SetupPage toolsReady={boot?.toolsReady ?? false} />
-            ) : (
-              <Toolbox toolsReady={boot?.toolsReady ?? false} />
-            )}
+            {/* Keyed by page so switching Toolbox -> Settings replays the entry,
+                rather than only animating the first full-window page opened. */}
+            <div key={page} className="wa-view-enter flex min-h-0 flex-1 flex-col">
+              {page === 'setup' ? (
+                <SetupPage toolsReady={boot?.toolsReady ?? false} />
+              ) : page === 'settings' ? (
+                <SettingsPage />
+              ) : (
+                <Toolbox toolsReady={boot?.toolsReady ?? false} />
+              )}
+            </div>
           </MachinePage>
         </div>
         <ConfirmActionDialog />
@@ -281,7 +276,6 @@ function Dashboard() {
 
           <ResizablePanel
             id="output"
-            panelRef={outputPanelRef}
             defaultSize="372px"
             minSize="260px"
             maxSize="900px"

@@ -9,7 +9,6 @@ import { useTerminalStore } from '@/stores/terminal-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
 import { TerminalView } from '@/features/terminal/TerminalView'
-import { applyFontSize } from '@/features/terminal/xterm-instance'
 import { useTermPalette } from '@/features/terminal/use-term-palette'
 import { runStatusLabel } from '@/domain/run-status'
 import type { RepoRef } from '@/domain/types'
@@ -48,14 +47,16 @@ export function OutputPane() {
   const activeTermId = useTerminalStore((s) => s.activeTermId)
   const setActiveTerm = useTerminalStore((s) => s.setActive)
   const closeTerm = useTerminalStore((s) => s.close)
+  // Still read here for the +/- controls and the pty geometry estimate; only the
+  // *applying* of it moved out.
   const termFontSize = useUiStore((s) => s.termFontSize)
   const scanRepos = useScanStore((s) => s.repos)
   const bodyRef = useRef<HTMLDivElement>(null)
 
   useTermPalette()
-  useEffect(() => {
-    applyFontSize(termFontSize)
-  }, [termFontSize])
+  // Terminal typography is pushed by `features/terminal/font-sync`, at module
+  // scope. It lived here as an effect, which meant it only ran on pages where this
+  // pane is mounted — not the Toolbox, setup or settings pages.
 
   // The pane is scoped: the selected repo's own runs and terminals, or the workspace
   // scope for anything that belongs to no single repo.

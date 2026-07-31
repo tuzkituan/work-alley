@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, GitBranch, Play, SquareTerminal } from 'lucide-react'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { ChevronDown, GitBranch, Play, Settings2, SquareTerminal } from 'lucide-react'
+import { openUrl } from '@/lib/open-url'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -11,7 +11,8 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { keys } from '@/queries/keys'
 import { useRunAction } from '@/hooks/use-action'
-import { CheckoutAllDialog } from '@/features/actions/CheckoutAllDialog'
+import { CheckoutRepoDialog } from '@/features/actions/CheckoutRepoDialog'
+import { RunCommandDialog } from './RunCommandDialog'
 import { cn } from '@/lib/utils'
 import type { useDetailRepo } from './use-detail-repo'
 
@@ -33,7 +34,9 @@ function stripTool(label: string, group: string): string {
 export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }) {
   const run = useRunAction()
   const [checkoutOpen, setCheckoutOpen] = useState(false)
-  const { repo, dev, sb, devUp, target, hasStorybook, scripts, choreGroups, ahead } = ctx
+  const [runCmdOpen, setRunCmdOpen] = useState(false)
+  const { repo, status, dev, sb, devUp, target, build, hasStorybook, scripts, choreGroups, ahead } =
+    ctx
 
   // From the bootstrap cache, so this costs nothing — the same trick RepoMenu uses.
   const { data: boot } = useQuery({ queryKey: keys.bootstrap, enabled: false })
@@ -73,9 +76,9 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
         >
           Fetch
         </Button>
-        {/* The same dialog the folder header uses, with this repo as the only
-            target: it is the one path that takes a branch *name*, so the detail page
-            no longer needs the Branches tab just to switch to something typed. */}
+        {/* Picks from this repo's branches, previews the switch and asks what to do
+            with uncommitted work — the same dialog the row menu and the branch
+            fields open. */}
         <Button
           variant="waOutline"
           size="waSm"
@@ -88,17 +91,52 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
         <Button
           variant={devUp ? 'waDanger' : 'waOutline'}
           size="waSm"
-          disabled={!target.id}
-          title={!target.id ? 'Nothing to run in this repo' : undefined}
+          disabled={!target.id || target.busy}
+          title={
+            !target.id
+              ? 'Nothing to run in this repo'
+              : target.busy
+                ? `Stopping ${target.label}…`
+                : devUp
+                  ? `Stop ${target.label}`
+                  : target.crashed
+                    ? `Restart ${target.label}`
+                    : `Start ${target.label}`
+          }
           onClick={() => {
-            if (!target.id) return
+            if (!target.id || target.busy) return
             run({ kind: devUp ? 'devStop' : 'devStart', ref: repo, task: target.id })
           }}
         >
-          {devUp
-            ? `Stop ${target.label}${dev?.port ? ` :${dev.port}` : ''}`
-            : `Start ${target.label}`}
+          {/* The port stays on the Stop label — it is the one place with room, and
+              it is the number you want while something is up. */}
+          {devUp ? `Stop${dev?.port ? ` :${dev.port}` : ''}` : 'Run'}
         </Button>
+        {/* Beside Run, because it is about Run: what that button executes. */}
+        <Button
+          variant="waGhost"
+          size="waIcon"
+          disabled={(status?.runnable.length ?? 0) === 0}
+          title={
+            (status?.runnable.length ?? 0) === 0
+              ? 'Nothing runnable here to override'
+              : 'Edit what Run executes'
+          }
+          aria-label="Edit run command"
+          onClick={() => setRunCmdOpen(true)}
+        >
+          <Settings2 className="size-3" />
+        </Button>
+        {build && (
+          <Button
+            variant="waOutline"
+            size="waSm"
+            title={`Runs ${build.label}`}
+            onClick={() => run(build.spec(repo))}
+          >
+            Build
+          </Button>
+        )}
         {hasStorybook && (
           <Button
             variant={sb ? 'waDanger' : 'waOutline'}
@@ -116,7 +154,7 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
             <Button
               variant="waOutline"
               size="waSm"
-              className={editors.length > 1 ? 'rounded-r-none' : undefined}
+              data-split={editors.length > 1 ? 'left' : undefined}
               title={`Open this repo in ${editors[0]!.label}`}
               onClick={() => run({ kind: 'openInEditor', ref: repo, editor: editors[0]!.id })}
             >
@@ -128,7 +166,8 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
                   <Button
                     variant="waOutline"
                     size="waSm"
-                    className="rounded-l-none border-l-0 px-1"
+                    data-split="right"
+                    className="px-1"
                     title="Open in another editor"
                   >
                     <ChevronDown className="size-3" />
@@ -153,7 +192,7 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
           <Button
             variant="waPrimary"
             size="waSm"
-            onClick={() => void openUrl(dev.url!).catch(() => {})}
+            onClick={() => openUrl(dev.url!)}
           >
             Open {dev.url.replace('http://', '')}
           </Button>
@@ -212,11 +251,21 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
         </div>
       ))}
 
-      <CheckoutAllDialog
+      {/* The single-repo dialog, not the bulk one with n=1: that one has no branch
+          list — only "each repo's default" or a typed name — and its copy is all
+          plural. */}
+      <RunCommandDialog
+        open={runCmdOpen}
+        onOpenChange={setRunCmdOpen}
+        repo={repo}
+        tasks={status?.runnable ?? []}
+        initialTask={status?.primaryTask ?? null}
+      />
+      <CheckoutRepoDialog
         open={checkoutOpen}
         onOpenChange={setCheckoutOpen}
-        repos={[repo]}
-        scopeLabel={repo.name}
+        repo={repo}
+        current={status?.branch ?? null}
       />
     </div>
   )

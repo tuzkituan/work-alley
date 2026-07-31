@@ -32,7 +32,64 @@ export type Skin = (typeof SKINS)[number]
  * detail page already shows per repo, and a container list a `docker ps` already
  * answers, so the strip that switched between them was two clicks to nothing.
  */
-export type Page = 'repos' | 'toolbox' | 'setup'
+export type Page = 'repos' | 'toolbox' | 'setup' | 'settings'
+
+/**
+ * The UI font choices, and the stack each one resolves to.
+ *
+ * A curated list, not a font manager: the webview cannot enumerate installed
+ * fonts, and the CSP blocks anything not bundled — so the honest offer is the
+ * families this app ships, plus whatever the OS calls its own UI face.
+ *
+ * Each stack keeps the full fallback chain from `wa-bridge.css`. An override that
+ * drops it renders as Times the moment a glyph is missing.
+ */
+export const UI_FONTS = [
+  {
+    id: 'archivo',
+    label: 'Archivo',
+    stack: "'Archivo Variable', ui-sans-serif, system-ui, sans-serif",
+  },
+  { id: 'inter', label: 'Inter', stack: "'Inter Variable', ui-sans-serif, system-ui, sans-serif" },
+  { id: 'geist', label: 'Geist', stack: "'Geist Variable', ui-sans-serif, system-ui, sans-serif" },
+  { id: 'system', label: 'System', stack: 'ui-sans-serif, system-ui, sans-serif' },
+] as const
+export type UiFont = (typeof UI_FONTS)[number]['id']
+
+export const MONO_FONTS = [
+  {
+    id: 'jetbrains',
+    label: 'JetBrains Mono',
+    stack:
+      "'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  },
+  {
+    id: 'fira-code',
+    label: 'Fira Code',
+    stack: "'Fira Code Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  },
+  {
+    id: 'source-code-pro',
+    label: 'Source Code Pro',
+    stack:
+      "'Source Code Pro Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace",
+  },
+  {
+    id: 'system',
+    label: 'System',
+    stack: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+  },
+] as const
+export type MonoFont = (typeof MONO_FONTS)[number]['id']
+
+/** Find-or-default, so a stale persisted id can never yield `undefined`. */
+export function uiFontStack(id: UiFont): string {
+  return (UI_FONTS.find((f) => f.id === id) ?? UI_FONTS[0]).stack
+}
+
+export function monoFontStack(id: MonoFont): string {
+  return (MONO_FONTS.find((f) => f.id === id) ?? MONO_FONTS[0]).stack
+}
 
 /**
  * The repo detail page's tabs. Exported as a list so the persisted value can be
@@ -145,12 +202,35 @@ interface UiState {
    * 80, so being able to shrink the type is how you fit one without resizing.
    */
   termFontSize: number
+  /** UI typeface. Written to `--font-sans`; see `applyToDom`. */
+  uiFont: UiFont
+  /** Monospace typeface, for the output pane, the terminal and every numeric column. */
+  monoFont: MonoFont
+  /**
+   * The workspace `expandedCategory` was chosen in.
+   *
+   * Persisted alongside it, because a bare folder name means nothing without the
+   * workspace that contains it: two workspaces both having a `frontend/` is normal,
+   * and restoring one's selection into the other is how the app appears to pick a
+   * folder at random.
+   */
+  expandedCategoryRoot: string | null
+  /**
+   * The open workspace root, mirrored from bootstrap.
+   *
+   * NOT persisted: it is a fact about the backend, and a stale copy would stamp the
+   * next folder selection with a workspace that is no longer open.
+   */
+  workspaceRoot: string
 
   toggleTheme(): void
   setTheme(theme: ThemeMode): void
   toggleSkin(): void
   setSkin(skin: Skin): void
   setTermFontSize(size: number): void
+  setUiFont(font: UiFont): void
+  setMonoFont(font: MonoFont): void
+  setWorkspaceRoot(root: string): void
   toggleCategory(category: Category): void
   setCategory(category: Category | null): void
   setAllRepos(on: boolean): void
@@ -190,6 +270,9 @@ export function migrateUiState(persisted: unknown) {
     detailTab?: unknown
     detailHeaderCollapsed?: unknown
     allRepos?: unknown
+    uiFont?: unknown
+    monoFont?: unknown
+    expandedCategoryRoot?: unknown
   }
   return {
     theme: p.theme === 'light' || p.theme === 'dark' ? p.theme : 'light',
@@ -212,6 +295,16 @@ export function migrateUiState(persisted: unknown) {
     // matching, and so blank.
     detailTab: DETAIL_TABS.includes(p.detailTab as DetailTab) ? (p.detailTab as DetailTab) : 'changes',
     detailHeaderCollapsed: p.detailHeaderCollapsed === true,
+    // Validated against the tables, exactly like `skin`: an id from a build that
+    // shipped a family this one does not lands on the default rather than on a
+    // stack the CSS never declared.
+    uiFont: UI_FONTS.some((f) => f.id === p.uiFont) ? (p.uiFont as UiFont) : 'archivo',
+    monoFont: MONO_FONTS.some((f) => f.id === p.monoFont) ? (p.monoFont as MonoFont) : 'jetbrains',
+    // No stamp means the selection predates this key. Kept rather than discarded:
+    // the App-level check also verifies the folder still exists, so the worst case
+    // is one restored selection that has to prove itself.
+    expandedCategoryRoot:
+      typeof p.expandedCategoryRoot === 'string' ? p.expandedCategoryRoot : null,
   }
 }
 
@@ -234,6 +327,10 @@ export const useUiStore = create<UiState>()(
       page: 'repos',
       paletteOpen: false,
       termFontSize: 12,
+      uiFont: 'archivo',
+      monoFont: 'jetbrains',
+      expandedCategoryRoot: null,
+      workspaceRoot: '',
 
       toggleTheme: () => set((s) => ({ theme: s.theme === 'light' ? 'dark' : 'light' })),
       setTheme: (theme) => set({ theme }),
@@ -244,6 +341,9 @@ export const useUiStore = create<UiState>()(
         set((s) => ({ skin: SKINS[(SKINS.indexOf(s.skin) + 1) % SKINS.length]! })),
       setSkin: (skin) => set({ skin }),
       setTermFontSize: (size) => set({ termFontSize: Math.min(20, Math.max(8, size)) }),
+      setUiFont: (uiFont) => set({ uiFont }),
+      setMonoFont: (monoFont) => set({ monoFont }),
+      setWorkspaceRoot: (workspaceRoot) => set({ workspaceRoot }),
 
       // Both category actions leave all-repos mode: the two are alternative answers
       // to "which repos am I looking at", and a folder click that left the flat list
@@ -252,18 +352,26 @@ export const useUiStore = create<UiState>()(
       toggleCategory: (category) =>
         set((s) => ({
           expandedCategory: s.expandedCategory === category ? null : category,
+          // Stamped with the workspace it was chosen in, so a launch into a
+          // different one does not inherit it.
+          expandedCategoryRoot: s.workspaceRoot,
           allRepos: false,
           ...FOLDER_SCOPED,
         })),
 
       setCategory: (expandedCategory) =>
-        set({ expandedCategory, allRepos: false, ...FOLDER_SCOPED }),
+        set((s) => ({
+          expandedCategory,
+          expandedCategoryRoot: s.workspaceRoot,
+          allRepos: false,
+          ...FOLDER_SCOPED,
+        })),
 
       // Clears the folder rather than remembering it. Coming back out of all-repos
       // mode lands on the workspace picker, which is honest about the fact that no
       // folder is selected — quietly restoring one would make the toggle asymmetric.
       setAllRepos: (allRepos) =>
-        set({ allRepos, expandedCategory: null, ...FOLDER_SCOPED }),
+        set({ allRepos, expandedCategory: null, expandedCategoryRoot: null, ...FOLDER_SCOPED }),
       // Selecting a repo also points the pane at it: the two disagreeing is what made
       // "where did my run go" a question.
       setActiveRepo: (activeRepoId) => set({ activeRepoId, outputScope: activeRepoId }),
@@ -298,8 +406,11 @@ export const useUiStore = create<UiState>()(
         skin: s.skin,
         view: s.view,
         expandedCategory: s.expandedCategory,
+        expandedCategoryRoot: s.expandedCategoryRoot,
         allRepos: s.allRepos,
         termFontSize: s.termFontSize,
+        uiFont: s.uiFont,
+        monoFont: s.monoFont,
         detailTab: s.detailTab,
         detailHeaderCollapsed: s.detailHeaderCollapsed,
       }),
@@ -307,7 +418,7 @@ export const useUiStore = create<UiState>()(
       // an older build is still merged over the defaults on load, keys and all. So
       // the version is bumped whenever the shape changes, and `migrate` rebuilds the
       // state from scratch rather than trusting whatever was stored.
-      version: 9,
+      version: 10,
       migrate: migrateUiState,
     }
   )

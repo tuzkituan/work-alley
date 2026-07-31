@@ -8,6 +8,7 @@ import type {
   ChangedFile,
   CheckoutPreview,
   CommitEntry,
+  ConfigPatch,
   DepUpdateReport,
   PackageStatus,
   PackageVersion,
@@ -20,6 +21,7 @@ import type {
   RepoPackages,
   RepoRef,
   RepoStatus,
+  RunCommandPreview,
   RunLogPage,
   RunSummary,
   ScanOptions,
@@ -51,7 +53,7 @@ export const api = {
   /** Read-only URL validation, safe to call as the user types. */
   parseCloneUrls: (text: string) => call<ParsedUrls>('parse_clone_urls', { text }),
   getConfig: () => call<Config>('get_config'),
-  setConfig: (patch: Partial<Config>) => call<Config>('set_config', { patch }),
+  setConfig: (patch: ConfigPatch) => call<Config>('set_config', { patch }),
 
   /** Returns a scanId immediately; results arrive as scan:* events. */
   startScan: (opts?: ScanOptions) => call<string>('start_scan', { opts: opts ?? null }),
@@ -106,6 +108,23 @@ export const api = {
    * listPackages.
    */
   checkPackageUpdates: () => call<UpdateReport>('check_package_updates'),
+
+  /**
+   * Clears a finished dev row. Refuses while a run is still live for it, so this
+   * can never be a way to lose a running server — the button for that is Stop.
+   * Omitting `task` clears every finished row for the repo.
+   */
+  forgetDev: (ref: RepoRef, task?: string) => call<void>('forget_dev', { repo: ref, task }),
+
+  /**
+   * What one task would run, and any override. Read-only — unlike prepareAction it
+   * parks no intent, works while the task is up, and reports the *default* argv.
+   */
+  previewRunCommand: (repo: RepoRef, task: string) =>
+    call<RunCommandPreview>('preview_run_command', { repo, task }),
+  /** Sets or clears one task's command override. Null or empty clears it. */
+  setRunCommand: (repo: RepoRef, task: string, argv: string[] | null) =>
+    call<Config>('set_run_command', { repo, task, argv }),
 
   /** One repo's dependency table. Local only: manifest plus node_modules. */
   listRepoPackages: (repo: RepoRef) => call<RepoPackages>('list_repo_packages', { repo }),

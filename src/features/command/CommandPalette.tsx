@@ -102,10 +102,13 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
                     setOpen(false)
                   }}
                 >
-                  <span className="w-5 font-mono text-[11px] text-adaptive-400">
+                  {/* A fixed 20px with no truncation, which is how "backend" ended
+                      up printed underneath the repo name. Wide enough for a real
+                      folder name, and it truncates rather than overflowing. */}
+                  <span className="w-20 flex-none truncate font-mono text-[11px] text-adaptive-400">
                     {repo.category}
                   </span>
-                  <span className="flex-1 truncate">{repo.name}</span>
+                  <span className="min-w-0 flex-1 truncate">{repo.name}</span>
                   {branch && (
                     <span className="font-mono text-[11px] text-adaptive-400">{branch}</span>
                   )}
@@ -129,7 +132,7 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
                     )
                   }}
                 >
-                  <span className="flex-1">{s.title}</span>
+                  <span className="min-w-0 flex-1 truncate">{s.title}</span>
                   <span className="font-mono text-[11px] text-adaptive-400">{s.file}</span>
                 </CommandItem>
               ))}
@@ -210,6 +213,15 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
               }}
             >
               Toggle skin (classic / metro)
+            </CommandItem>
+            <CommandItem
+              value="action:settings"
+              onSelect={() => {
+                setOpen(false)
+                setPage('settings')
+              }}
+            >
+              Open Settings
             </CommandItem>
             <CommandItem
               value="action:toolbox"

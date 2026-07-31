@@ -39,17 +39,27 @@ const cache = new Map<string, TermHandle>()
 /** One warning per session, not one per keystroke. */
 const warned = new Set<string>()
 
-const FONT_FAMILY = "'JetBrains Mono Variable', 'JetBrains Mono', ui-monospace, monospace"
-
-export function ensureTerm(termId: string, theme: ITheme, fontSize: number): TermHandle {
+// The family is a parameter rather than a constant here, and not read from the
+// computed CSS var either: xterm needs a concrete string *and* a re-fit when it
+// changes, and sampling `getComputedStyle` at construction would make a terminal's
+// cell metrics depend on paint order.
+export function ensureTerm(
+  termId: string,
+  theme: ITheme,
+  fontSize: number,
+  fontFamily: string
+): TermHandle {
   const existing = cache.get(termId)
   if (existing) {
     if (existing.term.options.fontSize !== fontSize) existing.term.options.fontSize = fontSize
+    if (existing.term.options.fontFamily !== fontFamily) {
+      existing.term.options.fontFamily = fontFamily
+    }
     return existing
   }
 
   const term = new Terminal({
-    fontFamily: FONT_FAMILY,
+    fontFamily,
     fontSize,
     lineHeight: 1.2,
     cursorBlink: true,
@@ -152,6 +162,19 @@ export function applyFontSize(fontSize: number): void {
   for (const handle of cache.values()) {
     handle.term.options.fontSize = fontSize
     // Only the attached one has a box to measure; the rest re-fit on mount.
+    if (handle.root.isConnected) handle.fit.fit()
+  }
+}
+
+/**
+ * Retypes every open terminal.
+ *
+ * The re-fit is not optional: a different family means different cell width, so
+ * the column count the pty was told about is now wrong.
+ */
+export function applyFontFamily(fontFamily: string): void {
+  for (const handle of cache.values()) {
+    handle.term.options.fontFamily = fontFamily
     if (handle.root.isConnected) handle.fit.fit()
   }
 }

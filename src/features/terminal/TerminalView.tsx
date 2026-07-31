@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react'
 import { api } from '@/ipc/commands'
 import { b64ToBytes } from '@/lib/b64'
 import { useTerminalStore } from '@/stores/terminal-store'
-import { useUiStore } from '@/stores/ui-store'
+import { monoFontStack, useUiStore } from '@/stores/ui-store'
 import { buildTermTheme } from './term-theme'
 import { drainPending, ensureTerm } from './xterm-instance'
 
@@ -26,6 +26,7 @@ export function TerminalView({ termId }: { termId: string }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const focusRef = useRef<() => void>(() => {})
   const fontSize = useUiStore((s) => s.termFontSize)
+  const monoFont = useUiStore((s) => s.monoFont)
   // Read through a ref so the effect does not re-run when the flag settles, and does
   // not need it in its dependency list.
   const restored = useTerminalStore((s) => s.tabs.get(termId)?.restored ?? false)
@@ -36,7 +37,7 @@ export function TerminalView({ termId }: { termId: string }) {
     const container = containerRef.current
     if (!container) return
 
-    const handle = ensureTerm(termId, buildTermTheme(), fontSize)
+    const handle = ensureTerm(termId, buildTermTheme(), fontSize, monoFontStack(monoFont))
     focusRef.current = () => handle.term.focus()
     container.appendChild(handle.root)
     drainPending(termId)

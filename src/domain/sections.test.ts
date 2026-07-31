@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test'
-import { buildSections, flattenSections } from './sections'
+import { buildSections, flattenSections, splitByPrefix } from './sections'
 import { repoId, type RepoKind, type RepoRef, type RepoStatus } from './types'
 
 function ref(name: string, category = 'ws'): RepoRef {
@@ -116,6 +116,108 @@ describe('buildSections', () => {
       status({ ref: refs[1]!, language: 'Go' }),
     ])
     expect(labels(refs, statuses)).toEqual(['Go:1', 'Rust:1'])
+  })
+})
+
+describe('splitByPrefix', () => {
+  const section = (names: string[], label = 'TypeScript') => ({
+    key: `lang:${label}`,
+    label,
+    repos: names.map((n) => ref(n)),
+  })
+
+  const names = (out: ReturnType<typeof splitByPrefix>) =>
+    out.map((s) => `${s.label}:${s.repos.length}`)
+
+  test('splits a long section into its naming families, biggest first', () => {
+    const out = splitByPrefix(
+      section([
+        ...Array.from({ length: 6 }, (_, i) => `blazeup-subapp-${i}`),
+        'blazeup-hostapp-partner',
+        'blazeup-hostapp-superadmin',
+        'blazeup-hostapp-engineering',
+        'blazeup-lib-forms',
+        'blazeup-lib-charts',
+        'blazeup-lib-tables',
+      ])
+    )
+    expect(names(out)).toEqual([
+      'blazeup-subapp:6',
+      'blazeup-hostapp:3',
+      'blazeup-lib:3',
+    ])
+  })
+
+  test('the longest shared prefix wins, not the one everything carries', () => {
+    // Every repo here starts `blazeup-`, so that prefix separates nothing — the
+    // families are one segment further in.
+    const out = splitByPrefix(
+      section([
+        ...Array.from({ length: 4 }, (_, i) => `blazeup-subapp-${i}`),
+        ...Array.from({ length: 4 }, (_, i) => `blazeup-lib-${i}`),
+        ...Array.from({ length: 4 }, (_, i) => `blazeup-hostapp-${i}`),
+      ])
+    )
+    expect(names(out).sort()).toEqual([
+      'blazeup-hostapp:4',
+      'blazeup-lib:4',
+      'blazeup-subapp:4',
+    ])
+  })
+
+  test('a short section is left alone', () => {
+    // Under SPLIT_MIN it is already scannable, and headings would be pure noise.
+    const short = section(Array.from({ length: 11 }, (_, i) => `blazeup-subapp-${i}`))
+    expect(splitByPrefix(short)).toEqual([short])
+  })
+
+  test('one family is no answer, so nothing is split', () => {
+    // Everything in the same family means the heading would say what the section
+    // already says.
+    const one = section(Array.from({ length: 20 }, (_, i) => `blazeup-subapp-${i}`))
+    expect(splitByPrefix(one)).toEqual([one])
+  })
+
+  test('repos following no convention keep the section label, last', () => {
+    const out = splitByPrefix(
+      section([
+        ...Array.from({ length: 5 }, (_, i) => `blazeup-subapp-${i}`),
+        ...Array.from({ length: 5 }, (_, i) => `blazeup-lib-${i}`),
+        'Social-Pulse-FE',
+        'skeleton',
+      ])
+    )
+    // Equal-sized families tie-break alphabetically; the leftovers go last
+    // whatever their size, keeping the section's own label.
+    expect(names(out)).toEqual(['blazeup-lib:5', 'blazeup-subapp:5', 'TypeScript:2'])
+  })
+
+  test('a prefix can only end where a name segment does', () => {
+    // Without separator-terminated prefixes, `blazeup-s` is a candidate and siem,
+    // smartassess and subapp all look like one family.
+    const out = splitByPrefix(
+      section([
+        'blazeup-siem-a',
+        'blazeup-siem-b',
+        'blazeup-siem-c',
+        'blazeup-smartassess-a',
+        'blazeup-smartassess-b',
+        'blazeup-smartassess-c',
+        ...Array.from({ length: 6 }, (_, i) => `blazeup-task-${i}`),
+      ])
+    )
+    expect(names(out)).toEqual(['blazeup-task:6', 'blazeup-siem:3', 'blazeup-smartassess:3'])
+  })
+
+  test('section keys stay unique once a section has been split', () => {
+    // They feed the virtualizer's row keys; a collision drops rows.
+    const out = splitByPrefix(
+      section([
+        ...Array.from({ length: 6 }, (_, i) => `a-${i}`),
+        ...Array.from({ length: 6 }, (_, i) => `b-${i}`),
+      ])
+    )
+    expect(new Set(out.map((s) => s.key)).size).toBe(out.length)
   })
 })
 

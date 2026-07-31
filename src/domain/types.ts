@@ -111,11 +111,40 @@ export interface RepoStatus {
    * `cargo clippy`, `./gradlew clean`. The non-JS counterpart of availableScripts.
    */
   chores: ChoreInfo[]
+  /** What a Build button runs here. Null for a repo with no build step. */
+  primaryBuild: BuildTarget | null
+  /**
+   * `https://github.com/owner/repo` for this repo's origin, when the host is one
+   * the app is allowed to open. Null for a self-hosted forge or no remote — and
+   * then shas and branch names render as plain text rather than dead links.
+   */
+  remoteWebBase: string | null
   /** Tasks currently running. A UI library often has dev and storybook both up. */
   tasks: DevServer[]
   /** Set => the rest is best-effort. A scan never fails wholesale. */
   error: string | null
   scanMs: number
+}
+
+/**
+ * What a Build button acts on.
+ *
+ * Tagged, because the two dispatch different actions against different validated
+ * sets — a script goes through `runScript`, a chore through `runChore`.
+ */
+export type BuildTarget =
+  | { kind: 'script'; name: string; label: string }
+  | { kind: 'chore'; id: string; label: string }
+
+/** What one runnable task would execute, and whatever overrides it. */
+export interface RunCommandPreview {
+  /** "fe/web#dev" — how the override is keyed. */
+  taskKey: string
+  label: string
+  /** Resolved from the repo's own files. Always the default, never the override. */
+  defaultArgv: string[]
+  overrideArgv: string[] | null
+  cwd: string
 }
 
 export interface CommitEntry {
@@ -315,6 +344,29 @@ export interface Config {
    * open reports "in sync" with growing confidence and shrinking accuracy.
    */
   autoFetchMinutes: number
+  /** Open the folder that was open when the app last quit, instead of the picker. */
+  reopenLastWorkspace: boolean
+}
+
+/**
+ * The writable subset of Config.
+ *
+ * Mirrors the Rust `ConfigPatch` field for field, deliberately narrower than
+ * `Partial<Config>`: `workspaceRoot`, `trackedPackage` and the rest are not
+ * patchable, and typing them as writable promised saves the backend silently
+ * drops. Every numeric field is clamped in Rust — the returned Config is the
+ * authority on what was actually stored.
+ */
+export interface ConfigPatch {
+  staleDays?: number
+  scanConcurrency?: number
+  recentCommitLimit?: number
+  maxLogLinesPerRun?: number
+  /** 0 turns background fetching off. */
+  autoFetchMinutes?: number
+  reopenLastWorkspace?: boolean
+  devCommandOverrides?: Record<string, string[]>
+  portOverrides?: Record<string, number>
 }
 
 /**

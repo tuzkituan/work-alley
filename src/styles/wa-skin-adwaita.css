@@ -422,6 +422,12 @@ html[data-skin='adwaita'] [data-slot='tabs-trigger'][data-state='active'] {
   color: var(--adaptive-900);
   box-shadow: var(--wa-elevation);
 }
+/* shadcn's `line` variant marks the active tab with an `::after` rule, and the
+   pills above are already that mark — so the detail tabs drew a raised white pill
+   *and* an underline beneath it. One indicator per tab strip. */
+html[data-skin='adwaita'] [data-slot='tabs-trigger']::after {
+  display: none;
+}
 
 /* The output pane's scope tabs are a different mechanism — a segmented strip along
    an edge — so they keep their inset marker rather than becoming pills. Only the
@@ -539,4 +545,12 @@ html[data-skin='adwaita'] [data-sonner-toast] {
 html[data-skin='adwaita'] :focus-visible {
   outline: 2px solid var(--ring);
   outline-offset: 1px;
+}
+
+/* Except the command palette's field, which is focused the instant the dialog
+   opens — so the ring says nothing the dialog does not, and at this offset it
+   reads as a stray border drawn around the whole search row. The dialog frame is
+   the affordance. Metro carries the same exception, for the same reason. */
+html[data-skin='adwaita'] [data-slot='command-input']:focus-visible {
+  outline: none;
 }

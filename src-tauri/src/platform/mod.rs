@@ -802,6 +802,16 @@ pub fn terminate_now(g: &Group) {
     g.0.kill();
 }
 
+/// Whether a process with this pid exists.
+///
+/// Best-effort by nature — a recycled pid reads as alive — so it is only ever used
+/// to *retire* a dev row that already looks dead, never to claim one is up. The
+/// failure mode is a row that lingers a little longer, not a dead server reported
+/// as running. pid 0 and 1 are never ours, and asking about them is meaningless.
+pub fn pid_alive(pid: u32) -> bool {
+    pid > 1 && imp::pid_alive(pid)
+}
+
 /// Ends a terminal session's tree the way closing its window would.
 ///
 /// Unix: `SIGHUP`, which is what a hangup on the controlling terminal delivers.

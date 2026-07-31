@@ -1,4 +1,13 @@
-import type { ChoreInfo, DevServer, NeedsYouKind, RepoStatus, SyncState } from './types'
+import { relativeFromUnix } from '@/lib/time'
+import type {
+  ActionSpec,
+  ChoreInfo,
+  DevServer,
+  NeedsYouKind,
+  RepoRef,
+  RepoStatus,
+  SyncState,
+} from './types'
 
 /**
  * One table drives every colour in the app.
@@ -263,7 +272,38 @@ export function runTarget(status: RepoStatus | undefined) {
     // 'starting' counts as up: the button has to offer Stop, or a server stuck
     // starting can never be stopped from here.
     up: server?.state === 'up' || server?.state === 'starting',
+    // Mid-teardown. Neither Start nor Stop is an honest offer for the second or
+    // two this lasts, and 'stopping' used to fall through as "not up" — so the
+    // button said Start while the process was still going down.
+    busy: server?.state === 'stopping',
+    // A row left behind by a task that died. Start is a restart, and the backend
+    // no longer refuses it: the crashed row keeps no claim on the task.
+    crashed: server?.state === 'crashed',
   }
+}
+
+/**
+ * What a Build button acts on, or null when this repo has no build step.
+ *
+ * Returns the spec rather than its parts: a declared `build` script and an
+ * ecosystem's `cargo build` go through different actions against different
+ * validated sets, and three call sites re-deriving which is which is three places
+ * to get it wrong.
+ */
+export function buildTarget(
+  status: RepoStatus | undefined
+): { label: string; spec: (ref: RepoRef) => ActionSpec } | null {
+  const b = status?.primaryBuild
+  if (!b) return null
+  return b.kind === 'script'
+    ? {
+        label: b.label,
+        spec: (ref) => ({ kind: 'runScript', ref, script: b.name }),
+      }
+    : {
+        label: b.label,
+        spec: (ref) => ({ kind: 'runChore', ref, chore: b.id }),
+      }
 }
 
 /**
@@ -298,6 +338,36 @@ export function choresByGroup(status: RepoStatus | undefined): [string, ChoreInf
     else out.set(c.group, [c])
   }
   return [...out.entries()]
+}
+
+/**
+ * How long ago this repo last fetched, and whether that is too long.
+ *
+ * Every sync number the app shows is computed from local refs, so the age of the
+ * last fetch is what says how much to trust them — a repo that says "in sync"
+ * having not fetched in nine days is saying nothing at all.
+ *
+ * `null` when git recorded no fetch: a fresh clone, or one that has only ever been
+ * pulled. Callers render that as an em dash rather than as "now".
+ */
+export function lastFetched(status: RepoStatus | undefined): {
+  unix: number | null
+  /** "3h", "9d", or null when there is nothing to say. */
+  age: string | null
+  stale: boolean
+  /** The full timestamp, for a tooltip. */
+  title: string
+} {
+  const st = status?.stale
+  if (!st || st.kind === 'unknown') {
+    return { unix: null, age: null, stale: false, title: 'No fetch recorded for this repo' }
+  }
+  return {
+    unix: st.lastFetchUnix,
+    age: relativeFromUnix(st.lastFetchUnix),
+    stale: st.kind === 'stale',
+    title: `Last fetched ${new Date(st.lastFetchUnix * 1000).toLocaleString()}`,
+  }
 }
 
 /** The run whose log holds the failure, for a "view the error" affordance. */

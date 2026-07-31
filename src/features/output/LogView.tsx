@@ -1,7 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { ArrowDown, Check, CircleSlash, Loader2, X } from 'lucide-react'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { openUrl } from '@/lib/open-url'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { formatDuration } from '@/lib/time'
@@ -212,7 +212,7 @@ function LogRow({ line, showRepo }: { line: LogLine; showRepo: boolean }) {
             type="button"
             // Not an <a>: this is a webview, and a real navigation would replace the
             // app. `openUrl` hands it to the desktop browser.
-            onClick={() => void openUrl(seg.href!).catch(() => {})}
+            onClick={() => openUrl(seg.href!)}
             title={`Open ${seg.href}`}
             className="cursor-pointer underline decoration-dotted underline-offset-2 hover:decoration-solid"
           >

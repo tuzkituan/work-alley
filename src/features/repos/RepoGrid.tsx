@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
   FolderOpen,
@@ -6,10 +6,12 @@ import {
   LayoutGrid,
   RefreshCw,
   Rows3,
+  Search,
 } from "lucide-react";
 import { CARD_HEIGHT, RepoCard } from "./RepoCard";
 import { RepoListHeader, RepoListRow, ROW_HEIGHT } from "./RepoListRow";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { derive, searchAlias } from "@/domain/severity";
 import { repoId, type Bootstrap } from "@/domain/types";
 import { useScanStore } from "@/stores/scan-store";
@@ -27,11 +29,18 @@ const CARD_ROW_HEIGHT = CARD_HEIGHT + GAP;
 const HEADER_HEIGHT = 34;
 
 export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
-  const scrollRef = useRef<HTMLDivElement>(null);
+  // The scroll element in *state*, not a ref, and `VirtualBody` is not rendered
+  // until it exists. React attaches an element's ref during the commit that
+  // follows its children's layout effects, so a virtualizer living in a child
+  // asked a ref that was still null, observed nothing, and rendered zero rows —
+  // until some unrelated re-render happened to re-run its `_willUpdate`. Which is
+  // exactly what pressing Rescan did.
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
 
   const detailRepoId = useUiStore((s) => s.detailRepoId);
   const filterText = useUiStore((s) => s.filterText);
   const filterChip = useUiStore((s) => s.filterChip);
+  const setFilterText = useUiStore((s) => s.setFilterText);
   const clearFilters = useUiStore((s) => s.clearFilters);
   const view = useUiStore((s) => s.view);
   const setView = useUiStore((s) => s.setView);
@@ -80,22 +89,20 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
 
   // The detail page takes over the centre panel; rail and output stay put, which
   // matters because the output pane is already scoped to this repo.
-  if (detailRepoId) return <RepoDetail repoId={detailRepoId} />;
+  //
+  // Keyed by the repo, so opening a *different* repo from inside one animates too
+  // rather than swapping its contents in place.
+  if (detailRepoId)
+    return <RepoDetail key={detailRepoId} repoId={detailRepoId} />;
 
   return (
-    // The scroll container the virtualizer measures must be this plain div. Radix
-    // ScrollArea nests the real scrollport two levels deep, so getScrollElement
-    // would return the wrong node.
-    <div
-      ref={scrollRef}
-      className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5"
-    >
-      <div className="flex flex-col gap-3.5">
-        {!inView.scope ? (
-          <NoFolderOpen boot={boot} />
-        ) : (
-          <>
-            <div className="flex items-center gap-2 text-xs text-adaptive-500">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+      {/* Outside the scrollport rather than sticky inside it. Sticky would work,
+          but the table's own column header is already `sticky top-0` in the same
+          container — two sticky layers in one scroller means hand-maintained top
+          offsets, and the strip is chrome for the panel, not content in it. */}
+      {inView.scope && (
+        <div className="flex flex-none items-center gap-2 border-b border-adaptive-200 px-4 py-2.5 text-xs text-adaptive-500">
               <span className="font-mono text-[11px] font-semibold text-primary-600">
                 {inView.label}
               </span>
@@ -113,12 +120,31 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                   {durationMs}ms
                 </span>
               )}
-              <div className="flex-1" />
-              {filtered && (
-                <Button variant="waGhost" size="waXs" onClick={clearFilters}>
-                  Clear filters
-                </Button>
-              )}
+          <div className="flex-1" />
+
+          {/* The list has had a `filterText` for as long as it has had a "Clear
+              filters" button, and nothing to type it into — only the palette could
+              set it, and only to clear it. */}
+          <div className="relative w-[15rem] flex-none">
+            <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3 -translate-y-1/2 text-adaptive-400" />
+            <Input
+              value={filterText}
+              onChange={(e) => setFilterText(e.target.value)}
+              // Escape clears rather than blurs: getting back to the whole folder
+              // is the useful escape, and the field is the only state here.
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') clearFilters()
+              }}
+              placeholder={`Filter ${inView.label}…`}
+              aria-label="Filter repos"
+              className="h-[26px] pl-7 text-xs"
+            />
+          </div>
+          {filtered && (
+            <Button variant="waGhost" size="waXs" onClick={clearFilters}>
+              Clear
+            </Button>
+          )}
               {/* A segmented control that is exactly as tall as the buttons beside
                   it. The border and 2px padding used to sit *outside* two 26px
                   buttons, making the group 32px next to a 26px Rescan — so the
@@ -200,38 +226,50 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                 <GitBranch className="size-3" />
                 Checkout all
               </Button>
+        </div>
+      )}
+
+      <CheckoutAllDialog
+        open={checkoutOpen}
+        onOpenChange={setCheckoutOpen}
+        repos={inFolder}
+        scopeLabel={inView.label}
+      />
+
+      {/* The scroll container the virtualizer measures must be this plain div.
+          Radix ScrollArea nests the real scrollport two levels deep, so
+          getScrollElement would return the wrong node. */}
+      <div
+        ref={setScrollEl}
+        className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5"
+      >
+        <div className="wa-view-enter flex flex-col gap-3.5">
+          {!inView.scope ? (
+            <NoFolderOpen boot={boot} />
+          ) : items.length === 0 ? (
+            <div className="rounded-lg border border-adaptive-200 bg-card p-6 text-center text-sm text-adaptive-500">
+              {inFolder.length === 0
+                ? `Nothing is cloned in ${inView.label} yet.`
+                : "No repositories match the current filters."}
             </div>
-
-            <CheckoutAllDialog
-              open={checkoutOpen}
-              onOpenChange={setCheckoutOpen}
-              repos={inFolder}
-              scopeLabel={inView.label}
-            />
-
-            {items.length === 0 ? (
-              <div className="rounded-lg border border-adaptive-200 bg-card p-6 text-center text-sm text-adaptive-500">
-                {inFolder.length === 0
-                  ? `Nothing is cloned in ${inView.label} yet.`
-                  : "No repositories match the current filters."}
-              </div>
-            ) : (
-              // `key={view}` is load-bearing. The virtualizer caches a measured
-              // size per item *index*, and only clears that cache on unmount — so
-              // one shared instance carried the 180px card heights back into 40px
-              // list rows, on indices that meant a different item anyway once
-              // `perRow` went 2 -> 1. Remounting hands each view an empty cache
-              // before its first paint, which `virtualizer.measure()` in an effect
-              // cannot do.
+          ) : (
+            // `key={view}` is load-bearing. The virtualizer caches a measured
+            // size per item *index*, and only clears that cache on unmount — so
+            // one shared instance carried the 180px card heights back into 40px
+            // list rows, on indices that meant a different item anyway once
+            // `perRow` went 2 -> 1. Remounting hands each view an empty cache
+            // before its first paint, which `virtualizer.measure()` in an effect
+            // cannot do.
+            scrollEl && (
               <VirtualBody
                 key={view}
-                scrollRef={scrollRef}
+                scrollEl={scrollEl}
                 items={items}
                 cardsView={view === "cards"}
               />
-            )}
-          </>
-        )}
+            )
+          )}
+        </div>
       </div>
     </div>
   );
@@ -245,17 +283,31 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
  * that is the element that actually scrolls.
  */
 function VirtualBody({
-  scrollRef,
+  scrollEl,
   items,
   cardsView,
 }: {
-  scrollRef: React.RefObject<HTMLDivElement | null>;
+  /** The already-mounted scroll container. Never null — see the note at its state. */
+  scrollEl: HTMLDivElement;
   items: ListItem[];
   cardsView: boolean;
 }) {
+  // Keyed by the item, not by its index.
+  //
+  // The size cache is keyed by whatever this returns, and the default is the
+  // index — so when a scan streamed in and the sections regrouped, slot 5 kept the
+  // 40px it had while it was a repo row even though it was now a 34px section
+  // header. That is the mismatched padding and the dividers landing mid-row: the
+  // slot and its contents disagreed about how tall they were.
+  //
+  // Memoised on `items` because it is part of the measurement options: a fresh
+  // closure each render would rebuild every measurement on every scan frame.
+  const getItemKey = useCallback((i: number) => items[i]?.key ?? i, [items]);
+
   const virtualizer = useVirtualizer({
     count: items.length,
-    getScrollElement: () => scrollRef.current,
+    getItemKey,
+    getScrollElement: () => scrollEl,
     estimateSize: (i) =>
       items[i]?.kind === "header"
         ? HEADER_HEIGHT

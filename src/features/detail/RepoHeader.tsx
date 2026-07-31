@@ -1,26 +1,23 @@
+import { useState } from 'react'
 import { ArrowLeft, ChevronDown, TriangleAlert } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { KindTag, MonoChip, StatePill, StatusDot } from '@/components/wa/primitives'
 import { RepoMenu } from '@/features/repos/RepoMenu'
+import { CheckoutRepoDialog } from '@/features/actions/CheckoutRepoDialog'
 import { shortPackageName } from '@/hooks/use-tracked-package'
 import { useRunAction } from '@/hooks/use-action'
 import { useRescanRepo } from '@/hooks/use-rescan-repo'
 import { busyLabel } from '@/hooks/use-busy'
 import { useUiStore } from '@/stores/ui-store'
-import type { StaleState } from '@/domain/types'
+import { lastFetched } from '@/domain/severity'
+import { commitUrl, forgeHost } from '@/domain/forge'
+import { openUrl } from '@/lib/open-url'
 import { Field } from './StatGrid'
 import { RepoActionBar } from './RepoActionBar'
 import type { useDetailRepo } from './use-detail-repo'
 
 /** `fresh 2h` / `stale 9d`, from the timestamp the scan already recorded. */
-function fetchedLabel(stale: StaleState | undefined): string {
-  if (!stale || stale.kind === 'unknown') return 'unknown'
-  const hours = Math.floor((Date.now() / 1000 - stale.lastFetchUnix) / 3600)
-  const age = hours < 1 ? 'just now' : hours < 24 ? `${hours}h` : `${Math.floor(hours / 24)}d`
-  return stale.kind === 'stale' ? `stale ${age}` : `fresh ${age}`
-}
-
 /**
  * The identity, the numbers and the actions — pinned above the tabs.
  *
@@ -36,6 +33,11 @@ export function RepoHeader({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }) {
   const rescanRepo = useRescanRepo()
   const { id, repo, status, d, dev, ahead, behind, trackedPackage, trackedLatest, busy } = ctx
   const port = dev?.port ?? status?.devPort ?? null
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
+  // Null when the origin is a host the app is not allowed to open, in which case
+  // the field stays inert rather than becoming a link that goes nowhere.
+  const headUrl = commitUrl(status?.remoteWebBase ?? null, status?.headSha ?? null)
+  const fetched = lastFetched(status)
 
   return (
     <div className="flex flex-none flex-col gap-2.5 rounded-lg border border-adaptive-200 bg-card p-3.5">
@@ -121,14 +123,17 @@ export function RepoHeader({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }) {
           </div>
 
           <div className="wa-stat-grid border-t border-adaptive-200 pt-2.5">
+            {/* Clickable for the same reason Sync is: the value names the thing
+                you would want to change about it. */}
             <Field
               label="Branch"
               value={status?.detached ? '(detached)' : (status?.branch ?? '—')}
               title={
                 status?.sync.kind === 'noUpstream'
-                  ? `${status.branch ?? 'HEAD'} — no upstream, so nothing to compare against`
-                  : undefined
+                  ? `${status.branch ?? 'HEAD'} — no upstream, so nothing to compare against. Click to switch branch`
+                  : 'Click to switch branch'
               }
+              onClick={() => setCheckoutOpen(true)}
             />
             {/* Clickable, because the label already implies the action: behind means
             pull, ahead means push. */}
@@ -175,21 +180,22 @@ export function RepoHeader({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }) {
                 status?.lastCommit
                   ? `${status.lastCommit.subject}\n${status.lastCommit.author} · ${new Date(
                       status.lastCommit.unix * 1000,
-                    ).toLocaleString()}`
+                    ).toLocaleString()}${headUrl ? `\nClick to open on ${forgeHost(status.remoteWebBase)}` : ''}`
                   : undefined
               }
+              onClick={headUrl ? () => openUrl(headUrl) : undefined}
             />
             {/* Fetched: `stale` was reduced to a pill label and its timestamp thrown
             away, so "is what I am looking at current?" had no answer. */}
             <Field
               label="Fetched"
-              value={fetchedLabel(status?.stale)}
-              tone={status?.stale.kind === 'stale' ? 'warn' : 'idle'}
-              title={
-                status && status.stale.kind !== 'unknown'
-                  ? new Date(status.stale.lastFetchUnix * 1000).toLocaleString()
-                  : 'No fetch recorded for this repo'
+              value={
+                fetched.age === null
+                  ? 'unknown'
+                  : `${fetched.stale ? 'stale' : 'fresh'} ${fetched.age}`
               }
+              tone={fetched.stale ? 'warn' : 'idle'}
+              title={fetched.title}
             />
             {/* The statically resolved port, shown even when nothing is running — which
             is exactly when you want to know what a dev server *would* bind to. */}
@@ -230,6 +236,15 @@ export function RepoHeader({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }) {
           <RepoActionBar ctx={ctx} />
         </>
       )}
+
+      {/* Outside the collapsed branch, so the header collapsing mid-checkout does
+          not take the dialog with it. */}
+      <CheckoutRepoDialog
+        open={checkoutOpen}
+        onOpenChange={setCheckoutOpen}
+        repo={repo}
+        current={status?.branch ?? null}
+      />
     </div>
   )
 }

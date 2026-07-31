@@ -21,19 +21,25 @@ const buttonVariants = cva(
         link: "text-primary underline-offset-4 hover:underline",
 
         // --- app variants ----------------------------------------------------
-        // These use one ring token (--shadow-focus-ring) for both hover and
-        // focus, which the stock variants do not. Stock variants above are left
-        // untouched so a shadcn component update still applies cleanly.
+        //
+        // The stock variants' *colours and states*, at this app's densities. They
+        // used to paint themselves from the `--adaptive-*` ramp with a bespoke
+        // hover ring, which is what made a shadcn app not look like one: a border
+        // that darkened to near-black on hover and a 3px grey halo where shadcn
+        // uses an accent fill and the focus ring.
+        //
+        // Only `size` is this app's own now — 26px and 30px controls, because a
+        // 113-row table cannot afford shadcn's 36px default. Every colour, hover
+        // and focus state below is the stock one, so a token change lands here
+        // too.
         waOutline:
-          "border border-adaptive-200 bg-background text-adaptive-800 hover:border-adaptive-950 hover:shadow-focus-ring focus-visible:border-adaptive-950 focus-visible:ring-0 focus-visible:shadow-focus-ring",
-        waPrimary:
-          "border border-primary bg-primary text-primary-foreground hover:bg-primary/90 hover:border-adaptive-950 hover:shadow-focus-ring focus-visible:ring-0 focus-visible:shadow-focus-ring",
+          "border bg-background shadow-xs hover:bg-accent hover:text-accent-foreground dark:border-input dark:bg-input/30 dark:hover:bg-input/50",
+        waPrimary: "bg-primary text-primary-foreground shadow-xs hover:bg-primary/90",
         waDanger:
-          "border border-error-500 bg-transparent text-error-500 hover:shadow-focus-ring focus-visible:ring-0 focus-visible:shadow-focus-ring",
-        waGhost:
-          "bg-transparent text-adaptive-800 hover:bg-adaptive-200 focus-visible:ring-0 focus-visible:shadow-focus-ring",
+          "border border-destructive/50 bg-transparent text-destructive hover:bg-destructive hover:text-white focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40",
+        waGhost: "hover:bg-accent hover:text-accent-foreground dark:hover:bg-accent/50",
         waDashed:
-          "border border-dashed border-adaptive-300 bg-transparent text-adaptive-600 font-mono hover:border-solid hover:border-adaptive-950 hover:text-adaptive-900 focus-visible:ring-0 focus-visible:shadow-focus-ring",
+          "border border-dashed bg-transparent font-mono text-muted-foreground hover:border-solid hover:bg-accent hover:text-accent-foreground",
       },
       size: {
         default: "h-9 px-4 py-2 has-[>svg]:px-3",

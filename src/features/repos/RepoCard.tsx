@@ -1,16 +1,25 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { KindTag, MonoChip, StatePill, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
-import { derive, runState, runTarget, TONE_TEXT, type Tone } from '@/domain/severity'
+import {
+  derive,
+  lastFetched,
+  runState,
+  runTarget,
+  TONE_TEXT,
+  type Tone,
+} from '@/domain/severity'
 import { repoId, type RepoRef } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
 import { shortPackageName, useTrackedPackage } from '@/hooks/use-tracked-package'
+import { BuildMenu } from './BuildMenu'
 import { RepoMenu } from './RepoMenu'
+import { CheckoutRepoDialog } from '@/features/actions/CheckoutRepoDialog'
 
 /**
  * Estimated card height, used only to seed the virtualizer.
@@ -33,12 +42,16 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
   const setActiveRepo = useUiStore((s) => s.setActiveRepo)
   const openDetail = useUiStore((s) => s.openDetail)
   const run = useRunAction()
+  // Above the early return: a hook after it would run in one render and not the
+  // next, which React refuses.
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
 
   if (!status) return <RepoCardSkeleton repo={repo} />
 
   const d = derive(status, trackedLatest)
   // This repo's own way of running, not a hardcoded `dev` script.
   const target = runTarget(status)
+  const fetched = lastFetched(status)
   const state = runState(status)
   const running = status.tasks
 
@@ -92,15 +105,37 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
               truncate rather than wrapping, so every card stays the same height
               and the grid reads as a table. */}
           <div className="flex items-center gap-2 overflow-hidden font-mono text-[11px] whitespace-nowrap text-adaptive-500">
-            <span className="min-w-0 truncate" title={status.branch ?? undefined}>
+            <button
+              type="button"
+              className="min-w-0 truncate text-left hover:text-primary-600 hover:underline"
+              title={`${status.branch ?? 'HEAD'} — switch branch`}
+              onClick={(e) => {
+                e.stopPropagation()
+                setCheckoutOpen(true)
+              }}
+            >
               {status.detached ? '(detached)' : (status.branch ?? '—')}
-            </span>
+            </button>
             <span className="flex-none text-adaptive-300">·</span>
             <span className={cn('wa-num flex-none', TONE_TEXT[d.syncTone])}>{d.syncLabel}</span>
             {status.lastCommit && (
               <>
                 <span className="flex-none text-adaptive-300">·</span>
                 <span className="wa-num flex-none">{status.lastCommit.relative} ago</span>
+              </>
+            )}
+            {/* Spelled out rather than shown as a bare age: it sits next to the
+                commit age above, and two unlabelled durations side by side are two
+                durations nobody can tell apart. */}
+            {fetched.age && (
+              <>
+                <span className="flex-none text-adaptive-300">·</span>
+                <span
+                  className={cn('wa-num flex-none', fetched.stale && 'text-sev-warn')}
+                  title={fetched.title}
+                >
+                  fetched {fetched.age}
+                </span>
               </>
             )}
           </div>
@@ -174,19 +209,33 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
         >
           Branch…
         </Button>
+        {/* "Run", not "Start cargo run": the task name is already the label of the
+            stat directly above, and repeating it here cost the width Build now
+            uses. The full name stays in the tooltip. */}
         <Button
           variant={target.up ? 'waDanger' : 'waOutline'}
           size="waSm"
           className="shrink-0"
-          disabled={!target.id}
-          title={!target.id ? 'Nothing to run in this repo' : undefined}
+          disabled={!target.id || target.busy}
+          title={
+            !target.id
+              ? 'Nothing to run in this repo'
+              : target.busy
+                ? `Stopping ${target.label}…`
+                : target.up
+                  ? `Stop ${target.label}`
+                  : target.crashed
+                    ? `Restart ${target.label}`
+                    : `Start ${target.label}`
+          }
           onClick={() => {
-            if (!target.id) return
+            if (!target.id || target.busy) return
             run({ kind: target.up ? 'devStop' : 'devStart', ref: repo, task: target.id })
           }}
         >
-          {target.up ? `Stop ${target.label}` : `Start ${target.label}`}
+          {target.up ? 'Stop' : 'Run'}
         </Button>
+        <BuildMenu repo={repo} status={status} size="waSm" />
 
         <span
           className={cn(
@@ -200,6 +249,13 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
 
         <RepoMenu repo={repo} status={status} />
       </div>
+
+      <CheckoutRepoDialog
+        open={checkoutOpen}
+        onOpenChange={setCheckoutOpen}
+        repo={repo}
+        current={status.branch}
+      />
     </div>
   )
 })

@@ -8,6 +8,8 @@ import { cn } from '@/lib/utils'
 import type { RepoId, RepoRef } from '@/domain/types'
 import { useRunAction } from '@/hooks/use-action'
 import { useScanStore } from '@/stores/scan-store'
+import { commitUrl, forgeHost } from '@/domain/forge'
+import { openUrl } from '@/lib/open-url'
 import { InspectChip, PanelEmpty, PanelError, PanelSkeleton, TabPanel } from './panel-parts'
 
 const FIRST_PAGE = 30
@@ -21,6 +23,8 @@ export function CommitsPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
   // How many of these are not on the remote yet, from the scan the header already did.
   const sync = useScanStore((s) => s.repos.get(id)?.sync)
   const ahead = sync?.kind === 'diverged' ? sync.ahead : 0
+  // Null unless the origin is a forge the opener capability allows.
+  const webBase = useScanStore((s) => s.repos.get(id)?.remoteWebBase ?? null)
 
   const { data, isPending, isFetching, refetch, error } = useQuery({
     queryKey: keys.repoCommits(id, limit),
@@ -71,9 +75,26 @@ export function CommitsPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
               )}
               title={i < ahead ? 'Not pushed yet' : undefined}
             >
-              <span className="font-mono text-[11px] text-primary-600">
-                {i < ahead && <span className="mr-1 text-sev-warn">↑</span>}
-                {c.sha}
+              {/* The sha was already styled like a link and did nothing. It opens
+                  the commit when the origin is a forge the app may open; otherwise
+                  it stays plain text rather than becoming a dead link. */}
+              {/* One line, whatever is in it. The arrow and the sha are separate
+                  elements now that the sha can be a button, and in a 56px column
+                  two inline elements wrap — so the row is a flex that does not. */}
+              <span className="flex min-w-0 items-center gap-1 font-mono text-[11px] whitespace-nowrap">
+                {i < ahead && <span className="flex-none text-sev-warn">↑</span>}
+                {commitUrl(webBase, c.sha) ? (
+                  <button
+                    type="button"
+                    className="min-w-0 truncate text-primary-600 hover:underline"
+                    title={`Open ${c.sha} on ${forgeHost(webBase)}`}
+                    onClick={() => openUrl(commitUrl(webBase, c.sha)!)}
+                  >
+                    {c.sha}
+                  </button>
+                ) : (
+                  <span className="min-w-0 truncate text-primary-600">{c.sha}</span>
+                )}
               </span>
               <span className="truncate text-xs text-adaptive-800" title={c.subject}>
                 {c.subject}

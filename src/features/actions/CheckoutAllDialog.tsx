@@ -16,7 +16,7 @@ import { api } from '@/ipc/commands'
 import { keys } from '@/queries/keys'
 import { useRunAction } from '@/hooks/use-action'
 import { repoId, type CheckoutPreview, type DirtyPolicy, type RepoRef } from '@/domain/types'
-import { POLICIES } from './checkout-policy'
+import { isValidBranchName, POLICIES } from './checkout-policy'
 
 
 /**
@@ -265,20 +265,6 @@ function split(rows: CheckoutPreview[]) {
     dirty: rows.filter((r) => !!r.target && !r.alreadyThere && r.dirtyCount > 0),
     willSwitch: rows.filter((r) => !!r.target && !r.alreadyThere && r.dirtyCount === 0),
   }
-}
-
-/**
- * Mirrors the backend's `valid_branch_name`, to fail before a round trip.
- *
- * The backend still validates — this is a nicer error, not the guard.
- */
-function isValidBranchName(name: string): boolean {
-  const n = name.trim()
-  if (!n || n.length > 255) return false
-  if (/^[-/]/.test(n) || /[/.]$/.test(n)) return false
-  if (n.endsWith('.lock') || n.includes('..') || n.includes('//') || n.includes('@{')) return false
-  if (n === '@') return false
-  return !/[\s~^:?*[\\'"\u0000-\u001f]/.test(n)
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {

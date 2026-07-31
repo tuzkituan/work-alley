@@ -176,6 +176,40 @@ pub fn find(repo: &Path, id: &str) -> Option<Chore> {
     chores(repo).into_iter().find(|c| c.id == id)
 }
 
+/// The chore that builds this repo's own artifact, if it has one.
+///
+/// A table rather than "any id ending in build", because the exceptions are the
+/// substance: Elixir spells it `compile`, Maven's build is `package` (`install`
+/// also publishes), Flutter's is per-platform, and `compose build` builds container
+/// images — a different question from "build this repo". Order is preference, so a
+/// repo with several ecosystems gets the one it is mostly written in.
+///
+/// Takes the list rather than a path: `chores()` stats a couple of dozen files, and
+/// the scan already has the answer in hand.
+pub fn pick_build(list: &[Chore]) -> Option<&Chore> {
+    const ORDER: &[&str] = &[
+        "cargo.build",
+        "go.build",
+        "gradle.build",
+        "dotnet.build",
+        "maven.package",
+        "swift.build",
+        "xcode.build",
+        "cmake.build",
+        "mix.compile",
+        "flutter.build-apk",
+        "flutter.build-appbundle",
+        "flutter.build-ios",
+        "flutter.build-web",
+        "flutter.build-linux",
+        // Last on purpose: images, not this repo's artifact.
+        "compose.build",
+    ];
+    ORDER
+        .iter()
+        .find_map(|id| list.iter().find(|c| c.id == *id))
+}
+
 // --- node -------------------------------------------------------------------
 
 /// Manager-level commands only. The repo's *scripts* are already offered by
@@ -663,6 +697,59 @@ mod tests {
             }
         }
         g
+    }
+
+    fn build_id(repo: &Path) -> Option<String> {
+        pick_build(&chores(repo)).map(|c| c.id.clone())
+    }
+
+    #[test]
+    fn each_ecosystem_offers_its_own_build() {
+        let d = scratch("build-cargo");
+        write(&d, "Cargo.toml", "[package]\nname = \"x\"");
+        assert_eq!(build_id(&d).as_deref(), Some("cargo.build"));
+
+        let d = scratch("build-go");
+        write(&d, "go.mod", "module x");
+        assert_eq!(build_id(&d).as_deref(), Some("go.build"));
+
+        let d = scratch("build-gradle");
+        write(&d, "build.gradle", "");
+        assert_eq!(build_id(&d).as_deref(), Some("gradle.build"));
+
+        // Maven's build is `package`; `install` also publishes, which is a
+        // different thing to do to someone's machine.
+        let d = scratch("build-maven");
+        write(&d, "pom.xml", "<project/>");
+        assert_eq!(build_id(&d).as_deref(), Some("maven.package"));
+
+        // Elixir spells it compile.
+        let d = scratch("build-mix");
+        write(&d, "mix.exs", "defmodule X.MixProject do end");
+        assert_eq!(build_id(&d).as_deref(), Some("mix.compile"));
+    }
+
+    #[test]
+    fn a_compose_file_never_wins_the_build_button() {
+        // `compose build` builds container images, which is not this repo's
+        // artifact — so it is the last resort, never the answer for a Rust service
+        // that happens to ship a compose file.
+        let d = scratch("build-mixed");
+        write(&d, "Cargo.toml", "[package]\nname = \"x\"");
+        write(&d, "docker-compose.yml", "services: {}");
+        assert_eq!(build_id(&d).as_deref(), Some("cargo.build"));
+
+        // On its own it is still better than nothing.
+        let d = scratch("build-compose-only");
+        write(&d, "docker-compose.yml", "services: {}");
+        assert_eq!(build_id(&d).as_deref(), Some("compose.build"));
+    }
+
+    #[test]
+    fn a_repo_with_no_build_step_has_none() {
+        let d = scratch("build-none");
+        write(&d, "README.md", "# docs");
+        assert_eq!(build_id(&d), None);
     }
 
     #[test]

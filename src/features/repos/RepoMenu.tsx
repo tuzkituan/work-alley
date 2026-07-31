@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { MoreHorizontal } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import {
@@ -12,14 +13,16 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Button } from '@/components/ui/button'
-import { openUrl, revealItemInDir } from '@tauri-apps/plugin-opener'
-import { api } from '@/ipc/commands'
+import { revealItemInDir } from '@tauri-apps/plugin-opener'
+import { openUrl } from '@/lib/open-url'
 import { keys } from '@/queries/keys'
 import { useRunAction } from '@/hooks/use-action'
 import { useRescanRepo } from '@/hooks/use-rescan-repo'
-import { choresByGroup, runTarget, taskOf } from '@/domain/severity'
+import { buildTarget, choresByGroup, runTarget, taskOf } from '@/domain/severity'
 import { repoId, type RepoRef, type RepoStatus } from '@/domain/types'
 import { useUiStore } from '@/stores/ui-store'
+import { CheckoutRepoDialog } from '@/features/actions/CheckoutRepoDialog'
+import { RunCommandDialog } from '@/features/detail/RunCommandDialog'
 
 /**
  * Secondary actions, so the visible row stays scannable.
@@ -47,13 +50,17 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
   // task, since then the main Run button already covers it.
   const hasStorybook =
     (status?.availableTasks.includes('storybook') ?? false) && target.id !== 'storybook'
+  const build = buildTarget(status)
   const scripts = status?.availableScripts ?? []
   const choreGroups = choresByGroup(status)
   const dirty = (status?.dirtyCount ?? 0) + (status?.untrackedCount ?? 0)
   // Only to label the Push item with a count; the real preflight happens in Rust.
   const ahead = status?.sync.kind === 'diverged' ? status.sync.ahead : 0
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
+  const [runCmdOpen, setRunCmdOpen] = useState(false)
 
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button
@@ -115,14 +122,23 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
           Fetch
         </DropdownMenuItem>
 
-        {/* Reuses the bulk checkout action with a single target: one repo is just
-            the n=1 case, and the dirty policy and preflight come free. */}
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>Switch branch</DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="max-h-80 w-56 overflow-y-auto">
-            <SwitchBranchItems repo={repo} current={status?.branch ?? null} />
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
+        {/* A dialog, not a submenu of branch names. The submenu fired the moment
+            you clicked a name, with a hardcoded dirty policy and no preview — so
+            the two questions that decide whether a checkout is safe were never
+            asked. `onSelect` closes the menu first: a Radix menu and a dialog
+            cannot both hold focus. */}
+        <DropdownMenuItem onSelect={() => setCheckoutOpen(true)}>
+          Switch branch…
+        </DropdownMenuItem>
+
+        {/* Only where something is runnable: an override can replace a detected
+            task's command, not invent one for a repo that runs nothing. */}
+        <DropdownMenuItem
+          disabled={(status?.runnable.length ?? 0) === 0}
+          onSelect={() => setRunCmdOpen(true)}
+        >
+          Edit run command…
+        </DropdownMenuItem>
 
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>Stash</DropdownMenuSubTrigger>
@@ -167,6 +183,15 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
             </DropdownMenuItem>
           </DropdownMenuSubContent>
         </DropdownMenuSub>
+
+        {/* Also on the row and the card, but the row drops its label at 640px and
+            a menu item is the one affordance that never shrinks. */}
+        {build && (
+          <DropdownMenuItem onClick={() => run(build.spec(repo))} title={`Runs ${build.label}`}>
+            Build
+            <span className="ml-auto font-mono text-[10px] text-adaptive-400">{build.label}</span>
+          </DropdownMenuItem>
+        )}
 
         <DropdownMenuItem onClick={() => void rescanRepo(repo)}>
           Rescan this repo
@@ -245,7 +270,7 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
                   Stop Storybook
                 </DropdownMenuItem>
                 {sb.url && (
-                  <DropdownMenuItem onClick={() => void openUrl(sb.url!).catch(() => {})}>
+                  <DropdownMenuItem onClick={() => openUrl(sb.url!)}>
                     Open Storybook ({sb.url.replace('http://', '')})
                   </DropdownMenuItem>
                 )}
@@ -263,7 +288,7 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
         <DropdownMenuSeparator />
 
         {devUp && url && (
-          <DropdownMenuItem onClick={() => void openUrl(url).catch(() => {})}>
+          <DropdownMenuItem onClick={() => openUrl(url)}>
             Open {url.replace('http://', '')}
           </DropdownMenuItem>
         )}
@@ -307,57 +332,23 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
         </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
-  )
-}
 
-/**
- * The branch list, fetched only once the submenu is opened.
- *
- * Radix mounts sub-content lazily, so putting the query in its own component is
- * what keeps `git for-each-ref` off every row of a 40-repo grid — the same reason
- * the editors list above reads from the bootstrap cache instead of querying.
- */
-function SwitchBranchItems({ repo, current }: { repo: RepoRef; current: string | null }) {
-  const run = useRunAction()
-  const { data, isPending, isError } = useQuery({
-    queryKey: keys.branches(repoId(repo)),
-    queryFn: () => api.listBranches(repo),
-    staleTime: 60_000,
-  })
-
-  if (isPending) {
-    return <DropdownMenuItem disabled>Loading branches…</DropdownMenuItem>
-  }
-  if (isError || (data ?? []).length === 0) {
-    return <DropdownMenuItem disabled>No branches found</DropdownMenuItem>
-  }
-
-  return (
-    <>
-      {(data ?? []).map((b) => (
-        <DropdownMenuItem
-          key={b.name}
-          disabled={b.name === current}
-          // `dirty: 'stash'` rather than 'skip': asking to switch and getting
-          // nothing because the tree was dirty is the more surprising outcome, and
-          // stashing is recoverable. The confirm dialog says so before it runs.
-          onClick={() => run({ kind: 'checkout', refs: [repo], branch: b.name, dirty: 'stash' })}
-        >
-          <span className="truncate font-mono text-[11.5px]">{b.name}</span>
-          {b.name === current ? (
-            <span className="ml-auto flex-none text-[10px] text-adaptive-400">current</span>
-          ) : (
-            // Drift at a glance, so you can tell a live branch from a stale one
-            // without leaving the menu.
-            (b.ahead > 0 || b.behind > 0) && (
-              <span className="ml-auto flex-none font-mono text-[10px] text-adaptive-400">
-                {b.ahead > 0 && `↑${b.ahead}`}
-                {b.behind > 0 && `↓${b.behind}`}
-              </span>
-            )
-          )}
-        </DropdownMenuItem>
-      ))}
+      {/* Outside the menu: Radix unmounts the content on close, and a dialog
+          rendered inside it would go with it the moment the item is chosen. */}
+      <CheckoutRepoDialog
+        open={checkoutOpen}
+        onOpenChange={setCheckoutOpen}
+        repo={repo}
+        current={status?.branch ?? null}
+      />
+      <RunCommandDialog
+        open={runCmdOpen}
+        onOpenChange={setRunCmdOpen}
+        repo={repo}
+        tasks={status?.runnable ?? []}
+        initialTask={status?.primaryTask ?? null}
+      />
     </>
   )
 }
+

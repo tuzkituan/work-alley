@@ -1,5 +1,5 @@
-import { SKINS, useUiStore } from '@/stores/ui-store'
-import type { Skin, ThemeMode } from '@/stores/ui-store'
+import { monoFontStack, SKINS, uiFontStack, useUiStore } from '@/stores/ui-store'
+import type { MonoFont, Skin, ThemeMode, UiFont } from '@/stores/ui-store'
 
 /**
  * Writes the appearance to <html>, NOT to the app root div.
@@ -17,23 +17,43 @@ import type { Skin, ThemeMode } from '@/stores/ui-store'
  * wrote `.dark` only *after* the terminal had already read the previous theme's
  * colours. Writing here, outside React's scheduling entirely, means the DOM is
  * correct before any component can look at it.
+ *
+ * The fonts are here for the same reason and one more: the terminal's cell metrics
+ * depend on the family, so a font written after paint means a reflow rather than a
+ * correct first frame.
  */
-function applyToDom(theme: ThemeMode, skin: Skin) {
+function applyToDom(theme: ThemeMode, skin: Skin, uiFont: UiFont, monoFont: MonoFont) {
   const root = document.documentElement
   root.classList.toggle('dark', theme === 'dark')
   root.dataset.skin = skin
   // Only ever light|dark: this drives native scrollbars, form controls and the
   // webview backdrop, none of which have any notion of a skin.
   root.style.colorScheme = theme
+  // Inline on <html>, which outranks wa-bridge.css's `:root` rule. Tailwind's
+  // font-sans/font-mono utilities follow because theme.css declares both with
+  // `@theme inline` — see the note there; plain `@theme` would inline the values
+  // at build time and none of this would reach the page.
+  root.style.setProperty('--font-sans', uiFontStack(uiFont))
+  root.style.setProperty('--font-mono', monoFontStack(monoFont))
 }
 
 // Eagerly, at import time. `persist` rehydrates from localStorage synchronously,
 // so the store is already correct here and there is no frame of the wrong look.
-applyToDom(useUiStore.getState().theme, useUiStore.getState().skin)
+{
+  const s = useUiStore.getState()
+  applyToDom(s.theme, s.skin, s.uiFont, s.monoFont)
+}
 
 useUiStore.subscribe((state, prev) => {
-  if (state.theme === prev.theme && state.skin === prev.skin) return
-  applyToDom(state.theme, state.skin)
+  if (
+    state.theme === prev.theme &&
+    state.skin === prev.skin &&
+    state.uiFont === prev.uiFont &&
+    state.monoFont === prev.monoFont
+  ) {
+    return
+  }
+  applyToDom(state.theme, state.skin, state.uiFont, state.monoFont)
 })
 
 /**

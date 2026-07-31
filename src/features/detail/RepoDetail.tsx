@@ -31,7 +31,7 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
   return (
     // `min-h-0 flex-1`, not `h-full`: this replaces RepoGrid in the same flex slot
     // and has to size the same way it does.
-    <div className="wa-detail flex min-h-0 min-w-0 flex-1 flex-col gap-3.5 overflow-hidden px-4 py-3.5">
+    <div className="wa-detail wa-view-enter flex min-h-0 min-w-0 flex-1 flex-col gap-3.5 overflow-hidden px-4 py-3.5">
       <RepoHeader ctx={ctx} />
 
       <Tabs

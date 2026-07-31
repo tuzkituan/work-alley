@@ -2,6 +2,9 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import './styles/theme.css'
+// Side effect only: keeps open terminals in step with the font settings. Imported
+// here rather than from a component, because no component is mounted on every page.
+import './features/terminal/font-sync'
 import { App } from './App'
 import { WindowResizeEdges } from './features/topbar/WindowResizeEdges'
 

@@ -1,5 +1,5 @@
 import { memo } from 'react'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { openUrl } from '@/lib/open-url'
 import {
   ChevronDown,
   ExternalLink,
@@ -8,8 +8,10 @@ import {
   Layers,
   ListChecks,
   Play,
+  Settings,
   Square,
   Wrench,
+  X,
 } from 'lucide-react'
 import { KvRow, SectionLabel, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
@@ -28,8 +30,9 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { useScanStore } from '@/stores/scan-store'
-import { useUiStore } from '@/stores/ui-store'
+import { useUiStore, type Page } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
+import { api } from '@/ipc/commands'
 
 /**
  * Three zones: a header, a scrolling middle, and a pinned footer.
@@ -111,6 +114,15 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
           icon={<ListChecks className="size-3 flex-none" />}
           label="Guided setup"
           title="The ordered path for a machine with nothing on it"
+        />
+        {/* A rule, because the two above describe this *machine* and this one
+            describes the app. Same control, different subject. */}
+        <span className="mx-1 my-0.5 h-px bg-adaptive-200" />
+        <MachineButton
+          page="settings"
+          icon={<Settings className="size-3 flex-none" />}
+          label="Settings"
+          title="Appearance, fonts, scanning and background fetch"
         />
       </div>
 
@@ -223,7 +235,9 @@ function MachineButton({
   label,
   title,
 }: {
-  page: 'toolbox' | 'setup'
+  // Every full-window page, not just the machine-scoped two — Settings is app
+  // scoped and sits in the same footer, under a rule.
+  page: Page
   icon: React.ReactNode
   label: string
   title: string
@@ -422,7 +436,9 @@ function RunningRow({ server }: { server: DevServer }) {
           crashed ? 'text-sev-err' : 'text-adaptive-400'
         )}
       >
-        {crashed ? 'dead' : server.port ? `:${server.port}` : server.state}
+        {/* "exited", not "dead": the row is a record of a process that ended, and
+            "dead" read as a claim that something is still there and broken. */}
+        {crashed ? 'exited' : server.port ? `:${server.port}` : server.state}
       </span>
       <span className="hidden flex-none items-center gap-1.5 group-hover:flex">
         {/* Only once the port is actually known. Before that `url` is null and the
@@ -431,7 +447,7 @@ function RunningRow({ server }: { server: DevServer }) {
         {url && (
           <button
             type="button"
-            onClick={() => void openUrl(url).catch(() => {})}
+            onClick={() => openUrl(url)}
             title={`Open ${url}`}
             aria-label={`Open ${url}`}
             className="text-adaptive-400 hover:text-primary"
@@ -439,15 +455,42 @@ function RunningRow({ server }: { server: DevServer }) {
             <ExternalLink className="size-3" />
           </button>
         )}
-        <button
-          type="button"
-          onClick={() => run({ kind: 'devStop', ref: server.ref, task: server.task })}
-          title={`Stop ${server.task} in ${id}`}
-          aria-label={`Stop ${server.task} in ${id}`}
-          className="text-adaptive-400 hover:text-sev-err"
-        >
-          <Square className="size-3" />
-        </button>
+        {/* A row for a process that already ended gets restart and dismiss. Stop
+            was the only button here, and on a crashed row it was the one thing that
+            could not work — the process was gone, so nothing would ever clear the
+            "stopping" it set. */}
+        {crashed ? (
+          <>
+            <button
+              type="button"
+              onClick={() => run({ kind: 'devStart', ref: server.ref, task: server.task })}
+              title={`Restart ${server.task} in ${id}`}
+              aria-label={`Restart ${server.task} in ${id}`}
+              className="text-adaptive-400 hover:text-sev-ok"
+            >
+              <Play className="size-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => void api.forgetDev(server.ref, server.task).catch(() => {})}
+              title={`Dismiss this row (${server.task} in ${id})`}
+              aria-label={`Dismiss ${server.task} in ${id}`}
+              className="text-adaptive-400 hover:text-adaptive-900"
+            >
+              <X className="size-3" />
+            </button>
+          </>
+        ) : (
+          <button
+            type="button"
+            onClick={() => run({ kind: 'devStop', ref: server.ref, task: server.task })}
+            title={`Stop ${server.task} in ${id}`}
+            aria-label={`Stop ${server.task} in ${id}`}
+            className="text-adaptive-400 hover:text-sev-err"
+          >
+            <Square className="size-3" />
+          </button>
+        )}
       </span>
     </div>
   )

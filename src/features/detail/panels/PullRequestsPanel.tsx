@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ExternalLink, GitPullRequest } from 'lucide-react'
-import { openUrl } from '@tauri-apps/plugin-opener'
+import { openUrl } from '@/lib/open-url'
 import { api } from '@/ipc/commands'
 import { keys } from '@/queries/keys'
 import { cn } from '@/lib/utils'
@@ -94,7 +94,7 @@ export function PullRequestsPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
         slug ? (
           <button
             type="button"
-            onClick={() => void openUrl(`https://github.com/${slug}`).catch(() => {})}
+            onClick={() => openUrl(`https://github.com/${slug}`)}
             className="truncate font-mono text-[11px] text-adaptive-400 hover:text-primary-600 hover:underline"
             title={`Open github.com/${slug}`}
           >
@@ -170,7 +170,7 @@ function PrRow({ pr, repo }: { pr: PullRequest; repo: RepoRef }) {
         <div className="flex items-center gap-2">
           <button
             type="button"
-            onClick={() => void openUrl(pr.url).catch(() => {})}
+            onClick={() => openUrl(pr.url)}
             className="truncate text-left text-[13px] font-medium hover:text-primary-600 hover:underline"
             title={`${pr.title} — open on GitHub`}
           >
@@ -252,7 +252,7 @@ function PrRow({ pr, repo }: { pr: PullRequest; repo: RepoRef }) {
 
       <button
         type="button"
-        onClick={() => void openUrl(pr.url).catch(() => {})}
+        onClick={() => openUrl(pr.url)}
         title="Open on GitHub"
         className="text-adaptive-400 hover:text-primary-600"
       >

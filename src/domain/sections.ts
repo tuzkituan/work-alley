@@ -78,6 +78,11 @@ function groupBy<T>(items: RepoRef[], key: (r: RepoRef) => T): Map<T, RepoRef[]>
  *
  * Choosing between the two rather than fixing one is the point: a single axis is
  * wrong for half of any real workspace.
+ *
+ * Whichever axis wins, a section long enough to scroll is then split again by
+ * shared name prefix — see `splitByPrefix`. Forty `blazeup-subapp-*` repos are one
+ * heading and forty near-identical rows on any axis this file knows about, and the
+ * convention in the names is the only thing left that tells them apart.
  */
 export function buildSections(
   repos: RepoRef[],
@@ -93,8 +98,9 @@ export function buildSections(
   const byLanguage = groupBy(rest, (r) => statuses.get(repoId(r))?.shape.language ?? null)
   // A single language group means the axis tells you nothing — including the case
   // where it is all `null` because nothing has been scanned yet.
-  const sections =
+  const sections = (
     byLanguage.size > 1 ? languageSections(byLanguage) : kindSections(rest, statuses)
+  ).flatMap(splitByPrefix)
 
   return running.length > 0
     ? [{ key: 'running', label: 'Running', repos: running }, ...sections]
@@ -131,6 +137,91 @@ function kindSections(repos: RepoRef[], statuses: Map<RepoId, RepoStatus>): Sect
     label: LABELS[k],
     repos: byKind.get(k)!,
   }))
+}
+
+/** A section shorter than this is already scannable; splitting it adds headings. */
+const SPLIT_MIN = 12
+/** Below this a "family" is a coincidence of naming, not a group. */
+const FAMILY_MIN = 3
+/** `blazeup-subapp-workflow-builder` — past three segments the prefix is the repo. */
+const MAX_SEGMENTS = 3
+
+/**
+ * Splits one long section into the naming families inside it.
+ *
+ * Repos in a real workspace are named by convention — `blazeup-subapp-*`,
+ * `blazeup-lib-*`, `Blazeup_Micro-service_*` — and that convention is a grouping
+ * the app otherwise ignores, so a 40-repo folder reads as one heading over forty
+ * rows that differ in their last word.
+ *
+ * Derived, never configured: families come from the names actually present, so a
+ * workspace with no convention produces none and the section is returned
+ * untouched. That is also why the thresholds are conservative — a heading that
+ * separates three repos from two is worse than no heading.
+ */
+export function splitByPrefix(section: Section): Section[] {
+  if (section.repos.length < SPLIT_MIN) return [section]
+
+  // Every candidate prefix and how many repos carry it. Separators stay in the key
+  // so the label reads exactly as the names do.
+  const counts = new Map<string, number>()
+  for (const r of section.repos) {
+    for (const p of prefixesOf(r.name)) counts.set(p, (counts.get(p) ?? 0) + 1)
+  }
+
+  // The longest prefix a repo shares with enough others. Longest wins so
+  // `blazeup-subapp-` beats the `blazeup-` every repo in the folder also carries —
+  // a family everything belongs to is not a family.
+  const familyOf = (name: string): string | null => {
+    let best: string | null = null
+    for (const p of prefixesOf(name)) {
+      if ((counts.get(p) ?? 0) >= FAMILY_MIN && (best === null || p.length > best.length)) {
+        best = p
+      }
+    }
+    return best
+  }
+
+  const families = groupBy(section.repos, (r) => familyOf(r.name))
+  const named = [...families.keys()].filter((k) => k !== null).length
+  // One family is the same non-answer as one language: it separates nothing, and
+  // everything else lands in the leftovers.
+  if (named < 2) return [section]
+
+  const out: Section[] = []
+  let leftovers: RepoRef[] = []
+  for (const [family, list] of families) {
+    if (family === null) leftovers = leftovers.concat(list)
+    else out.push({ key: `${section.key}/pre:${family}`, label: trimSep(family), repos: list })
+  }
+  // Biggest first, as the language axis orders itself.
+  out.sort((a, b) => b.repos.length - a.repos.length || a.label.localeCompare(b.label))
+  // Whatever follows no convention keeps the section's own label — it is still
+  // Frontend, it just is not part of a family.
+  if (leftovers.length > 0) {
+    out.push({ key: `${section.key}/pre:rest`, label: section.label, repos: leftovers })
+  }
+  return out
+}
+
+/**
+ * `blazeup-subapp-task` -> `blazeup-`, `blazeup-subapp-`.
+ *
+ * Separator-terminated, so a prefix can only end where a name segment does.
+ * Without that, `blazeup-s` would be a candidate and `siem` and `smartassess`
+ * would look like a family.
+ */
+function prefixesOf(name: string): string[] {
+  const out: string[] = []
+  for (let i = 0; i < name.length && out.length < MAX_SEGMENTS; i++) {
+    const c = name[i]!
+    if (c === '-' || c === '_' || c === '.') out.push(name.slice(0, i + 1))
+  }
+  return out
+}
+
+function trimSep(s: string): string {
+  return s.replace(/[-_.]+$/, '')
 }
 
 export type ListItem =

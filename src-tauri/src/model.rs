@@ -149,12 +149,34 @@ pub struct RepoStatus {
     /// `cargo clippy`, `./gradlew clean`. The closed set a `runChore` action is
     /// validated against, and the non-JS counterpart of `available_scripts`.
     pub chores: Vec<ChoreInfo>,
+    /// What a Build button runs here, or None for a repo with no build step — which
+    /// a docs repo and a Python service legitimately have not.
+    pub primary_build: Option<BuildTarget>,
+    /// `https://github.com/owner/repo` for this repo's origin, when the host is one
+    /// the app is allowed to open. None for a self-hosted forge or no remote, and
+    /// the UI then renders shas and branch names as plain text.
+    pub remote_web_base: Option<String>,
     /// Tasks currently running for this repo. Not a single `dev_server`, because a
     /// UI library commonly has dev and storybook up at the same time.
     pub tasks: Vec<DevServer>,
     /// Set => the rest is best-effort. A scan never fails wholesale.
     pub error: Option<String>,
     pub scan_ms: u64,
+}
+
+/// What a Build button acts on.
+///
+/// Tagged rather than two Options, because "script or chore" is exactly the thing
+/// the frontend must not infer: the two dispatch different actions, validated
+/// against different closed sets.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+pub enum BuildTarget {
+    /// A `build` script the repo declares. Validated against `available_scripts`.
+    Script { name: String, label: String },
+    /// An ecosystem build — `cargo build`, `./gradlew build`. Validated against
+    /// `chores`.
+    Chore { id: String, label: String },
 }
 
 impl RepoStatus {
@@ -179,6 +201,8 @@ impl RepoStatus {
             primary_task: None,
             available_scripts: Vec::new(),
             chores: Vec::new(),
+            primary_build: None,
+            remote_web_base: None,
             tasks: Vec::new(),
             error: Some(msg.into()),
             scan_ms: 0,
@@ -666,6 +690,20 @@ pub struct PackageUpdate {
 pub struct UpdateReport {
     pub checked: Vec<String>,
     pub updates: Vec<PackageUpdate>,
+}
+
+/// What a runnable task would execute, for the run-command editor.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RunCommandPreview {
+    /// `"fe/web#dev"` — how the override is keyed.
+    pub task_key: String,
+    pub label: String,
+    /// What `runner` resolves from the repo's own files. Always the default, never
+    /// the override, so "Reset" has something to reset to.
+    pub default_argv: Vec<String>,
+    pub override_argv: Option<Vec<String>>,
+    pub cwd: PathBuf,
 }
 
 // --- repo dependencies ------------------------------------------------------

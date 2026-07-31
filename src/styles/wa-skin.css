@@ -444,6 +444,11 @@ html[data-skin='metro'] [data-slot='tabs-trigger'][data-state='active'] {
   color: var(--adaptive-600);
   font-weight: 600;
 }
+/* The 3px border above is this skin's active mark; shadcn's `line` variant adds
+   its own 2px `::after` bar a few pixels lower, which reads as a misprint. */
+html[data-skin='metro'] [data-slot='tabs-trigger']::after {
+  display: none;
+}
 
 /* ════════════════════════════════════════════════════════════ gutters ══ */
 

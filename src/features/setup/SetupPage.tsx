@@ -135,7 +135,7 @@ export function SetupPage({
 
   return (
     <div className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
-      <div className="mx-auto flex w-full max-w-[104rem] flex-col gap-3.5">
+      <div className="mx-auto flex w-full max-w-[64rem] flex-col gap-3.5">
         <div className="flex items-center gap-2">
           {/* No back arrow on a first run: there is nothing behind this screen, and a
               dead control is worse than none. */}
@@ -264,14 +264,11 @@ function StepList({
   lastRan: ActionSpec | null
 }) {
   return (
-    // Staggered columns, same as the Toolbox — steps range from two lines to a
-    // whole command preview, so grid rows left large holes.
-    //
-    // Multi-column happens to suit ordered content better than a grid would: it
-    // fills a column top to bottom before starting the next, so the steps still
-    // read 1, 2, 3 downwards rather than zig-zagging across rows. The numbers on
-    // the cards carry the order either way.
-    <div className="columns-[34rem] gap-4">
+    // One column. This was multi-column to fit the steps on a wide screen, but a
+    // numbered sequence read across two columns is the one layout that makes "what
+    // do I do next" ambiguous — and unlike the Toolbox's flat list, order is the
+    // whole point of this page.
+    <div className="flex flex-col gap-3.5">
       {steps.map((step, i) => (
         <StepCard
           key={step.id}
@@ -319,9 +316,10 @@ function StepCard({
     <div
       ref={ref}
       className={cn(
-        // mb + break-inside-avoid: this card is a multi-column item in StepList,
-        // and a step split across a column boundary is unreadable.
-        'mb-2 flex break-inside-avoid flex-col gap-2.5 rounded-lg border bg-card p-3.5',
+        // The list is a flex column now, so its gap does the spacing — the margin
+        // and break-inside-avoid this used to carry were for the multi-column
+        // layout it no longer has.
+        'flex flex-col gap-2.5 rounded-lg border bg-card p-3.5',
         current || focused ? 'border-adaptive-950 shadow-focus-ring' : 'border-adaptive-200'
       )}
     >

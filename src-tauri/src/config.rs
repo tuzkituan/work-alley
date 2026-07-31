@@ -15,7 +15,9 @@ pub struct Config {
     /// depend on, which is the only thing that works across workspaces.
     #[serde(default)]
     pub tracked_package: Option<String>,
-    /// Keyed by repo key ("frontend/my-app").
+    /// Keyed by **task** key ("frontend/my-app#dev") — see `state::task_key`. The
+    /// consumers are `commands::build_action`'s DevStart arm and `register_dev`,
+    /// both of which look up a task key, not a repo key.
     #[serde(default)]
     pub dev_command_overrides: BTreeMap<String, Vec<String>>,
     #[serde(default)]
@@ -29,6 +31,16 @@ pub struct Config {
     /// so a config written before this field existed still loads.
     #[serde(default = "default_auto_fetch_minutes")]
     pub auto_fetch_minutes: u64,
+    /// Open the folder that was open when the app last quit, instead of the picker.
+    ///
+    /// On by default. The cost is real — launching goes straight into a scan of the
+    /// remembered folder — but landing on a picker every single time to choose the
+    /// same workspace is the larger one, and the switch is one control away in
+    /// Settings. `default_reopen_last_workspace` rather than a bare `serde(default)`
+    /// for the same reason `auto_fetch_minutes` has one: a bare default is `false`,
+    /// which would silently turn this off for everyone who already has a config.
+    #[serde(default = "default_reopen_last_workspace")]
+    pub reopen_last_workspace: bool,
     /// Most recently opened workspaces, newest first.
     #[serde(default)]
     pub recent_roots: Vec<PathBuf>,
@@ -56,6 +68,10 @@ fn default_auto_fetch_minutes() -> u64 {
     10
 }
 
+fn default_reopen_last_workspace() -> bool {
+    true
+}
+
 impl Config {
     pub fn defaults(workspace_root: PathBuf) -> Self {
         let cpus = std::thread::available_parallelism()
@@ -71,6 +87,7 @@ impl Config {
             port_overrides: BTreeMap::new(),
             max_log_lines_per_run: 5_000,
             auto_fetch_minutes: default_auto_fetch_minutes(),
+            reopen_last_workspace: default_reopen_last_workspace(),
             recent_roots: Vec::new(),
             onboarding_done_unix: None,
             root_forced: false,
@@ -141,8 +158,26 @@ pub struct ConfigPatch {
     pub recent_commit_limit: Option<u32>,
     pub max_log_lines_per_run: Option<usize>,
     pub auto_fetch_minutes: Option<u64>,
+    pub reopen_last_workspace: Option<bool>,
     pub dev_command_overrides: Option<BTreeMap<String, Vec<String>>>,
     pub port_overrides: Option<BTreeMap<String, u16>>,
+}
+
+/// Which workspace this launch opens; an empty path means the picker.
+///
+/// A free function so it can be tested: nothing inside `lib.rs`'s `setup` closure
+/// can be. `WORK_ALLEY_ROOT` is an instruction for *this* launch and always wins.
+/// The saved folder is opened only when the user asked for that, and only while it
+/// is still a workspace — a renamed or unmounted directory falls back to the
+/// picker, which still offers it from `recent_roots`.
+pub fn startup_root(cfg: &Config) -> PathBuf {
+    if cfg.root_forced {
+        return cfg.workspace_root.clone();
+    }
+    if cfg.reopen_last_workspace && is_workspace(&cfg.workspace_root) {
+        return cfg.workspace_root.clone();
+    }
+    PathBuf::new()
 }
 
 impl ConfigPatch {
@@ -163,6 +198,11 @@ impl ConfigPatch {
             // 0 is meaningful — off — so the floor cannot be 1. The ceiling is a
             // day, past which "automatic" is indistinguishable from disabled.
             c.auto_fetch_minutes = if v == 0 { 0 } else { v.clamp(1, 1440) };
+        }
+        // Nothing to clamp on a bool, and `None` must leave it alone — a patch that
+        // sets one number would otherwise silently turn this off.
+        if let Some(v) = self.reopen_last_workspace {
+            c.reopen_last_workspace = v;
         }
         if let Some(v) = self.dev_command_overrides {
             c.dev_command_overrides = v;
@@ -194,7 +234,8 @@ mod tests {
             "recentCommitLimit": 30,
             "maxLogLinesPerRun": 5000,
             "recentRoots": ["/tmp/one", "/tmp/two"],
-            "portOverrides": { "fe/web#dev": 5173 }
+            "portOverrides": { "fe/web#dev": 5173 },
+            "devCommandOverrides": { "fe/web#dev": ["bun", "run", "dev", "--host"] }
         }"#;
         std::fs::write(dir.join("config.json"), json).unwrap();
 
@@ -206,6 +247,14 @@ mod tests {
             "the fallback-to-defaults path ate the saved config"
         );
         assert_eq!(c.port_overrides.get("fe/web#dev"), Some(&5173));
+        assert_eq!(
+            c.dev_command_overrides.get("fe/web#dev").map(|v| v.len()),
+            Some(4)
+        );
+        // Defaulted on, and via a function rather than serde's bare `false` — an
+        // old config has no such key, and landing on `false` would turn the feature
+        // off for exactly the people who have been using the app longest.
+        assert!(c.reopen_last_workspace);
         // Absent means never onboarded, which is the honest reading of an old config.
         assert_eq!(c.onboarding_done_unix, None);
         // A field added later must arrive at its default, not at 0 — 0 means "never
@@ -245,6 +294,79 @@ mod tests {
             Config::load(&dir, None).onboarding_done_unix,
             Some(1_700_000_000)
         );
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reopen_can_be_patched_both_ways_and_left_alone() {
+        let mut c = Config::defaults(PathBuf::from("/nonexistent"));
+        ConfigPatch {
+            reopen_last_workspace: Some(true),
+            ..Default::default()
+        }
+        .apply(&mut c);
+        assert!(c.reopen_last_workspace);
+
+        // The case a careless `unwrap_or_default()` breaks: a patch that touches one
+        // number must not turn this off.
+        ConfigPatch {
+            stale_days: Some(30),
+            ..Default::default()
+        }
+        .apply(&mut c);
+        assert!(c.reopen_last_workspace);
+
+        ConfigPatch {
+            reopen_last_workspace: Some(false),
+            ..Default::default()
+        }
+        .apply(&mut c);
+        assert!(!c.reopen_last_workspace);
+    }
+
+    #[test]
+    fn patching_leaves_the_workspace_and_recents_alone() {
+        // Neither is in ConfigPatch, and both would be silent losses: the root is
+        // what "reopen last folder" reads, and recents is the welcome screen.
+        let mut c = Config::defaults(PathBuf::from("/tmp/ws"));
+        c.recent_roots = vec![PathBuf::from("/tmp/ws"), PathBuf::from("/tmp/other")];
+        ConfigPatch {
+            stale_days: Some(14),
+            auto_fetch_minutes: Some(0),
+            ..Default::default()
+        }
+        .apply(&mut c);
+
+        assert_eq!(c.workspace_root, PathBuf::from("/tmp/ws"));
+        assert_eq!(c.recent_roots.len(), 2);
+        assert_eq!(c.stale_days, 14);
+        assert_eq!(c.auto_fetch_minutes, 0);
+    }
+
+    #[test]
+    fn startup_opens_nothing_unless_asked() {
+        let mut c = Config::defaults(PathBuf::from("/tmp/definitely-not-a-workspace"));
+
+        // Off: the folder is offered on the welcome screen rather than opened.
+        c.reopen_last_workspace = false;
+        assert_eq!(startup_root(&c), PathBuf::new());
+
+        // The env var is an instruction for this launch and outranks the flag.
+        c.root_forced = true;
+        assert_eq!(startup_root(&c), PathBuf::from("/tmp/definitely-not-a-workspace"));
+        c.root_forced = false;
+
+        // On, but the folder has been renamed or the drive is not mounted — the
+        // picker, not an error. This is the case people actually hit.
+        c.reopen_last_workspace = true;
+        assert_eq!(startup_root(&c), PathBuf::new());
+
+        // Opted in and the folder is still a workspace.
+        let dir = std::env::temp_dir().join(format!("wa-cfg-reopen-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("repos.json"), "[]").unwrap();
+        c.workspace_root = dir.clone();
+        assert_eq!(startup_root(&c), dir);
         std::fs::remove_dir_all(&dir).ok();
     }
 }

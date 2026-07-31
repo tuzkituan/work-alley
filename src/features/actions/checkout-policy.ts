@@ -45,3 +45,19 @@ export const POLICY_LABEL: Record<DirtyPolicy, string> = {
   stash: 'Stash first',
   discard: 'Discard changes',
 }
+
+/**
+ * Mirrors the backend's `valid_branch_name`, to fail before a round trip.
+ *
+ * The backend still validates — this is a nicer error, not the guard. Shared by
+ * both checkout dialogs, since a name one of them accepts and the other rejects
+ * would be the more confusing outcome.
+ */
+export function isValidBranchName(name: string): boolean {
+  const n = name.trim()
+  if (!n || n.length > 255) return false
+  if (/^[-/]/.test(n) || /[/.]$/.test(n)) return false
+  if (n.endsWith('.lock') || n.includes('..') || n.includes('//') || n.includes('@{')) return false
+  if (n === '@') return false
+  return !/[\s~^:?*[\\'"\u0000-\u001f]/.test(n)
+}

@@ -1,9 +1,23 @@
 @import 'tailwindcss';
 @import 'tw-animate-css';
 
-/* Self-hosted variable fonts — no CDN, so `font-src 'self'` in the CSP suffices. */
-@import '@fontsource-variable/archivo';
-@import '@fontsource-variable/jetbrains-mono';
+/* Self-hosted variable fonts — no CDN, so `font-src 'self'` in the CSP suffices.
+ *
+ * Every family the Settings font picker offers is declared here, eagerly and
+ * statically. That is not the bundle cost it looks like: these files are nothing
+ * but `@font-face` blocks, and `@font-face` is lazy — the browser fetches a woff2
+ * only when a glyph is actually painted in that family. Eight declared families
+ * cost a few KB of CSS and zero font bytes until one is chosen.
+ *
+ * The `/wght.css` entry point rather than the package root, so only the weight
+ * axis ships: Archivo also carries `wdth` and every family carries italics, none
+ * of which this UI asks for. */
+@import '@fontsource-variable/archivo/wght.css';
+@import '@fontsource-variable/jetbrains-mono/wght.css';
+@import '@fontsource-variable/inter/wght.css';
+@import '@fontsource-variable/geist/wght.css';
+@import '@fontsource-variable/fira-code/wght.css';
+@import '@fontsource-variable/source-code-pro/wght.css';
 
 @import './shadcn-theme.css';
 @import './wa-bridge.css';

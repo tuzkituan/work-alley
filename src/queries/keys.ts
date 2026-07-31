@@ -1,5 +1,6 @@
 export const keys = {
   bootstrap: ['bootstrap'] as const,
+  config: ['config'] as const,
   commits: ['commits'] as const,
   runs: ['runs'] as const,
   packages: ['packages'] as const,
@@ -9,6 +10,7 @@ export const keys = {
     ['checkoutPreview', scope, branch] as const,
   packageVersions: (id: string) => ['packageVersions', id] as const,
   branches: (key: string) => ['branches', key] as const,
+  runCommand: (key: string, task: string) => ['runCommand', key, task] as const,
   repoPackages: (key: string) => ['repoPackages', key] as const,
   repoPackageUpdates: (key: string) => ['repoPackageUpdates', key] as const,
   depVersions: (key: string, name: string) => ['depVersions', key, name] as const,

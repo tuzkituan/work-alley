@@ -7,6 +7,7 @@ mod config;
 mod creds;
 mod deps;
 mod detect;
+mod devwatch;
 mod docker;
 mod error;
 mod events;
@@ -169,19 +170,13 @@ pub fn run() {
 
             let mut cfg = config::Config::load(&app_dir, paths::guess_workspace_root());
 
-            // Launch with no workspace open, whatever was open last time.
-            //
-            // The saved folder is *offered* on the welcome screen, not opened: opening
-            // it immediately commits the app to scanning a folder the user has not
-            // asked about yet — on a 40-repo workspace that is seconds of git before
-            // the window is usable, against the wrong folder as often as the right one.
-            // `WORK_ALLEY_ROOT` still opens, because an env var is an instruction for
-            // this launch rather than a memory of an old one.
-            let workspace_root = if cfg.root_forced {
-                cfg.workspace_root.clone()
-            } else {
-                std::path::PathBuf::new()
-            };
+            // The folder that was open last time, reopened — which does commit the
+            // app to scanning it before the window is fully useful. That cost is the
+            // reason this was once a picker every launch, and `reopenLastWorkspace`
+            // in Settings turns it back into one. `WORK_ALLEY_ROOT` opens regardless:
+            // an env var is an instruction for this launch, not a memory of an old
+            // one. See `config::startup_root`.
+            let workspace_root = config::startup_root(&cfg);
 
             // The folder we just declined to open has to stay reachable. It normally
             // sits in `recent_roots` already, but a root that arrived from the env var
@@ -217,6 +212,16 @@ pub fn run() {
                 let handle = app.handle().clone();
                 let state = state.clone();
                 tauri::async_runtime::spawn(autofetch::run(handle, state));
+            }
+
+            // Corrects rows for dev servers this app no longer supervises — one
+            // killed from a terminal, or one whose supervisor went with a reload.
+            // Same shape as auto-fetch, and for the same reason: nothing to
+            // sequence it after, and it should never be noticed.
+            {
+                let handle = app.handle().clone();
+                let state = state.clone();
+                tauri::async_runtime::spawn(devwatch::run(handle, state));
             }
 
             let handle = app.handle().clone();
@@ -262,6 +267,9 @@ pub fn run() {
             commands::list_packages,
             commands::list_package_versions,
             commands::check_package_updates,
+            commands::forget_dev,
+            commands::preview_run_command,
+            commands::set_run_command,
             commands::list_repo_packages,
             commands::check_repo_package_updates,
             commands::list_dep_versions,

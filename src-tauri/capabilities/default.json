@@ -36,6 +36,12 @@
         },
         {
           "url": "https://github.com/*"
+        },
+        {
+          "url": "https://gitlab.com/*"
+        },
+        {
+          "url": "https://bitbucket.org/*"
         }
       ]
     },

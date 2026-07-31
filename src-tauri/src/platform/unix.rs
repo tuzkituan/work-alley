@@ -234,6 +234,17 @@ pub async fn port_holders(tc: &crate::toolchain::Toolchain, port: u16) -> Vec<(u
 }
 
 /// SIGTERM, which a well-behaved server catches to shut down cleanly.
+/// Signal 0 delivers nothing; it is only the existence-and-permission check.
+///
+/// EPERM means the process is there and belongs to someone else, which is still
+/// alive — reading it as dead would retire a row for a server started under `sudo`.
+pub fn pid_alive(pid: u32) -> bool {
+    if unsafe { libc::kill(pid as i32, 0) } == 0 {
+        return true;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
+}
+
 pub fn kill_pid_argv(pid: u32) -> Vec<String> {
     vec!["kill".to_string(), "-TERM".to_string(), pid.to_string()]
 }

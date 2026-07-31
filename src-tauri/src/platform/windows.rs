@@ -502,6 +502,33 @@ async fn tasklist_name(pid: u32) -> Option<String> {
     super::parse_tasklist_csv(&String::from_utf8_lossy(&out.stdout))
 }
 
+/// Whether a pid names a live process.
+///
+/// Opening the process is not the test on its own: a handle to a process that has
+/// already exited still opens for as long as anyone holds one, which would read
+/// every stopped dev server as running. The exit code is the actual answer —
+/// `STILL_ACTIVE` (259) means it has not produced one yet.
+pub fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        GetExitCodeProcess, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // A process that exists but that we may not query reads as dead here. That is
+    // the conservative direction for the one caller: it retires a row it could not
+    // verify rather than claiming a server is up.
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return false;
+        }
+        let mut code: u32 = 0;
+        let ok = GetExitCodeProcess(h, &mut code) != 0;
+        CloseHandle(h);
+        ok && code == 259
+    }
+}
+
 /// `/T` for the tree and `/F` because a console program ignores a polite close —
 /// there is no Windows equivalent of a catchable SIGTERM.
 pub fn kill_pid_argv(pid: u32) -> Vec<String> {

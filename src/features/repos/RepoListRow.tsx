@@ -1,11 +1,18 @@
-import { memo } from 'react'
+import { memo, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowDownToLine, Code, Play, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { KindTag, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
-import { crashedRunId, derive, runState, runTarget, TONE_TEXT } from '@/domain/severity'
+import {
+  crashedRunId,
+  derive,
+  lastFetched,
+  runState,
+  runTarget,
+  TONE_TEXT,
+} from '@/domain/severity'
 import { repoId, type RepoRef } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useRunStore } from '@/stores/run-store'
@@ -14,7 +21,9 @@ import { useRunAction } from '@/hooks/use-action'
 import { keys } from '@/queries/keys'
 import { busyLabel, useBusy } from '@/hooks/use-busy'
 import { shortPackageName, useTrackedPackage } from '@/hooks/use-tracked-package'
+import { BuildMenu } from './BuildMenu'
 import { RepoMenu } from './RepoMenu'
+import { CheckoutRepoDialog } from '@/features/actions/CheckoutRepoDialog'
 
 /** One row, so 43 repos fit on screen instead of four cards. */
 export const ROW_HEIGHT = 40
@@ -39,6 +48,7 @@ export function RepoListHeader() {
       <span className="wa-col-narrow">Branch</span>
       <span className="wa-col-narrow">Changes</span>
       <span className="wa-col-optional">Sync</span>
+      <span className="wa-col-optional">Fetched</span>
       {trackedPackage && (
         <span className="wa-col-optional truncate" title={trackedPackage}>
           {shortPackageName(trackedPackage)}
@@ -70,6 +80,8 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
   // This repo's own way of running — `dev` for one, `cargo run` or `runserver`
   // for the next. Every row used to send the literal 'dev'.
   const target = runTarget(status)
+  const [checkoutOpen, setCheckoutOpen] = useState(false)
+  const fetched = lastFetched(status)
   const state = runState(status)
   const running = status?.tasks ?? []
   const driftedFromLatest =
@@ -134,13 +146,21 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
         )}
       </div>
 
+      {/* The branch name is the switch control. It was inert text next to a menu
+          three clicks deep, which is a long way to go to change the one thing the
+          cell is about. */}
       {status ? (
-        <span
-          className="wa-col-narrow truncate font-mono text-[11.5px] text-adaptive-700"
-          title={status.branch ?? undefined}
+        <button
+          type="button"
+          className="wa-col-narrow truncate text-left font-mono text-[11.5px] text-adaptive-700 hover:text-primary-600 hover:underline"
+          title={`${status.branch ?? 'HEAD'} — switch branch`}
+          onClick={(e) => {
+            e.stopPropagation()
+            setCheckoutOpen(true)
+          }}
         >
           {status.detached ? '(detached)' : (status.branch ?? '—')}
-        </span>
+        </button>
       ) : (
         <Skeleton className="wa-col-narrow h-3 w-28" />
       )}
@@ -163,6 +183,23 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
         </span>
       ) : (
         <Skeleton className="wa-col-optional h-3 w-12" />
+      )}
+
+      {/* How old the sync numbers are. They are computed from local refs, so a
+          repo that has not fetched in nine days is not reporting "in sync" — it is
+          reporting what was true nine days ago. */}
+      {status ? (
+        <span
+          className={cn(
+            'wa-col-optional wa-num truncate font-mono text-[11.5px]',
+            fetched.stale ? 'text-sev-warn' : 'text-adaptive-500'
+          )}
+          title={fetched.title}
+        >
+          {fetched.age ?? '—'}
+        </span>
+      ) : (
+        <Skeleton className="wa-col-optional h-3 w-8" />
       )}
 
       {trackedPackage &&
@@ -258,30 +295,45 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
         )}
         {/* Disabled rather than hidden when nothing here runs: a library and a docs
             repo legitimately have no dev server, and a button that vanishes per row
-            is harder to read down a list than one that greys out. */}
+            is harder to read down a list than one that greys out.
+
+            Icon only. A row of 113 repeats the same two words 226 times, and the
+            title carries what the label would have said. */}
         <Button
           variant={target.up ? 'waDanger' : 'waOutline'}
           size="waIcon"
           className="shrink-0"
-          disabled={!target.id}
+          disabled={!target.id || target.busy}
           title={
             !target.id
               ? 'Nothing to run in this repo'
-              : target.up
-                ? `Stop ${target.label}`
-                : `Start ${target.label}`
+              : target.busy
+                ? `Stopping ${target.label}…`
+                : target.up
+                  ? `Stop ${target.label}`
+                  : target.crashed
+                    ? `Restart ${target.label}`
+                    : `Start ${target.label}`
           }
-          aria-label={target.up ? `Stop ${target.label}` : `Start ${target.label}`}
+          aria-label={target.up ? `Stop ${target.label}` : `Run ${target.label}`}
           onClick={(e) => {
             e.stopPropagation()
-            if (!target.id) return
+            if (!target.id || target.busy) return
             run({ kind: target.up ? 'devStop' : 'devStart', ref: repo, task: target.id })
           }}
         >
           {target.up ? <Square className="size-3" /> : <Play className="size-3.5" />}
         </Button>
+        <BuildMenu repo={repo} status={status} iconOnly />
         <RepoMenu repo={repo} status={status} />
       </div>
+
+      <CheckoutRepoDialog
+        open={checkoutOpen}
+        onOpenChange={setCheckoutOpen}
+        repo={repo}
+        current={status?.branch ?? null}
+      />
     </div>
   )
 })

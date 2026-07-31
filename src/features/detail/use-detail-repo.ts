@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { choresByGroup, derive, runTarget, taskOf } from '@/domain/severity'
+import { buildTarget, choresByGroup, derive, runTarget, taskOf } from '@/domain/severity'
 import { repoId, repoRefOf, type RepoId } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useTerminalStore } from '@/stores/terminal-store'
@@ -69,7 +69,14 @@ export function useDetailRepo(id: RepoId) {
   // entry point its files imply. `dev` keeps its name because the header, the
   // action bar and the panels all read it as "the main server".
   const target = runTarget(status)
+  const build = buildTarget(status)
   const sb = taskOf(status, 'storybook')
+
+  // Whatever the Build button took, the chip strips give up: the same command
+  // offered twice on one screen reads as two different things that happen to be
+  // spelled alike.
+  const builtScript = status?.primaryBuild?.kind === 'script' ? status.primaryBuild.name : null
+  const builtChore = status?.primaryBuild?.kind === 'chore' ? status.primaryBuild.id : null
 
   return {
     id,
@@ -79,13 +86,17 @@ export function useDetailRepo(id: RepoId) {
     dev: target.server,
     sb,
     target,
+    build,
     devUp: target.up,
     // Storybook keeps its own button, but not when it is the only thing this repo
     // runs — then the primary button already is it.
     hasStorybook:
       (status?.availableTasks.includes('storybook') ?? false) && target.id !== 'storybook',
-    scripts: status?.availableScripts ?? [],
-    choreGroups: choresByGroup(status),
+    scripts: (status?.availableScripts ?? []).filter((s) => s !== builtScript),
+    choreGroups: choresByGroup(status)
+      .map(([group, items]) => [group, items.filter((c) => c.id !== builtChore)] as const)
+      .filter(([, items]) => items.length > 0)
+      .map(([group, items]) => [group, [...items]] as [string, typeof items[number][]]),
     dirty: (status?.dirtyCount ?? 0) + (status?.untrackedCount ?? 0),
     ahead: status?.sync.kind === 'diverged' ? status.sync.ahead : 0,
     behind: status?.sync.kind === 'diverged' ? status.sync.behind : 0,

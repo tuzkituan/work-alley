@@ -84,6 +84,15 @@ pub fn spawn_run(app: &AppHandle, spec: SpawnSpec) -> AppResult<String> {
         .unwrap()
         .insert(run_id.clone(), handle.clone());
 
+    // Before the supervising task can exist, not after it in `run_action`. A
+    // command that fails to spawn reaches `finish()` on its first poll, and
+    // `finish` identifies the dev task by looking up this very map — so
+    // registering afterwards raced it and left a row stuck on "starting" with
+    // nothing alive that could ever clear it.
+    if let Some(key) = &spec.dev_key {
+        state.claim_dev(key, &run_id);
+    }
+
     let _ = app.emit(events::RUN_STARTED, events::RunStarted { run: summary });
 
     // The command header, so the log always opens with exactly what ran.
@@ -432,14 +441,18 @@ async fn finish(
             .map(|(k, _)| k.clone())
     };
     if let Some(key) = dev_key {
-        match &status {
-            RunStatus::Cancelled | RunStatus::Signaled { .. } => state.remove_dev(&key),
-            RunStatus::Exited { code } if *code == 0 => state.remove_dev(&key),
-            _ => {
-                state.patch_dev(&key, |d| d.state = crate::model::DevState::Crashed);
-            }
+        // Branch on intent, not on the shape of the status: on unix a stop we asked
+        // for and a SIGKILL from the OOM killer both arrive as `Signaled`, and only
+        // one of them should take the row away with it.
+        let deliberate =
+            handle.is_cancelled() || matches!(&status, RunStatus::Exited { code } if *code == 0);
+        if deliberate {
+            state.remove_dev(&key);
+        } else {
+            // Keeps the row — and its log — but drops the live-run claim, so the
+            // Start button that would fix it is not blocked by the crash.
+            state.retire_dev(&key, crate::model::DevState::Crashed);
         }
-        state.persist_dev_runs();
         let _ = app.emit(
             events::DEV_CHANGED,
             events::DevChanged {

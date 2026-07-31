@@ -11,6 +11,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { Skeleton } from '@/components/ui/skeleton'
 import { MonoChip, SectionLabel, StatusDot } from '@/components/wa/primitives'
 import type { DepField, DepUpdate, RepoDep, RepoId, RepoRef } from '@/domain/types'
 import { useRunAction } from '@/hooks/use-action'
@@ -57,6 +58,9 @@ export function PackagesPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
     staleTime: 10 * 60_000,
   })
 
+  // Waiting on the first answer, which is not the same as an answer of "could not
+  // ask" — the rows are identical in the data and mean opposite things.
+  const checking = updates.isFetching && !updates.data
   const checked = updates.data?.checked === true
   const outdated = useMemo(
     () => new Map((updates.data?.updates ?? []).map((u) => [u.name, u])),
@@ -73,17 +77,21 @@ export function PackagesPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
   // Grouped by field, and within a group the rows that need attention first — the
   // same reasoning as the status dot: a 90-row table should be scannable down one
   // edge rather than read line by line.
+  //
+  // The sort is frozen while the check is in flight. Applying it as answers land
+  // reorders 90 rows under the cursor, which is how you click Upgrade on the wrong
+  // package.
   const groups = useMemo(
     () =>
       FIELD_ORDER.map((field) => ({
         field,
-        deps: visible
-          .filter((d) => d.field === field)
-          .sort(
-            (a, b) => Number(outdated.has(b.name)) - Number(outdated.has(a.name))
-          ),
+        deps: checking
+          ? visible.filter((d) => d.field === field)
+          : visible
+              .filter((d) => d.field === field)
+              .sort((a, b) => Number(outdated.has(b.name)) - Number(outdated.has(a.name))),
       })).filter((g) => g.deps.length > 0),
-    [visible, outdated]
+    [visible, outdated, checking]
   )
 
   const behind = visible.filter((d) => outdated.has(d.name)).length
@@ -110,7 +118,9 @@ export function PackagesPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
           )}
         </>
       }
-      isFetching={isFetching}
+      // Both halves: the version check is the slow one, and a refresh icon that
+      // sits still through it says the panel is idle when it is not.
+      isFetching={isFetching || updates.isFetching}
       onRefresh={() => {
         void refetch()
         void updates.refetch()
@@ -172,6 +182,7 @@ export function PackagesPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
                     id={id}
                     update={outdated.get(dep.name)}
                     checked={checked}
+                    pending={checking}
                   />
                 ))}
               </div>
@@ -201,6 +212,9 @@ function Note({ children, tone = 'idle' }: { children: React.ReactNode; tone?: '
  * @param checked Whether it could be asked at all. Without it there is no
  *                difference between "current" and "we do not know", and rendering
  *                the second as the first quietly hides a real upgrade.
+ * @param pending The check has not answered yet — the third state, and the one
+ *                that used to render as a bare dash indistinguishable from a
+ *                manager that could not be reached.
  */
 function DepRow({
   dep,
@@ -208,22 +222,21 @@ function DepRow({
   id,
   update,
   checked,
+  pending,
 }: {
   dep: RepoDep
   repo: RepoRef
   id: RepoId
   update?: DepUpdate
   checked: boolean
+  pending: boolean
 }) {
   const latest = update?.latest ?? null
   const upToDate = checked && !update
 
   return (
     <div className="wa-dep-cols border-b border-adaptive-200 px-3 py-1.5 last:border-b-0 hover:bg-adaptive-100/40">
-      <StatusDot
-        tone={update ? 'warn' : upToDate && dep.installed ? 'ok' : 'idle'}
-        size={6}
-      />
+      <StatusDot tone={update ? 'warn' : upToDate && dep.installed ? 'ok' : 'idle'} size={6} />
 
       <span className="truncate font-mono text-[11.5px] text-adaptive-800" title={dep.name}>
         {dep.name}
@@ -240,8 +253,12 @@ function DepRow({
         {dep.installed ?? <span className="text-adaptive-400">—</span>}
       </span>
 
-      <span className="truncate text-right font-mono text-[11px]">
-        {latest ? (
+      <span className="flex justify-end truncate text-right font-mono text-[11px]">
+        {pending ? (
+          // A shimmer rather than a dash: the dash is what this cell shows when the
+          // manager could not be asked, and the two must not look the same.
+          <Skeleton className="h-3 w-12" />
+        ) : latest ? (
           <span className="text-sev-warn" title={`${latest} is published`}>
             {latest}
           </span>
@@ -315,7 +332,7 @@ function UpgradeAction({
         <Button
           variant={variant}
           size="waXs"
-          className="rounded-r-none"
+          data-split="left"
           title={
             latest
               ? `Install ${dep.name}@${latest}`
@@ -332,7 +349,8 @@ function UpgradeAction({
             variant={variant}
             size="waXs"
             title="Choose a version"
-            className={cn('px-1', menuOnly ? '' : 'rounded-l-none border-l-0')}
+            data-split={menuOnly ? undefined : 'right'}
+            className="px-1"
           >
             <ChevronDown className="size-3" />
           </Button>

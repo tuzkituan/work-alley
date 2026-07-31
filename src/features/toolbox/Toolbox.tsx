@@ -7,6 +7,7 @@ import {
   ChevronDown,
   Download,
   ListChecks,
+  Loader2,
   RefreshCw,
   Search,
   Terminal,
@@ -66,6 +67,11 @@ export function Toolbox({ toolsReady }: { toolsReady: boolean }) {
     staleTime: 10 * 60_000,
   })
 
+  // Still waiting on the first answer. Distinct from `!checked`, which means the
+  // answer arrived and was "could not ask" — the rows look the same in the data
+  // and mean opposite things to someone deciding whether to click Upgrade.
+  const checking = updates.isFetching && !updates.data
+
   // Only ids the backend actually managed to ask about get a definitive "up to
   // date". Everything else keeps its Upgrade button, because an unreachable
   // registry is not evidence that a tool is current.
@@ -114,12 +120,12 @@ export function Toolbox({ toolsReady }: { toolsReady: boolean }) {
 
   return (
     <div className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
-      {/* Capped and centred, but the cap is now on the *column*, not the page: a
-          single 56rem column of 50 rows wasted two thirds of a wide screen, while
-          letting a row stretch to 2000px put each tool's description and its
-          buttons at opposite edges. Columns below do both — readable rows, and the
-          whole list closer to one screen. */}
-      <div className="mx-auto flex w-full max-w-[104rem] flex-col gap-3.5">
+      {/* One centred column. The page was multi-column to fit 50 rows on a wide
+          screen, but that made the reading order snake down and back up, and each
+          group's width changed with the window. A single 64rem column keeps every
+          tool's description and its buttons a readable distance apart, and the list
+          in one order. */}
+      <div className="mx-auto flex w-full max-w-[64rem] flex-col gap-3.5">
         <div className="flex items-center gap-2">
           {/* A full-window page, so it needs its own way out. */}
           <Button
@@ -234,21 +240,10 @@ export function Toolbox({ toolsReady }: { toolsReady: boolean }) {
             tool that is not here has to be installed by hand.
           </div>
         ) : (
-          // Staggered, not a grid: groups run from 3 rows to 12, and in a grid each
-          // row is as tall as its tallest member, so a short group left a hole the
-          // height of the long one beside it. Multi-column packs each column
-          // independently instead.
-          //
-          // A column *width* rather than a count, so the count follows the window:
-          // the browser fits as many 32rem columns as there is room for, which is 1
-          // when narrow and 3 at the 104rem cap.
-          //
-          // A plain length, not `min(32rem, 100%)` — column-width takes no
-          // percentage, so that whole declaration was invalid and silently left one
-          // column. It was never needed: the width is only a preference, so a
-          // container narrower than 32rem gets one column of the container's width
-          // rather than an overflowing one.
-          <div className="columns-[32rem] gap-4">
+          // One column, in group order. `break-inside-avoid` below is left on the
+          // group cards deliberately: it costs nothing here and is what this needs
+          // again if the page is ever widened back out.
+          <div className="flex flex-col">
             {groups.map(([group, items]) => (
               // break-inside-avoid: a group card split across a column boundary
               // would put half its rows at the top of the next column.
@@ -267,6 +262,7 @@ export function Toolbox({ toolsReady }: { toolsReady: boolean }) {
                       pkg={p}
                       update={outdated.get(p.package.id)}
                       checked={checked.has(p.package.id)}
+                      pending={checking}
                     />
                   ))}
                 </div>
@@ -329,7 +325,7 @@ function SplitAction({
           variant={variant}
           size="waXs"
           title={title}
-          className="rounded-r-none"
+          data-split="left"
           onClick={() => run({ kind: 'package', id, op })}
         >
           {icon}
@@ -342,7 +338,8 @@ function SplitAction({
             variant={variant}
             size="waXs"
             title={menuOnly ? title : 'Choose a version'}
-            className={cn('px-1', menuOnly ? '' : 'rounded-l-none border-l-0')}
+            data-split={menuOnly ? undefined : 'right'}
+            className="px-1"
           >
             <ChevronDown className="size-3" />
           </Button>
@@ -390,15 +387,20 @@ function SplitAction({
  * @param checked Whether the manager could be asked at all. Without it there is no
  *                difference between "current" and "we do not know", and rendering
  *                the second as the first would quietly hide a real upgrade.
+ * @param pending The check is still in flight. A third state, and it has to be: it
+ *                is indistinguishable from `!checked` in the data, but one of them
+ *                is about to resolve and the other never will.
  */
 function PackageRow({
   pkg,
   update,
   checked,
+  pending,
 }: {
   pkg: PackageStatus
   update?: PackageUpdate
   checked: boolean
+  pending: boolean
 }) {
   const run = useRunAction()
   const { package: meta, installed, version, managerAvailable, path } = pkg
@@ -412,9 +414,11 @@ function PackageRow({
         className={cn(
           'size-1.5 flex-none rounded-full',
           // Amber for behind, so a row needing attention is findable by scanning
-          // the left edge rather than by reading every version.
-          installed ? (update ? 'bg-sev-warn' : 'bg-sev-ok') : 'bg-adaptive-300'
+          // the left edge rather than by reading every version. Grey while the
+          // check runs: green would be a claim nobody has verified yet.
+          installed && !pending ? (update ? 'bg-sev-warn' : 'bg-sev-ok') : 'bg-adaptive-300'
         )}
+        title={pending ? 'Checking for a newer version…' : undefined}
       />
 
       <div className="flex min-w-[12rem] flex-1 flex-col gap-0.5">
@@ -460,15 +464,25 @@ function PackageRow({
         </span>
       ) : installed ? (
         <div className="flex flex-none items-center gap-1.5">
-          <span
-            className={cn(
-              'hidden items-center gap-1 text-[11px] sm:flex',
-              upToDate ? 'text-adaptive-400' : 'text-sev-ok'
-            )}
-          >
-            <Check className="size-3" />
-            {upToDate ? 'up to date' : 'installed'}
-          </span>
+          {pending ? (
+            // Said per row, not only in the page header: the row is where the
+            // answer will appear, and "installed" in green next to an Upgrade
+            // button reads as a verdict rather than as a question still open.
+            <span className="hidden items-center gap-1 text-[11px] text-adaptive-400 sm:flex">
+              <Loader2 className="size-3 animate-spin" />
+              checking…
+            </span>
+          ) : (
+            <span
+              className={cn(
+                'hidden items-center gap-1 text-[11px] sm:flex',
+                upToDate ? 'text-adaptive-400' : 'text-sev-ok'
+              )}
+            >
+              <Check className="size-3" />
+              {upToDate ? 'up to date' : 'installed'}
+            </span>
+          )}
           {/* The point of the check: Upgrade is offered when there is something to
               upgrade to, or when the manager could not be asked — never as a button
               that reinstalls the version already on disk. A tool that is current

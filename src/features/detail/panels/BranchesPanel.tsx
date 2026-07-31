@@ -9,12 +9,15 @@ import type { BranchInfo, RepoId, RepoRef } from '@/domain/types'
 import { useScanStore } from '@/stores/scan-store'
 import { useRunAction } from '@/hooks/use-action'
 import { relativeFromUnix } from '@/lib/time'
+import { branchUrl, forgeHost } from '@/domain/forge'
+import { openUrl } from '@/lib/open-url'
 import { BranchCheckout } from './BranchCheckout'
 import { InspectChip, PanelEmpty, PanelError, PanelSkeleton, TabPanel } from './panel-parts'
 
 export function BranchesPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
   const run = useRunAction()
   const current = useScanStore((s) => s.repos.get(id)?.branch)
+  const webBase = useScanStore((s) => s.repos.get(id)?.remoteWebBase ?? null)
   const [query, setQuery] = useState('')
 
   const { data, isPending, isFetching, refetch, error } = useQuery({
@@ -76,7 +79,13 @@ export function BranchesPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
         <PanelEmpty>{filtering ? 'No branches match.' : 'No branches found.'}</PanelEmpty>
       ) : (
         branches.map((b) => (
-          <BranchRow key={b.name} branch={b} repo={repo} current={b.name === current} />
+          <BranchRow
+            key={b.name}
+            branch={b}
+            repo={repo}
+            current={b.name === current}
+            webBase={webBase}
+          />
         ))
       )}
     </TabPanel>
@@ -87,10 +96,13 @@ function BranchRow({
   branch,
   repo,
   current,
+  webBase,
 }: {
   branch: BranchInfo
   repo: RepoRef
   current: boolean
+  /** The repo's forge URL, or null when it has none this app may open. */
+  webBase: string | null
 }) {
   const { ahead, behind } = branch
 
@@ -109,15 +121,33 @@ function BranchRow({
             <Cloud className="size-3 text-adaptive-400" />
           </span>
         )}
-        <span
-          className={cn(
-            'truncate font-mono text-[11.5px]',
-            current ? 'font-semibold text-primary-600' : 'text-adaptive-800'
-          )}
-          title={branch.subject ? `${branch.name} — ${branch.subject}` : branch.name}
-        >
-          {branch.name}
-        </span>
+        {/* Opens the branch on the forge when there is one to open. Plain text
+            otherwise — a link that silently does nothing is worse than none. */}
+        {branchUrl(webBase, branch.name) ? (
+          <button
+            type="button"
+            className={cn(
+              'truncate text-left font-mono text-[11.5px] hover:underline',
+              current ? 'font-semibold text-primary-600' : 'text-adaptive-800'
+            )}
+            title={`Open ${branch.name} on ${forgeHost(webBase)}${
+              branch.subject ? ` — ${branch.subject}` : ''
+            }`}
+            onClick={() => openUrl(branchUrl(webBase, branch.name)!)}
+          >
+            {branch.name}
+          </button>
+        ) : (
+          <span
+            className={cn(
+              'truncate font-mono text-[11.5px]',
+              current ? 'font-semibold text-primary-600' : 'text-adaptive-800'
+            )}
+            title={branch.subject ? `${branch.name} — ${branch.subject}` : branch.name}
+          >
+            {branch.name}
+          </span>
+        )}
       </div>
 
       {/* Drift against its own upstream, which is a different question from the
