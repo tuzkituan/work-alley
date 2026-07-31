@@ -151,6 +151,24 @@ export function SettingsPage() {
             />
           </SettingRow>
           <SettingRow
+            label="Package manager"
+            hint="Used when a repo does not say. A lockfile or a packageManager field always wins — running npm in a pnpm repo would rewrite its lockfile."
+          >
+            <Segmented
+              value={cfg?.preferredPackageManager ?? 'auto'}
+              onChange={(v) =>
+                save.mutate({ preferredPackageManager: v === 'auto' ? null : v })
+              }
+              options={[
+                { value: 'auto', label: 'Auto', title: 'Whichever is installed, fastest first' },
+                { value: 'bun', label: 'bun' },
+                { value: 'pnpm', label: 'pnpm' },
+                { value: 'yarn', label: 'yarn' },
+                { value: 'npm', label: 'npm' },
+              ]}
+            />
+          </SettingRow>
+          <SettingRow
             label="Background fetch"
             hint="Ahead/behind counts come from local refs, so without this they drift the longer a workspace stays open."
           >

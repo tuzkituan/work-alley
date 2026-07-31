@@ -157,11 +157,16 @@ interface UiState {
   /** Repo whose detail page replaces the list, or null for the list. */
   detailRepoId: RepoId | null
   /**
-   * Which detail tab is open, remembered across repos and restarts.
+   * Which detail tab is open. Reset to the first one every time a repo is opened.
    *
-   * Persisted because the tab is a working preference, not a property of a repo:
-   * someone reviewing PRs opens repo after repo wanting the PR tab every time, and
-   * resetting to the default on each one is a click per repo.
+   * It used to be a persisted preference, on the theory that someone reviewing
+   * PRs wants that tab on every repo in turn. In practice the opposite reads as a
+   * bug: opening a repo and landing on Packages — a network call for a question
+   * you did not ask, about a repo you have not looked at yet — is not what
+   * "open this repo" means. Changes is what it means, and it is free.
+   *
+   * Not persisted, because nothing survives to read it: `detailRepoId` is not
+   * persisted either, so a launch never starts on a detail page.
    */
   detailTab: DetailTab
   /**
@@ -268,7 +273,6 @@ export function migrateUiState(persisted: unknown) {
     view?: unknown
     expandedCategory?: unknown
     termFontSize?: unknown
-    detailTab?: unknown
     detailHeaderCollapsed?: unknown
     allRepos?: unknown
     uiFont?: unknown
@@ -291,10 +295,6 @@ export function migrateUiState(persisted: unknown) {
       typeof p.termFontSize === 'number' && p.termFontSize >= 8 && p.termFontSize <= 20
         ? p.termFontSize
         : 12,
-    // Validated against the list rather than accepted as any string: a tab removed
-    // in a later build would otherwise leave the page with no TabsContent
-    // matching, and so blank.
-    detailTab: DETAIL_TABS.includes(p.detailTab as DetailTab) ? (p.detailTab as DetailTab) : 'changes',
     detailHeaderCollapsed: p.detailHeaderCollapsed === true,
     // Validated against the tables, exactly like `skin`: an id from a build that
     // shipped a family this one does not lands on the default rather than on a
@@ -382,7 +382,14 @@ export const useUiStore = create<UiState>()(
       // pane followed, but scope is a separate field and only `setActiveRepo` was
       // updating it — so opening a repo left the pane on whatever scope it was on,
       // showing another repo's runs beside this one's detail page.
-      openDetail: (id) => set({ detailRepoId: id, activeRepoId: id, outputScope: id }),
+      openDetail: (id) =>
+        set({
+          detailRepoId: id,
+          activeRepoId: id,
+          outputScope: id,
+          // Every repo opens on Changes. See the field.
+          detailTab: DETAIL_TABS[0],
+        }),
       closeDetail: () => set({ detailRepoId: null }),
       setDetailTab: (detailTab) => set({ detailTab }),
       toggleDetailHeader: () =>
@@ -412,14 +419,13 @@ export const useUiStore = create<UiState>()(
         termFontSize: s.termFontSize,
         uiFont: s.uiFont,
         monoFont: s.monoFont,
-        detailTab: s.detailTab,
         detailHeaderCollapsed: s.detailHeaderCollapsed,
       }),
       // `partialize` decides what is *written*, not what is read: a blob saved by
       // an older build is still merged over the defaults on load, keys and all. So
       // the version is bumped whenever the shape changes, and `migrate` rebuilds the
       // state from scratch rather than trusting whatever was stored.
-      version: 10,
+      version: 11,
       migrate: migrateUiState,
     }
   )

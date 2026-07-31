@@ -31,6 +31,14 @@ pub struct Config {
     /// so a config written before this field existed still loads.
     #[serde(default = "default_auto_fetch_minutes")]
     pub auto_fetch_minutes: u64,
+    /// Which Node package manager to use when a repo does not say.
+    ///
+    /// `None` — the default — means "whichever is installed", preferring the
+    /// fastest. A repo with a lockfile or a `packageManager` field is unaffected
+    /// either way: this is the tie-break for a repo that states nothing, not an
+    /// override of one that does.
+    #[serde(default)]
+    pub preferred_package_manager: Option<String>,
     /// Open the folder that was open when the app last quit, instead of the picker.
     ///
     /// On by default. The cost is real — launching goes straight into a scan of the
@@ -87,6 +95,7 @@ impl Config {
             port_overrides: BTreeMap::new(),
             max_log_lines_per_run: 5_000,
             auto_fetch_minutes: default_auto_fetch_minutes(),
+            preferred_package_manager: None,
             reopen_last_workspace: default_reopen_last_workspace(),
             recent_roots: Vec::new(),
             onboarding_done_unix: None,
@@ -159,6 +168,8 @@ pub struct ConfigPatch {
     pub max_log_lines_per_run: Option<usize>,
     pub auto_fetch_minutes: Option<u64>,
     pub reopen_last_workspace: Option<bool>,
+    /// `Some(None)` clears the choice, i.e. back to auto-detect.
+    pub preferred_package_manager: Option<Option<String>>,
     pub dev_command_overrides: Option<BTreeMap<String, Vec<String>>>,
     pub port_overrides: Option<BTreeMap<String, u16>>,
 }
@@ -203,6 +214,14 @@ impl ConfigPatch {
         // sets one number would otherwise silently turn this off.
         if let Some(v) = self.reopen_last_workspace {
             c.reopen_last_workspace = v;
+        }
+        if let Some(v) = self.preferred_package_manager {
+            // Only the four this app knows how to drive. Anything else would reach
+            // `runner` as a program name and fail as "not found" a long way from
+            // where it was chosen.
+            c.preferred_package_manager = v.filter(|m| {
+                matches!(m.as_str(), "bun" | "pnpm" | "yarn" | "npm")
+            });
         }
         if let Some(v) = self.dev_command_overrides {
             c.dev_command_overrides = v;
@@ -322,6 +341,50 @@ mod tests {
         }
         .apply(&mut c);
         assert!(!c.reopen_last_workspace);
+    }
+
+    #[test]
+    fn the_package_manager_choice_is_a_tie_break_and_can_be_cleared() {
+        let mut c = Config::defaults(PathBuf::from("/tmp/ws"));
+        // Auto by default: the machine decides until someone says otherwise.
+        assert_eq!(c.preferred_package_manager, None);
+
+        ConfigPatch {
+            preferred_package_manager: Some(Some("pnpm".into())),
+            ..Default::default()
+        }
+        .apply(&mut c);
+        assert_eq!(c.preferred_package_manager.as_deref(), Some("pnpm"));
+
+        // An unrelated patch leaves it alone — the `Option<Option<_>>` exists so
+        // "not mentioned" and "cleared" are different sentences.
+        ConfigPatch {
+            stale_days: Some(30),
+            ..Default::default()
+        }
+        .apply(&mut c);
+        assert_eq!(c.preferred_package_manager.as_deref(), Some("pnpm"));
+
+        // Something this app cannot drive is refused rather than stored, or it
+        // would surface as "command not found" a long way from Settings.
+        ConfigPatch {
+            preferred_package_manager: Some(Some("deno".into())),
+            ..Default::default()
+        }
+        .apply(&mut c);
+        assert_eq!(c.preferred_package_manager, None);
+
+        ConfigPatch {
+            preferred_package_manager: Some(Some("bun".into())),
+            ..Default::default()
+        }
+        .apply(&mut c);
+        ConfigPatch {
+            preferred_package_manager: Some(None),
+            ..Default::default()
+        }
+        .apply(&mut c);
+        assert_eq!(c.preferred_package_manager, None, "back to auto");
     }
 
     #[test]

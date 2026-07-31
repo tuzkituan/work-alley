@@ -6,6 +6,7 @@ import { KindTag, MonoChip, StatePill, StatusDot } from '@/components/wa/primiti
 import { cn } from '@/lib/utils'
 import {
   derive,
+  installTarget,
   lastFetched,
   runState,
   runTarget,
@@ -51,6 +52,8 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
   const d = derive(status, trackedLatest)
   // This repo's own way of running, not a hardcoded `dev` script.
   const target = runTarget(status)
+  // Run cannot work before an install, so the button offers the thing that can.
+  const install = installTarget(status)
   const fetched = lastFetched(status)
   const state = runState(status)
   const running = status.tasks
@@ -212,6 +215,17 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
         {/* "Run", not "Start cargo run": the task name is already the label of the
             stat directly above, and repeating it here cost the width Build now
             uses. The full name stays in the tooltip. */}
+        {install ? (
+          <Button
+            variant="waOutline"
+            size="waSm"
+            className="shrink-0 text-sev-warn"
+            title="Dependencies are not installed — install them"
+            onClick={() => run(install.spec(repo))}
+          >
+            Install
+          </Button>
+        ) : (
         <Button
           variant={target.up ? 'waDanger' : 'waOutline'}
           size="waSm"
@@ -235,6 +249,7 @@ export const RepoCard = memo(function RepoCard({ repo }: { repo: RepoRef }) {
         >
           {target.up ? 'Stop' : 'Run'}
         </Button>
+        )}
         <BuildMenu repo={repo} status={status} size="waSm" />
 
         <span

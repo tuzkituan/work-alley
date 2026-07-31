@@ -64,7 +64,9 @@ describe('ui store — skin', () => {
     expect(out.theme).toBe('dark')
     expect(out.view).toBe('cards')
     expect(out.termFontSize).toBe(14)
-    expect(out.detailTab).toBe('commits')
+    // `detailTab` is deliberately *not* carried across: every repo now opens on
+    // Changes, so a stored tab is a value nothing would ever read.
+    expect(out).not.toHaveProperty('detailTab')
   })
 
   it('rejects a skin that is not one, rather than storing it', () => {
@@ -102,9 +104,11 @@ describe('ui store — fonts', () => {
     }
   })
 
-  it('carries a whole v9 payload across the v10 bump', () => {
-    // Every key v9 wrote. `migrateUiState` drops what it does not return, so a
-    // missing branch here reads to the user as "the app forgot my settings".
+  it('carries a whole older payload across the version bumps', () => {
+    // Every key still worth keeping. `migrateUiState` drops what it does not
+    // return, so a missing branch reads to the user as "the app forgot my
+    // settings" — `detailTab` is the one deliberate omission, since every repo
+    // now opens on Changes.
     const v9 = {
       theme: 'dark',
       skin: 'adwaita',
@@ -112,7 +116,6 @@ describe('ui store — fonts', () => {
       expandedCategory: 'fe',
       allRepos: true,
       termFontSize: 15,
-      detailTab: 'branches',
       detailHeaderCollapsed: true,
     }
     const out = migrate(v9)
@@ -125,6 +128,14 @@ describe('ui store — fonts', () => {
 })
 
 describe('ui store — a remembered folder belongs to a workspace', () => {
+  it('opens every repo on the first tab', () => {
+    // Landing on Packages because that is where you were last is a network call
+    // for a question you did not ask, about a repo you have not looked at yet.
+    useUiStore.getState().setDetailTab('prs')
+    useUiStore.getState().openDetail('fe/web')
+    expect(useUiStore.getState().detailTab).toBe('changes')
+  })
+
   it('stamps a folder selection with the open workspace', () => {
     useUiStore.getState().setWorkspaceRoot('/home/me/work')
     useUiStore.getState().setCategory('fe')

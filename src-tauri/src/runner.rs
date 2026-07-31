@@ -138,6 +138,16 @@ pub fn argv(repo: &Path, task: &RunTask, tc: &Toolchain) -> Result<Vec<String>, 
     resolve(repo, &task.via, tc)
 }
 
+/// `argv`, with the package manager named rather than detected.
+pub fn argv_with(
+    repo: &Path,
+    task: &RunTask,
+    tc: &Toolchain,
+    manager: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    resolve_with(repo, &task.via, tc, manager)
+}
+
 /// How each manager spells "run a binary from node_modules".
 ///
 /// `npm` is the one that needs `exec --`; the others take the binary name directly.
@@ -159,19 +169,44 @@ fn pm_exec_prefix(tool: &str) -> Vec<String> {
 /// two can never disagree about how a package manager or a container runtime is
 /// invoked.
 pub fn resolve(repo: &Path, via: &RunVia, tc: &Toolchain) -> Result<Vec<String>, AppError> {
+    resolve_with(repo, via, tc, None)
+}
+
+/// `resolve`, with the package manager named rather than detected.
+///
+/// `manager` only reaches the three recipes that go through one; a Cargo or
+/// Gradle task ignores it, because "run this with npm" is not a thing to say
+/// about `cargo run`. It is checked against `pkg::MANAGERS` by the caller, so it
+/// can only ever select one of the four — it never becomes a program name.
+pub fn resolve_with(
+    repo: &Path,
+    via: &RunVia,
+    tc: &Toolchain,
+    manager: Option<&str>,
+) -> Result<Vec<String>, AppError> {
+    // The named manager, else whatever the repo's own files imply.
+    let pm = |repo: &Path| -> Option<String> {
+        match manager {
+            Some(m) => Some(m.to_string()),
+            None => {
+                let fallback = tc.preferred_package_manager().unwrap_or("npm");
+                crate::pkg::package_manager(repo, fallback)
+            }
+        }
+    };
+
     match via {
         RunVia::Script(name) => {
-            let fallback = tc.preferred_package_manager().unwrap_or("npm");
-            let (tool, args) = crate::pkg::task_command(repo, name, fallback)
+            let tool = pm(repo)
                 .ok_or_else(|| AppError::Invalid("no package.json — nothing to run".into()))?;
+            let args = crate::pkg::script_args(&tool, name);
             let bin = tc.require(&tool)?;
             let mut argv = vec![bin.display().to_string()];
             argv.extend(args);
             Ok(argv)
         }
         RunVia::PmExec(args) => {
-            let fallback = tc.preferred_package_manager().unwrap_or("npm");
-            let tool = crate::pkg::package_manager(repo, fallback)
+            let tool = pm(repo)
                 .ok_or_else(|| AppError::Invalid("no package.json — nothing to run".into()))?;
             let bin = tc.require(&tool)?;
             let mut argv = vec![bin.display().to_string()];
@@ -200,8 +235,7 @@ pub fn resolve(repo: &Path, via: &RunVia, tc: &Toolchain) -> Result<Vec<String>,
             Ok(argv)
         }
         RunVia::PmArgs(extra) => {
-            let fallback = tc.preferred_package_manager().unwrap_or("npm");
-            let tool = crate::pkg::package_manager(repo, fallback)
+            let tool = pm(repo)
                 .ok_or_else(|| AppError::Invalid("no package.json — nothing to run".into()))?;
             let bin = tc.require(&tool)?;
             let mut argv = vec![bin.display().to_string()];

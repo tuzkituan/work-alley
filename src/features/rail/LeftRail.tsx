@@ -13,7 +13,7 @@ import {
   Wrench,
   X,
 } from 'lucide-react'
-import { KvRow, SectionLabel, StatusDot } from '@/components/wa/primitives'
+import { SectionLabel, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
 import {
   repoId,
@@ -34,6 +34,7 @@ import { useUiStore, type Page } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
 import { api } from '@/ipc/commands'
 import { CiSection } from './CiSection'
+import { ToolchainCard } from './ToolchainCard'
 
 /**
  * Three zones: a header, a scrolling middle, and a pinned footer.
@@ -562,28 +563,3 @@ function AllReposButton({ count }: { count: number }) {
   )
 }
 
-function ToolchainCard({ boot }: { boot: Bootstrap | undefined }) {
-  const tools = boot?.tools ?? []
-  const find = (n: string) => tools.find((t) => t.name === n)
-  const node = find('node')
-  const bun = find('bun')
-  const docker = find('docker')
-  const podman = find('podman')
-  // Whichever container runtime this machine has; neither is the special case.
-  const runtime = docker?.path ? docker : podman
-  // The package manager label follows what is actually installed.
-  const pm = bun?.path ? bun : find('npm')
-
-  return (
-    <div className="flex flex-none flex-col gap-[7px] rounded-lg border border-adaptive-200 bg-background p-2.5">
-      <SectionLabel>node · {pm?.name ?? 'npm'}</SectionLabel>
-      <KvRow label="node" value={node?.version ?? '—'} />
-      <KvRow label={pm?.name ?? 'npm'} value={pm?.version ?? '—'} />
-      <KvRow
-        label={runtime?.name ?? 'docker'}
-        value={runtime?.path ? (runtime.version ?? 'present') : 'not found'}
-        tone={runtime?.path ? 'ok' : 'idle'}
-      />
-    </div>
-  )
-}

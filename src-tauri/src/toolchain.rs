@@ -45,6 +45,12 @@ pub struct Toolchain {
     pub paths: BTreeMap<String, PathBuf>,
     pub versions: BTreeMap<String, String>,
     pub warnings: Vec<String>,
+    /// The package manager the user picked in Settings, if any.
+    ///
+    /// Stamped on by `AppState::toolchain()` rather than found by the probe: it is
+    /// a preference, not a fact about the machine, and this is the one place every
+    /// caller already has in hand.
+    pub preferred_pm: Option<String>,
     /// PATH for child processes: the directories of every tool we resolved,
     /// prepended to the inherited PATH.
     ///
@@ -72,10 +78,23 @@ impl Toolchain {
 
     /// The Node package manager to use when a repo states no preference.
     ///
-    /// Order is "fastest that is actually installed". Only consulted when a repo
-    /// has neither a `packageManager` field nor a lockfile, so it never overrides
-    /// what a repo asked for.
-    pub fn preferred_package_manager(&self) -> Option<&'static str> {
+    /// A choice from Settings first, then "fastest that is actually installed".
+    ///
+    /// Only ever consulted when a repo has neither a `packageManager` field nor a
+    /// lockfile, so it does not override what a repo asked for — and that is not a
+    /// limitation to lift. `npm install` in a pnpm workspace rewrites the lockfile
+    /// and re-resolves the tree; a preference is for the ambiguous case, not a
+    /// licence to overrule a repo about its own tooling.
+    ///
+    /// A choice that is not installed is ignored rather than honoured into a
+    /// "command not found" — picking bun on a machine without bun should not stop
+    /// scripts running.
+    pub fn preferred_package_manager(&self) -> Option<&str> {
+        if let Some(p) = self.preferred_pm.as_deref() {
+            if self.has(p) {
+                return Some(p);
+            }
+        }
         ["bun", "pnpm", "yarn", "npm"]
             .into_iter()
             .find(|m| self.has(m))
@@ -343,6 +362,45 @@ pub(crate) fn parse_version(name: &str) -> Vec<u32> {
 }
 
 #[cfg(test)]
+mod choice_tests {
+    use super::*;
+
+    fn tc(installed: &[&str], chosen: Option<&str>) -> Toolchain {
+        Toolchain {
+            paths: installed
+                .iter()
+                .map(|t| (t.to_string(), PathBuf::from(format!("/usr/bin/{t}"))))
+                .collect(),
+            preferred_pm: chosen.map(str::to_string),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn the_choice_wins_over_the_default_order() {
+        // npm last in the automatic order, and picked anyway.
+        let t = tc(&["bun", "pnpm", "npm"], Some("npm"));
+        assert_eq!(t.preferred_package_manager(), Some("npm"));
+    }
+
+    #[test]
+    fn a_choice_that_is_not_installed_falls_back_rather_than_failing() {
+        // Choosing bun on a machine without bun must not stop scripts running —
+        // it would surface as "command not found" with no hint of where the name
+        // came from.
+        let t = tc(&["yarn", "npm"], Some("bun"));
+        assert_eq!(t.preferred_package_manager(), Some("yarn"));
+    }
+
+    #[test]
+    fn no_choice_keeps_the_fastest_installed() {
+        assert_eq!(tc(&["yarn", "npm"], None).preferred_package_manager(), Some("yarn"));
+        assert_eq!(tc(&["npm"], None).preferred_package_manager(), Some("npm"));
+        assert_eq!(tc(&[], None).preferred_package_manager(), None);
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::parse_version;
 
@@ -417,8 +475,34 @@ pub const EDITORS: [(&str, &str); 11] = [
     ("nvim", "Neovim"),
 ];
 
+/// Terminal-based coding agents, in the order they are offered.
+///
+/// Separate from `EDITORS` because they are launched differently and that is the
+/// whole distinction: an editor is spawned detached and takes the window from
+/// there, while these are TUIs that need a pty — started detached they would exit
+/// instantly with no tty, and started in the output pane they would have nothing
+/// to draw on.
+const AGENTS: &[(&str, &str)] = &[
+    ("claude", "Claude Code"),
+    ("codex", "Codex"),
+    ("opencode", "opencode"),
+    ("gemini", "Gemini CLI"),
+    ("aider", "Aider"),
+    ("cursor-agent", "Cursor CLI"),
+];
+
+/// Resolved coding agents. Same search as `detect_editors`, since several of
+/// these install into the GUI directories rather than onto a login shell's PATH.
+pub fn detect_agents(path_env: &str) -> Vec<crate::model::EditorInfo> {
+    detect_from(path_env, AGENTS)
+}
+
 /// Resolved editors, in EDITORS order so the common ones come first.
 pub fn detect_editors(path_env: &str) -> Vec<crate::model::EditorInfo> {
+    detect_from(path_env, &EDITORS)
+}
+
+fn detect_from(path_env: &str, list: &[(&str, &str)]) -> Vec<crate::model::EditorInfo> {
     // Search the augmented PATH, plus the places GUI installers use that are often
     // missing from a login shell's PATH.
     let mut dirs: Vec<PathBuf> = std::env::split_paths(path_env).collect();
@@ -428,8 +512,7 @@ pub fn detect_editors(path_env: &str) -> Vec<crate::model::EditorInfo> {
         }
     }
 
-    EDITORS
-        .iter()
+    list.iter()
         .filter_map(|(bin, label)| {
             // On Windows most of these are `code.cmd` or `<name>64.exe`, so the
             // extension search is what finds them at all.

@@ -283,6 +283,28 @@ export function runTarget(status: RepoStatus | undefined) {
 }
 
 /**
+ * Whether the Run button should offer an install instead.
+ *
+ * A repo that runs `bun run dev` with no `node_modules` does not fail at some
+ * point during startup — it fails immediately, with a message about a missing
+ * script or a missing binary that says nothing about the actual problem. The
+ * install is the run you have to do first, so the button says so.
+ *
+ * The chore id is the one `chores.rs` already registers for the Packages group,
+ * so the manager override and the confirm gate apply to it like anything else.
+ */
+export function installTarget(
+  status: RepoStatus | undefined
+): { spec: (ref: RepoRef) => ActionSpec } | null {
+  if (!status?.needsInstall) return null
+  // No manager named here. The chore resolves one at run time — from the repo,
+  // the Settings default, or a per-repo override — and a label that guessed would
+  // be wrong exactly when it matters. The confirm dialog spells out the argv, and
+  // lets you change it.
+  return { spec: (ref) => ({ kind: 'runChore', ref, chore: 'packages.install' }) }
+}
+
+/**
  * What a Build button acts on, or null when this repo has no build step.
  *
  * Returns the spec rather than its parts: a declared `build` script and an

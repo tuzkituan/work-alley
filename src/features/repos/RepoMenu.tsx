@@ -38,6 +38,7 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
   // Served from the bootstrap cache, so this costs nothing per row.
   const { data: boot } = useQuery({ queryKey: keys.bootstrap, enabled: false })
   const editors = (boot as { editors?: { id: string; label: string }[] } | undefined)?.editors ?? []
+  const agents = (boot as { agents?: { id: string; label: string }[] } | undefined)?.agents ?? []
 
   const target = runTarget(status)
   const dev = target.server
@@ -80,7 +81,7 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
         {/* A submenu rather than one item per editor: a machine with VS Code, Cursor,
             Zed and a JetBrains IDE installed put four entries above everything
             else, pushing the git actions off the first screen of the menu. */}
-        {editors.length > 0 && (
+        {(editors.length > 0 || agents.length > 0) && (
           <>
             <DropdownMenuSeparator />
             <DropdownMenuSub>
@@ -94,6 +95,25 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
                     {e.label}
                   </DropdownMenuItem>
                 ))}
+                {/* Under a heading, because these behave differently: an editor
+                    takes over its own window, while an agent opens a terminal tab
+                    in the pane below and stays there. */}
+                {agents.length > 0 && (
+                  <>
+                    {editors.length > 0 && <DropdownMenuSeparator />}
+                    <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
+                      Agents
+                    </DropdownMenuLabel>
+                    {agents.map((a) => (
+                      <DropdownMenuItem
+                        key={a.id}
+                        onClick={() => run({ kind: 'openAgent', ref: repo, agent: a.id })}
+                      >
+                        {a.label}
+                      </DropdownMenuItem>
+                    ))}
+                  </>
+                )}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
           </>

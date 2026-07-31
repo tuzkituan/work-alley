@@ -98,7 +98,9 @@ async fn build_bootstrap(state: &Arc<AppState>) -> AppResult<Bootstrap> {
         repos,
         config: cfg,
         tools: tc.to_infos(),
+        package_manager: tc.preferred_package_manager().map(str::to_string),
         editors: crate::toolchain::detect_editors(&tc.path_env),
+        agents: crate::toolchain::detect_agents(&tc.path_env),
         scripts: crate::scripts::discover(&root),
         tracked_package: tracked,
         home_dir: dirs_home(),
@@ -1693,6 +1695,53 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
+        ActionSpec::OpenAgent {
+            repo,
+            agent,
+            external,
+            size,
+        } => {
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+            // The same closed-set gate the editors hold: the id is matched against
+            // what the probe found, and the *resolved path* is what runs. A name
+            // off the wire never becomes a program to execute.
+            let found = crate::toolchain::detect_agents(&tc.path_env)
+                .into_iter()
+                .find(|a| a.id == agent)
+                .ok_or_else(|| AppError::ToolMissing(agent.clone()))?;
+
+            Ok(Built {
+                // A pty, not a detached spawn: these are TUIs and would exit
+                // immediately without a tty. `termScript` rather than a new kind so
+                // it lands in the terminal dock the same way everything else does.
+                kind: if external {
+                    "openInTerminal".into()
+                } else {
+                    "termScript".into()
+                },
+                title: format!("{} — {}", found.label, repo.key()),
+                description: format!("Starts {} in {}.", found.label, cwd.display()),
+                // No arguments: every one of these takes the working directory as
+                // its subject, and the ones that accept a prompt should be given it
+                // by typing, not by a dialog.
+                argv: vec![found.path],
+                preview: None,
+                cwd,
+                env: vec![],
+                // It is an agent that can write to the repo, but so is the shell
+                // beside it, and gating a terminal behind a dialog per launch is
+                // the friction that stops people reading dialogs at all.
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                task: None,
+                read_only: true,
+                size,
+            })
+        }
+
         ActionSpec::DockerPs => {
             let runtime = tc
                 .container_runtime()
@@ -2353,7 +2402,11 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
-        ActionSpec::RunScript { repo, script } => {
+        ActionSpec::RunScript {
+            repo,
+            script,
+            manager,
+        } => {
             let cwd = crate::paths::resolve_repo(&root, &repo)?;
             let key = repo.key();
 
@@ -2366,8 +2419,17 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             }
 
             let fallback = tc.preferred_package_manager().unwrap_or("npm");
-            let (tool, args) = crate::pkg::task_command(&cwd, &script, fallback)
-                .ok_or_else(|| AppError::Invalid(format!("{key} has no package.json")))?;
+            let (tool, args) = match manager {
+                // A named manager is checked against the four this app drives, so
+                // the value can only ever select one of them — it is never a
+                // program name reaching argv.
+                Some(m) if crate::pkg::MANAGERS.contains(&m.as_str()) => {
+                    (m.clone(), crate::pkg::script_args(&m, &script))
+                }
+                Some(m) => return Err(AppError::Invalid(format!("not a package manager: {m}"))),
+                None => crate::pkg::task_command(&cwd, &script, fallback)
+                    .ok_or_else(|| AppError::Invalid(format!("{key} has no package.json")))?,
+            };
             let bin = tc.require(&tool)?;
             let mut argv = vec![bin.display().to_string()];
             argv.extend(args);
@@ -2466,7 +2528,11 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
-        ActionSpec::RunChore { repo, chore } => {
+        ActionSpec::RunChore {
+            repo,
+            chore,
+            manager,
+        } => {
             let cwd = crate::paths::resolve_repo(&root, &repo)?;
             let key = repo.key();
 
@@ -2475,7 +2541,14 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             let spec = crate::chores::find(&cwd, &chore)
                 .ok_or_else(|| AppError::Invalid(format!("{key} has no \"{chore}\" command")))?;
 
-            let argv = crate::runner::resolve(&cwd, &spec.via, &tc)?;
+            // Only the recipes that go through a package manager notice this; a
+            // Gradle or CocoaPods chore resolves exactly as before.
+            let m = match manager.as_deref() {
+                Some(m) if crate::pkg::MANAGERS.contains(&m) => Some(m),
+                Some(m) => return Err(AppError::Invalid(format!("not a package manager: {m}"))),
+                None => None,
+            };
+            let argv = crate::runner::resolve_with(&cwd, &spec.via, &tc, m)?;
 
             // A subdirectory from the recipe, not from the caller — `pod install`
             // only works in ios/ and a Gradle task only in android/. Checked rather
@@ -2765,7 +2838,11 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
-        ActionSpec::DevStart { repo, task } => {
+        ActionSpec::DevStart {
+            repo,
+            task,
+            manager,
+        } => {
             let cwd = crate::paths::resolve_repo(&root, &repo)?;
             let key = repo.key();
 
@@ -2795,6 +2872,10 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 return Err(AppError::DevAlreadyRunning(tkey));
             }
 
+            // A saved override is the most specific answer there is, so it wins
+            // over a manager picked for this launch — that picker is about which
+            // manager runs the *detected* command, and an override replaced the
+            // command entirely.
             let argv = match cfg.dev_command_overrides.get(&tkey) {
                 Some(v) if !v.is_empty() => {
                     let mut argv = v.clone();
@@ -2804,7 +2885,16 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                     }
                     argv
                 }
-                _ => crate::runner::argv(&cwd, spec, &tc)?,
+                _ => {
+                    let m = match manager.as_deref() {
+                        Some(m) if crate::pkg::MANAGERS.contains(&m) => Some(m),
+                        Some(m) => {
+                            return Err(AppError::Invalid(format!("not a package manager: {m}")))
+                        }
+                        None => None,
+                    };
+                    crate::runner::argv_with(&cwd, spec, &tc, m)?
+                }
             };
 
             let mut warnings = Vec::new();

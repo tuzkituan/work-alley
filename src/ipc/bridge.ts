@@ -9,6 +9,7 @@ import { useScanStore } from '@/stores/scan-store'
 import { useRunStore } from '@/stores/run-store'
 import { useTerminalStore } from '@/stores/terminal-store'
 import { useCiStore } from '@/stores/ci-store'
+import { useManagerStore } from '@/stores/manager-store'
 import { useUiStore } from '@/stores/ui-store'
 import { keys } from '@/queries/keys'
 import { staleKeysFor } from '@/queries/invalidate'
@@ -242,6 +243,7 @@ async function wire(qc: QueryClient) {
     useUiStore.getState().closeDetail()
     // The CI watch list is a set of repos in the folder being left.
     useCiStore.getState().reset()
+    useManagerStore.getState().reset()
     void qc.invalidateQueries()
   })
 

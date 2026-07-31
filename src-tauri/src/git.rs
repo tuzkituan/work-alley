@@ -407,6 +407,18 @@ pub async fn scan_one(
     status.remote_web_base = remote_web_base(&git, &path).await;
 
     status.available_scripts = crate::pkg::available_scripts(&path);
+    // What this repo's own files say — and *only* that. No fallback: the scan has
+    // no business quoting the machine's default as though the repo had asked for
+    // it, and the UI already knows the default from bootstrap.
+    status.package_manager = crate::pkg::declared_manager(&path);
+
+    // Two `is_dir` calls, and they answer the question a failed `bun run dev`
+    // answers thirty seconds later: there is nothing to run yet.
+    status.needs_install = matches!(
+        runnable.first().map(|t| &t.via),
+        Some(crate::runner::RunVia::Script(_))
+    ) && path.join("package.json").is_file()
+        && !path.join("node_modules").is_dir();
     let chore_list = crate::chores::chores(&path);
     status.chores = chore_list.iter().map(|c| c.info()).collect();
     // The declared script wins: a repo that ships a `build` script has already said

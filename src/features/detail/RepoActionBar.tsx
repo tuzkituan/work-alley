@@ -1,12 +1,21 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, GitBranch, Play, Settings2, SquareTerminal } from 'lucide-react'
+import {
+  ChevronDown,
+  GitBranch,
+  PackagePlus,
+  Play,
+  Settings2,
+  SquareTerminal,
+} from 'lucide-react'
 import { openUrl } from '@/lib/open-url'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { keys } from '@/queries/keys'
@@ -14,6 +23,9 @@ import { useRunAction } from '@/hooks/use-action'
 import { CheckoutRepoDialog } from '@/features/actions/CheckoutRepoDialog'
 import { RunCommandDialog } from './RunCommandDialog'
 import { cn } from '@/lib/utils'
+import { installTarget } from '@/domain/severity'
+import { MANAGERS } from '@/domain/types'
+import { useManagerStore } from '@/stores/manager-store'
 import type { useDetailRepo } from './use-detail-repo'
 
 /**
@@ -35,12 +47,37 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
   const run = useRunAction()
   const [checkoutOpen, setCheckoutOpen] = useState(false)
   const [runCmdOpen, setRunCmdOpen] = useState(false)
-  const { repo, status, dev, sb, devUp, target, build, hasStorybook, scripts, choreGroups, ahead } =
-    ctx
+  const {
+    id,
+    repo,
+    status,
+    dev,
+    sb,
+    devUp,
+    target,
+    build,
+    hasStorybook,
+    scripts,
+    choreGroups,
+    ahead,
+  } = ctx
+  const install = installTarget(status)
+  // Shared, because it governs Run and the Build menu too — see `useRunAction`.
+  const manager = useManagerStore((s) => s.byRepo[id] ?? null)
+  const setManager = useManagerStore((s) => s.set)
 
   // From the bootstrap cache, so this costs nothing — the same trick RepoMenu uses.
   const { data: boot } = useQuery({ queryKey: keys.bootstrap, enabled: false })
   const editors = (boot as { editors?: { id: string; label: string }[] } | undefined)?.editors ?? []
+  const agents = (boot as { agents?: { id: string; label: string }[] } | undefined)?.agents ?? []
+  // The repo's own answer, else the machine's — which already honours the
+  // Settings choice. Never a hardcoded name: a chip that says npm while bun runs
+  // is worse than a chip that says nothing.
+  const detected =
+    status?.packageManager ??
+    (boot as { packageManager?: string | null } | undefined)?.packageManager ??
+    null
+
 
   return (
     <div className="flex flex-col gap-1.5 border-t border-adaptive-200 pt-2.5">
@@ -88,6 +125,17 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
           <GitBranch className="size-3" />
           Checkout
         </Button>
+        {install ? (
+          <Button
+            variant="waPrimary"
+            size="waSm"
+            title="Dependencies are not installed — install them"
+            onClick={() => run(install.spec(repo))}
+          >
+            <PackagePlus className="size-3" />
+            Install
+          </Button>
+        ) : (
         <Button
           variant={devUp ? 'waDanger' : 'waOutline'}
           size="waSm"
@@ -112,6 +160,7 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
               it is the number you want while something is up. */}
           {devUp ? `Stop${dev?.port ? ` :${dev.port}` : ''}` : 'Run'}
         </Button>
+        )}
         {/* Beside Run, because it is about Run: what that button executes. */}
         <Button
           variant="waGhost"
@@ -160,7 +209,7 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
             >
               {editors[0]!.label}
             </Button>
-            {editors.length > 1 && (
+            {(editors.length > 1 || agents.length > 0) && (
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -182,6 +231,22 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
                       {e.label}
                     </DropdownMenuItem>
                   ))}
+                  {agents.length > 0 && (
+                    <>
+                      {editors.length > 1 && <DropdownMenuSeparator />}
+                      <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
+                        Agents
+                      </DropdownMenuLabel>
+                      {agents.map((a) => (
+                        <DropdownMenuItem
+                          key={a.id}
+                          onClick={() => run({ kind: 'openAgent', ref: repo, agent: a.id })}
+                        >
+                          {a.label}
+                        </DropdownMenuItem>
+                      ))}
+                    </>
+                  )}
                 </DropdownMenuContent>
               </DropdownMenu>
             )}
@@ -205,13 +270,52 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
       {scripts.length > 0 && (
         <div className="flex flex-wrap items-center gap-1">
           <Play className="size-2.5 flex-none text-adaptive-400" />
+          {/* One picker for the whole strip rather than a chevron per chip: eight
+              scripts would be eight menus, and the manager is a property of the
+              run you are about to do, not of any one script. Defaults to what the
+              repo's own files say, and resets when you leave the page — an
+              override is for "just this once". */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                variant="waGhost"
+                size="waXs"
+                className="font-mono"
+                title={
+                  manager
+                    ? `Running with ${manager}${detected ? ` instead of ${detected}` : ''}. Applies to Run, the scripts here and the package chores.`
+                    : detected
+                      ? `Running with ${detected} — from this repo's files, or your default`
+                      : 'No package manager detected'
+                }
+              >
+                {manager ?? detected ?? 'auto'}
+                {manager && <span className="text-sev-warn">*</span>}
+                <ChevronDown className="size-2.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="start" className="w-52">
+              <DropdownMenuItem onClick={() => setManager(id, null)}>
+                {detected ?? 'auto'}
+                <span className="ml-auto text-[10px] text-adaptive-400">detected</span>
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              {MANAGERS.filter((m) => m !== detected).map((m) => (
+                <DropdownMenuItem key={m} className="font-mono" onClick={() => setManager(id, m)}>
+                  {m}
+                </DropdownMenuItem>
+              ))}
+            </DropdownMenuContent>
+          </DropdownMenu>
           {scripts.map((s) => (
             <Button
               key={s}
               variant="waGhost"
               size="waXs"
               className="font-mono"
-              title={`Run the "${s}" script`}
+              title={`Run the "${s}" script with ${manager ?? detected}`}
+              // The manager is stamped on by `useRunAction`, so every surface
+              // that runs a script agrees without repeating it here.
               onClick={() => run({ kind: 'runScript', ref: repo, script: s })}
             >
               {s}

@@ -3,9 +3,10 @@ import { toast } from 'sonner'
 import { api } from '@/ipc/commands'
 import { IpcError } from '@/ipc/errors'
 import { toolFix } from '@/domain/tool-fix'
+import { useManagerStore } from '@/stores/manager-store'
 import { useRunStore } from '@/stores/run-store'
 import { useUiStore } from '@/stores/ui-store'
-import type { ActionIntent, ActionSpec } from '@/domain/types'
+import { repoId, type ActionIntent, type ActionSpec } from '@/domain/types'
 
 /**
  * The single funnel for every action. No component calls `run_action` directly.
@@ -33,6 +34,8 @@ interface ActionState {
   lastRan: ActionSpec | null
 
   request(spec: ActionSpec): Promise<void>
+  /** Re-prepares the open intent with a different package manager. */
+  useManager(manager: string | null): Promise<void>
   recheck(): Promise<void>
   confirm(typedConfirm?: string): Promise<void>
   dismiss(): void
@@ -59,6 +62,36 @@ export const useActionStore = create<ActionState>()((set, get) => ({
       }
 
       set({ intent, spec, pending: false })
+    } catch (e) {
+      set({ pending: false })
+      reportError(e)
+    }
+  },
+
+  /**
+   * Swaps the package manager on the intent currently being confirmed.
+   *
+   * Here rather than in the components that start these actions, because that is
+   * five places and this is one — and it is the one place where the manager is
+   * actually visible, spelled out in the argv the dialog is asking you to approve.
+   *
+   * Also remembered for the repo, so the next Run or script in it agrees with what
+   * was chosen here rather than reverting to the detected manager.
+   */
+  useManager: async (manager) => {
+    const spec = get().spec
+    if (!spec) return
+    if (spec.kind !== 'runScript' && spec.kind !== 'devStart' && spec.kind !== 'runChore') return
+
+    useManagerStore.getState().set(repoId(spec.ref), manager)
+    const next = { ...spec, manager: manager ?? undefined } as ActionSpec
+
+    set({ pending: true })
+    try {
+      // A fresh intent, not an edited one: argv is resolved in Rust and the whole
+      // point of the gate is that the frontend cannot compose what runs.
+      const intent = await api.prepareAction(next)
+      set({ intent, spec: next, pending: false })
     } catch (e) {
       set({ pending: false })
       reportError(e)
@@ -154,10 +187,29 @@ function reportError(e: unknown) {
 }
 
 /** Convenience: request an action and focus its output. */
+/**
+ * Stamps the repo's chosen package manager onto the specs that go through one.
+ *
+ * Here rather than at each call site because the choice has to hold everywhere:
+ * the scripts strip, the Run button on a row and on a card, the Build menu, the
+ * row menu. A choice honoured by three of those five is worse than not offering
+ * it. A spec that names one already — nothing does today, but the field is on the
+ * wire — is left alone.
+ */
+function withManager(spec: ActionSpec): ActionSpec {
+  if (spec.kind !== 'runScript' && spec.kind !== 'devStart' && spec.kind !== 'runChore') {
+    return spec
+  }
+  if (spec.manager) return spec
+  const manager = useManagerStore.getState().byRepo[repoId(spec.ref)]
+  return manager ? { ...spec, manager } : spec
+}
+
 export function useRunAction() {
   const request = useActionStore((s) => s.request)
   const setActive = useRunStore((s) => s.setActive)
-  return (spec: ActionSpec) => {
+  return (raw: ActionSpec) => {
+    const spec = withManager(raw)
     void request(spec).then(() => {
       const order = useRunStore.getState().order
       const last = order[order.length - 1]

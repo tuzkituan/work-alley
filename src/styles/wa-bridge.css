@@ -347,7 +347,7 @@ body,
     64px
     84px
     96px
-    176px;
+    124px;
 }
 
 /* Not every workspace has a shared package to track, so that column is dropped
@@ -362,7 +362,7 @@ body,
     76px
     64px
     96px
-    176px;
+    124px;
 }
 
 /* Both selectors, and `.wa-no-tracked` explicitly: `.wa-cols.wa-no-tracked` is
@@ -381,7 +381,7 @@ body,
       minmax(70px, 1fr)
       92px
       88px
-      176px;
+      124px;
   }
   .wa-col-optional {
     display: none;
@@ -391,8 +391,12 @@ body,
 /* Narrower still — a half-width window or a side-by-side layout. Dev goes next:
    its state is also on the row's own dot and in the detail pane, whereas the
    actions group is the only way to act on a repo from here, so that track is
-   never dropped. 176px is five 26px icon buttons, Build's chevron and their gaps —
-   the same at every width, because the row actions are icons at every width. */
+   never dropped. 124px is three 26px icon buttons, Build's chevron and their gaps
+   — the same at every width, because the row actions are icons at every width.
+
+   It was five buttons until Pull and Open-in moved to the ⋯ menu: on 113 rows a
+   column of identical download arrows said nothing, and the ones left are the two
+   you press *because* of what the row told you. */
 @container (max-width: 640px) {
   .wa-cols,
   .wa-cols.wa-no-tracked {
@@ -401,7 +405,7 @@ body,
       minmax(120px, 2.6fr)
       minmax(60px, 1fr)
       84px
-      176px;
+      124px;
   }
   .wa-col-dev {
     display: none;
@@ -415,7 +419,7 @@ body,
     grid-template-columns:
       18px
       minmax(90px, 1fr)
-      176px;
+      124px;
   }
   .wa-col-narrow {
     display: none;

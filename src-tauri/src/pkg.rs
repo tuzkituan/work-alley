@@ -216,6 +216,20 @@ pub fn package_manager(repo: &Path, fallback: &str) -> Option<String> {
     if !repo.join("package.json").exists() {
         return None;
     }
+    Some(declared_manager(repo).unwrap_or_else(|| fallback.to_string()))
+}
+
+/// What the repo *itself* says, with no fallback.
+///
+/// Separate from `package_manager` because "this repo declares pnpm" and "this
+/// machine would use bun" are different claims, and only the first belongs on a
+/// scan row: a row that reported a fallback would be quoting a default as though
+/// it were the repo's own answer, and it would go stale the moment the Settings
+/// default changed.
+pub fn declared_manager(repo: &Path) -> Option<String> {
+    if !repo.join("package.json").exists() {
+        return None;
+    }
 
     // `"packageManager": "pnpm@9.1.0"` is the corepack standard and the most
     // explicit statement a repo can make.
@@ -237,7 +251,7 @@ pub fn package_manager(repo: &Path, fallback: &str) -> Option<String> {
         }
     }
 
-    Some(fallback.to_string())
+    None
 }
 
 fn declared_package_manager(m: &Manifest) -> Option<String> {
@@ -329,13 +343,24 @@ const COMMON_SCRIPTS: [&str; 8] = [
 /// The package-manager invocation for a named task.
 pub fn task_command(repo: &Path, task: &str, fallback: &str) -> Option<(String, Vec<String>)> {
     let tool = package_manager(repo, fallback)?;
-    let args = match tool.as_str() {
+    Some((tool.clone(), script_args(&tool, task)))
+}
+
+/// How one manager spells "run this script".
+///
+/// Split out because a caller can now name the manager — running a script with
+/// npm in a repo whose lockfile says pnpm is a legitimate thing to want once —
+/// and that caller needs the same yarn quirk without going through detection.
+pub fn script_args(tool: &str, task: &str) -> Vec<String> {
+    match tool {
         // yarn takes the script name directly; the others need `run`.
         "yarn" => vec![task.to_string()],
         _ => vec!["run".to_string(), task.to_string()],
-    };
-    Some((tool, args))
+    }
 }
+
+/// The managers this app knows how to drive.
+pub const MANAGERS: [&str; 4] = ["bun", "pnpm", "yarn", "npm"];
 
 /// Storybook's port: an explicit `-p` in the script, else its 6006 default.
 pub fn storybook_port(repo: &Path) -> Option<u16> {

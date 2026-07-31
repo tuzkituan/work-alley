@@ -107,6 +107,16 @@ export interface RepoStatus {
   /** One-shot scripts this repo declares — "build", "lint", "format". */
   availableScripts: string[]
   /**
+   * Run would fail: this repo runs a declared script and has no `node_modules`.
+   * Only ever true for repos whose primary task goes through a package manager.
+   */
+  needsInstall: boolean
+  /**
+   * The manager this repo's own files imply — `packageManager`, then the
+   * lockfile, then the machine's preference. Null when there is no package.json.
+   */
+  packageManager: string | null
+  /**
    * One-shot commands this repo's *ecosystems* offer — `flutter pub get`,
    * `cargo clippy`, `./gradlew clean`. The non-JS counterpart of availableScripts.
    */
@@ -346,6 +356,11 @@ export interface Config {
   autoFetchMinutes: number
   /** Open the folder that was open when the app last quit, instead of the picker. */
   reopenLastWorkspace: boolean
+  /**
+   * Which package manager to use when a repo does not say. Null = whichever is
+   * installed. A repo with a lockfile or a `packageManager` field is unaffected.
+   */
+  preferredPackageManager: string | null
 }
 
 /**
@@ -365,6 +380,8 @@ export interface ConfigPatch {
   /** 0 turns background fetching off. */
   autoFetchMinutes?: number
   reopenLastWorkspace?: boolean
+  /** `null` clears the choice, i.e. back to auto. */
+  preferredPackageManager?: string | null
   devCommandOverrides?: Record<string, string[]>
   portOverrides?: Record<string, number>
 }
@@ -403,8 +420,16 @@ export interface Bootstrap {
   repos: RepoRef[]
   config: Config
   tools: ToolInfo[]
+  /**
+   * The package manager a repo that states none will actually get — the Settings
+   * choice when installed, else the fastest that is. Resolved by the backend so
+   * the UI and the runner cannot disagree about what is being run.
+   */
+  packageManager: string | null
   /** Editors found on this machine, for the "open in…" action. */
   editors: EditorInfo[]
+  /** Terminal coding agents — claude, codex, opencode. Opened in a pty. */
+  agents: EditorInfo[]
   scripts: ScriptDescriptor[]
   readiness: Readiness
   /** First-run onboarding was finished, or explicitly skipped. Both count. */
@@ -514,6 +539,14 @@ export interface Workflow {
   /** active / disabled_manually / disabled_inactivity, verbatim. */
   state: string
 }
+
+/**
+ * The Node package managers this app knows how to drive.
+ *
+ * Mirrors `pkg::MANAGERS` in Rust, which is what actually validates a choice —
+ * this is only the order they are offered in.
+ */
+export const MANAGERS = ['bun', 'pnpm', 'yarn', 'npm'] as const
 
 /** One `workflow_dispatch` input, as the form needs it. */
 export interface WorkflowInput {
@@ -839,13 +872,16 @@ export type ActionSpec =
   | { kind: 'pullMany'; refs: RepoRef[] }
   | { kind: 'fetchAll'; ref: RepoRef | null }
   | { kind: 'fetchMany'; refs: RepoRef[] }
-  | { kind: 'devStart'; ref: RepoRef; task?: string }
+  | { kind: 'devStart'; ref: RepoRef; task?: string; manager?: string }
   | { kind: 'devStop'; ref: RepoRef; task?: string }
   | { kind: 'script'; script: string; args: string[] }
-  /** One of the repo's own package.json scripts. Validated against availableScripts. */
-  | { kind: 'runScript'; ref: RepoRef; script: string }
+  /**
+   * One of the repo's own package.json scripts. Validated against
+   * availableScripts; `manager` overrides the detected one for this run only.
+   */
+  | { kind: 'runScript'; ref: RepoRef; script: string; manager?: string }
   /** One of the repo's ecosystem commands. Validated against chores. */
-  | { kind: 'runChore'; ref: RepoRef; chore: string }
+  | { kind: 'runChore'; ref: RepoRef; chore: string; manager?: string }
   | { kind: 'push'; ref: RepoRef; force?: boolean }
   /**
    * The one action carrying free text. Safe because Rust passes argv straight to
@@ -869,6 +905,8 @@ export type ActionSpec =
   /** `branch` omitted means each repo's own default, from origin/HEAD. */
   | { kind: 'checkout'; refs: RepoRef[]; branch?: string; dirty: DirtyPolicy }
   | { kind: 'openInEditor'; ref: RepoRef; editor: string }
+  /** A coding agent on a repo, in the integrated terminal — they are TUIs. */
+  | { kind: 'openAgent'; ref: RepoRef; agent: string; external?: boolean; size?: TermSize }
   | { kind: 'package'; id: string; op: PackageOp; version?: string }
   /**
    * Install one of a repo's declared dependencies. `version` omitted = latest.

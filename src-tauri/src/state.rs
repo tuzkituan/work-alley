@@ -205,8 +205,16 @@ impl AppState {
         *self.config.write().unwrap() = c;
     }
 
+    /// The resolved toolchain, with the user's package-manager choice stamped on.
+    ///
+    /// Stamped here rather than stored on the probe's result because `runner` and
+    /// `deps` resolve a package manager from a `&Toolchain` alone — threading the
+    /// config to each of them would be five signatures changed to carry one
+    /// preference.
     pub fn toolchain(&self) -> Toolchain {
-        self.toolchain.read().unwrap().clone()
+        let mut tc = self.toolchain.read().unwrap().clone();
+        tc.preferred_pm = self.config.read().unwrap().preferred_package_manager.clone();
+        tc
     }
 
     pub fn set_toolchain(&self, tc: Toolchain) {

@@ -1,6 +1,5 @@
 import { memo, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { ArrowDownToLine, Code, Play, Square } from 'lucide-react'
+import { PackagePlus, Play, Square } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Skeleton } from '@/components/ui/skeleton'
 import { KindTag, StatusDot } from '@/components/wa/primitives'
@@ -8,6 +7,7 @@ import { cn } from '@/lib/utils'
 import {
   crashedRunId,
   derive,
+  installTarget,
   lastFetched,
   runState,
   runTarget,
@@ -18,7 +18,6 @@ import { useScanStore } from '@/stores/scan-store'
 import { useRunStore } from '@/stores/run-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
-import { keys } from '@/queries/keys'
 import { busyLabel, useBusy } from '@/hooks/use-busy'
 import { shortPackageName, useTrackedPackage } from '@/hooks/use-tracked-package'
 import { BuildMenu } from './BuildMenu'
@@ -71,16 +70,13 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
   const busy = useBusy(id)
   const run = useRunAction()
   const selectRun = useRunStore((s) => s.setActive)
-  // From the bootstrap cache, so this costs nothing per row — the same trick
-  // RepoMenu uses for the same list.
-  const { data: boot } = useQuery({ queryKey: keys.bootstrap, enabled: false })
-  const editors = (boot as { editors?: { id: string; label: string }[] } | undefined)?.editors ?? []
-
   const d = status ? derive(status, trackedLatest) : null
   // This repo's own way of running — `dev` for one, `cargo run` or `runserver`
   // for the next. Every row used to send the literal 'dev'.
   const target = runTarget(status)
   const [checkoutOpen, setCheckoutOpen] = useState(false)
+  // Run cannot work before an install, so the button offers the thing that can.
+  const install = installTarget(status)
   const fetched = lastFetched(status)
   const state = runState(status)
   const running = status?.tasks ?? []
@@ -260,45 +256,31 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
           carries a native `title` — see the note on the repo name above for why
           these are not Radix tooltips. */}
       <div className="flex items-center justify-end gap-1">
-        <Button
-          variant="waOutline"
-          size="waIcon"
-          className="shrink-0"
-          title="Pull (rebase onto upstream)"
-          aria-label="Pull"
-          onClick={(e) => {
-            e.stopPropagation()
-            run({ kind: 'pull', ref: repo })
-          }}
-        >
-          <ArrowDownToLine className="size-3.5" />
-        </Button>
-        {/* Opening the repo in an editor, in the slot "Show git status" used to
-            hold. Status is one of five read-only inspections and already sits in
-            the menu under Inspect, whereas this is the action you reach for on a
-            row and it had no place on one. First editor only — choosing between
-            several stays behind the menu's "Open in". */}
-        {editors[0] && (
-          <Button
-            variant="waOutline"
-            size="waIcon"
-            className="shrink-0"
-            title={`Open in ${editors[0].label}`}
-            aria-label={`Open in ${editors[0].label}`}
-            onClick={(e) => {
-              e.stopPropagation()
-              run({ kind: 'openInEditor', ref: repo, editor: editors[0]!.id })
-            }}
-          >
-            <Code className="size-3.5" />
-          </Button>
-        )}
+        {/* Pull and Open in used to sit here. They are one click away in the ⋯
+            menu, and on a 113-row list the row's job is to say what is going on —
+            a column of identical download arrows says nothing, and the two that
+            remain are the ones you press *because* of what the row told you. */}
         {/* Disabled rather than hidden when nothing here runs: a library and a docs
             repo legitimately have no dev server, and a button that vanishes per row
             is harder to read down a list than one that greys out.
 
             Icon only. A row of 113 repeats the same two words 226 times, and the
             title carries what the label would have said. */}
+        {install ? (
+          <Button
+            variant="waOutline"
+            size="waIcon"
+            className="shrink-0 text-sev-warn"
+            title="Dependencies are not installed — install them"
+            aria-label="Install dependencies"
+            onClick={(e) => {
+              e.stopPropagation()
+              run(install.spec(repo))
+            }}
+          >
+            <PackagePlus className="size-3.5" />
+          </Button>
+        ) : (
         <Button
           variant={target.up ? 'waDanger' : 'waOutline'}
           size="waIcon"
@@ -324,6 +306,7 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
         >
           {target.up ? <Square className="size-3" /> : <Play className="size-3.5" />}
         </Button>
+        )}
         <BuildMenu repo={repo} status={status} iconOnly />
         <RepoMenu repo={repo} status={status} />
       </div>

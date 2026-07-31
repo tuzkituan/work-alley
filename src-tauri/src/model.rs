@@ -145,6 +145,18 @@ pub struct RepoStatus {
     /// One-shot scripts this repo declares — "build", "lint", "format". Also the
     /// closed set a `runScript` action is validated against.
     pub available_scripts: Vec<String>,
+    /// This repo runs through a package manager and its dependencies are not
+    /// installed, so Run would fail before it started.
+    ///
+    /// Only ever true for a repo whose *primary* task is a declared script: a
+    /// Cargo or Go service does not care whether `node_modules` exists, and a
+    /// repo that happens to carry a package.json beside its Cargo.toml should not
+    /// be told to install anything.
+    pub needs_install: bool,
+    /// The manager this repo *declares* — its `packageManager` field or its
+    /// lockfile. None when it states neither, in which case the machine default
+    /// (`Bootstrap.package_manager`) is what will run, and the UI says so.
+    pub package_manager: Option<String>,
     /// One-shot commands this repo's *ecosystems* offer — `flutter pub get`,
     /// `cargo clippy`, `./gradlew clean`. The closed set a `runChore` action is
     /// validated against, and the non-JS counterpart of `available_scripts`.
@@ -200,6 +212,8 @@ impl RepoStatus {
             runnable: Vec::new(),
             primary_task: None,
             available_scripts: Vec::new(),
+            needs_install: false,
+            package_manager: None,
             chores: Vec::new(),
             primary_build: None,
             remote_web_base: None,
@@ -1004,8 +1018,17 @@ pub struct Bootstrap {
     pub repos: Vec<RepoRef>,
     pub config: crate::config::Config,
     pub tools: Vec<ToolInfo>,
+    /// The package manager a repo that states none will actually get.
+    ///
+    /// Resolved here rather than re-derived in the UI: the rule is the Settings
+    /// choice when it is installed, else the fastest that is, and two copies of
+    /// that would eventually disagree about what is really being run.
+    pub package_manager: Option<String>,
     /// Editors found on this machine, for the "open in…" action.
     pub editors: Vec<EditorInfo>,
+    /// Terminal coding agents found on this machine — claude, codex, opencode.
+    /// Same shape as an editor, but opened in a pty rather than spawned detached.
+    pub agents: Vec<EditorInfo>,
     pub scripts: Vec<ScriptDescriptor>,
     /// The shared package whose version drift is tracked, when this workspace has
     /// one. None hides the column entirely rather than showing an empty one.
@@ -1112,6 +1135,12 @@ pub enum ActionSpec {
         /// Defaults to "dev".
         #[serde(default)]
         task: Option<String>,
+        /// Start it with this manager instead of the detected one.
+        ///
+        /// Only means anything for a task that runs through one — a `cargo run`
+        /// task ignores it. Checked against the four this app drives.
+        #[serde(default)]
+        manager: Option<String>,
     },
     DevStop {
         #[serde(rename = "ref")]
@@ -1133,6 +1162,13 @@ pub enum ActionSpec {
         #[serde(rename = "ref")]
         repo: RepoRef,
         script: String,
+        /// Run it with this manager instead of the detected one.
+        ///
+        /// Checked against the four this app drives *and* against what is
+        /// installed, so it can only ever pick a different one of them — never
+        /// name a program. `None` keeps the repo's own answer.
+        #[serde(default)]
+        manager: Option<String>,
     },
     /// One of the one-shot commands this repo's *ecosystem* offers — `flutter pub
     /// get`, `cargo clippy`, `./gradlew clean`.
@@ -1144,6 +1180,10 @@ pub enum ActionSpec {
         #[serde(rename = "ref")]
         repo: RepoRef,
         chore: String,
+        /// Run it with this manager, for the chores that go through one — the
+        /// Packages group. Ignored by `cargo clippy` and friends.
+        #[serde(default)]
+        manager: Option<String>,
     },
     Push {
         #[serde(rename = "ref")]
@@ -1246,6 +1286,22 @@ pub enum ActionSpec {
         repo: RepoRef,
         /// Binary name from Bootstrap.editors.
         editor: String,
+    },
+    /// Opens a coding agent on a repo, in the integrated terminal.
+    ///
+    /// Not `OpenInEditor` with a different binary: these are TUIs. Spawned
+    /// detached they exit immediately for want of a tty, so they take the pty
+    /// path — the same one the integrated shell uses.
+    OpenAgent {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        /// Binary name from Bootstrap.agents.
+        agent: String,
+        /// Force the system terminal emulator instead of an integrated tab.
+        #[serde(default)]
+        external: bool,
+        #[serde(default)]
+        size: Option<TermSize>,
     },
     DockerPs,
     /// Clone a list of remotes into a folder, setting up a new workspace.
