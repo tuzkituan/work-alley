@@ -6,7 +6,7 @@ import { createFrameQueue } from '@/lib/frame-queue'
 import { b64ToBytes } from '@/lib/b64'
 import { writeToTerm } from '@/features/terminal/xterm-instance'
 import { useScanStore } from '@/stores/scan-store'
-import { useRunStore } from '@/stores/run-store'
+import { runScopeKeys, useRunStore, WORKSPACE_KEY } from '@/stores/run-store'
 import { useTerminalStore } from '@/stores/terminal-store'
 import { useCiStore } from '@/stores/ci-store'
 import { useManagerStore } from '@/stores/manager-store'
@@ -95,17 +95,26 @@ async function wire(qc: QueryClient) {
 
   on('run:started', ({ run }) => {
     useRunStore.getState().start(run)
-    // Show what just started.
+    // Show what just started — but only inside the scope the pane is already on.
     //
-    // Both halves are needed. The scope, because a run in another repo — or a bulk
-    // run, which belongs to the workspace — is filtered out of the pane you are
-    // looking at, so starting it appeared to do nothing. And clearing the active
-    // terminal, because a shell outranks a run in the view resolution: you started a
-    // command to watch it, not to keep looking at a prompt.
-    const ui = useUiStore.getState()
-    if (run.ref) ui.setActiveRepo(repoId(run.ref))
-    else ui.setOutputScope(null)
-    useTerminalStore.getState().setActive(null)
+    // The scope used to follow the run: starting anything moved the pane to that
+    // repo, or to the workspace for a bulk run. It made a run in another repo
+    // visible, at the cost of yanking the view out from under whatever you were
+    // reading, and there was no way to say no. The scope is the user's now. The
+    // tabs still advertise activity elsewhere — each one carries a blinking dot and
+    // a count — so nothing started in another scope is silently lost, it just does
+    // not steal the pane.
+    //
+    // Clearing the active terminal is still right *within* the scope: a shell
+    // outranks a run in the view resolution, and you started a command to watch it,
+    // not to keep looking at a prompt.
+    //
+    // A tab for wherever it landed, so a run in another repo is one click away
+    // rather than invisible. Additive and idempotent — and an *event*, not a
+    // derived value, which is what lets a tab you closed by hand come back when
+    // something new starts there rather than the instant a log line arrives.
+    rememberScopes(runScopeKeys(run))
+    if (inScope(runScopeKeys(run))) useTerminalStore.getState().setActive(null)
   })
   on('run:output', ({ runId, lines }) => queueFor(runId).pushAll(lines))
   on('run:exit', ({ runId, status, endedUnix, lineCount, truncated }) => {
@@ -173,12 +182,12 @@ async function wire(qc: QueryClient) {
   on('term:opened', ({ term }) => {
     const store = useTerminalStore.getState()
     store.open(term)
-    store.setActive(term.termId)
-    // Same as run:started: a session opened at workspace level is invisible from a
-    // repo-scoped pane, so the scope has to follow it or the new tab never shows.
-    const ui = useUiStore.getState()
-    if (term.repo) ui.setActiveRepo(repoId(term.repo))
-    else ui.setOutputScope(null)
+    // Same rule as run:started: select the new tab, but do not move the pane to
+    // find it. A shell opened for another repo waits in that repo's scope tab,
+    // which shows its count — the pane you are reading stays where you put it.
+    const key = term.repo ? repoId(term.repo) : WORKSPACE_KEY
+    rememberScopes([key])
+    if (inScope([key])) store.setActive(term.termId)
   })
   // Deliberately NOT through createFrameQueue, unlike run:output right above.
   // That helper exists to collapse store writes and React renders; terminal
@@ -297,6 +306,23 @@ async function wire(qc: QueryClient) {
  * Deliberately not awaited by callers: a probe is two login shells and takes a
  * moment, and nothing else in the exit handler depends on it.
  */
+/**
+ * Whether something that belongs to `scopeKeys` is in the pane's current scope.
+ *
+ * Keys, plural, because a bulk run belongs to the workspace *and* to every repo it
+ * touches — the same rule `runInScope` applies in the pane's own filter.
+ */
+/** Opens a tab per scope, skipping the workspace — it always has one. */
+function rememberScopes(scopeKeys: string[]): void {
+  const repos = scopeKeys.filter((k) => k !== WORKSPACE_KEY)
+  if (repos.length) useUiStore.getState().rememberScopes(repos)
+}
+
+function inScope(scopeKeys: string[]): boolean {
+  const current = useUiStore.getState().outputScope ?? WORKSPACE_KEY
+  return scopeKeys.includes(current)
+}
+
 async function refreshMachineState(qc: QueryClient): Promise<void> {
   try {
     await api.refreshToolchain()

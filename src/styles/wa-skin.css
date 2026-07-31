@@ -37,7 +37,12 @@
  */
 
 /* ═══════════════════════════════════════════════════════════ tokens: light ══ */
-html[data-skin='metro']:not(.dark) {
+/* The `.wa-pane-*` alternates are the console pinned against the app's own theme:
+   these token blocks select `html`, so a pane that carries `.dark` would otherwise
+   keep inheriting this skin's *light* surfaces and paint itself white. See
+   `usePaneTheme`. */
+html[data-skin='metro']:not(.dark),
+html[data-skin='metro'] .wa-pane-light {
   /* White, throughout. An earlier pass here used three stacked greys — canvas,
      tile, chrome — on the theory that a skin with no shadows needs *fill* to
      separate its surfaces. In practice that read as washed-out: five greys within
@@ -137,7 +142,8 @@ html[data-skin='metro']:not(.dark) {
 }
 
 /* ══════════════════════════════════════════════════════════════ tokens: dark ══ */
-html[data-skin='metro'].dark {
+html[data-skin='metro'].dark,
+html[data-skin='metro'] .wa-pane-dark {
   /* Metro dark is genuinely black — the Start screen and every Windows 8 dark app
      used #000. But *everything* at #000 is a void: the first pass had rail,
      content, tiles and output pane all indistinguishable. So black is the canvas,

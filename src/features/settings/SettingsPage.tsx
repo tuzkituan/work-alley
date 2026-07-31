@@ -7,7 +7,7 @@ import {
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
-import { SKIN_OPTIONS } from '@/hooks/use-theme'
+import { SKIN_OPTIONS, usePaneTheme, useZoom } from '@/hooks/use-theme'
 import {
   MONO_FONTS,
   UI_FONTS,
@@ -46,6 +46,8 @@ export function SettingsPage() {
   const setUiFont = useUiStore((s) => s.setUiFont)
   const monoFont = useUiStore((s) => s.monoFont)
   const setMonoFont = useUiStore((s) => s.setMonoFont)
+  const { paneTheme, setPaneTheme } = usePaneTheme()
+  const { zoom, setZoom, nudgeZoom, label: zoomLabel, canGrow, canShrink } = useZoom()
   const termFontSize = useUiStore((s) => s.termFontSize)
   const setTermFontSize = useUiStore((s) => s.setTermFontSize)
 
@@ -86,6 +88,20 @@ export function SettingsPage() {
               options={SKIN_OPTIONS.map((s) => ({ value: s.id, label: s.label, title: s.hint }))}
             />
           </SettingRow>
+          <SettingRow
+            label="Console"
+            hint="Light or dark for the output pane and terminals, independent of the app. A tool's ANSI colours were usually chosen for a dark background."
+          >
+            <Segmented
+              value={paneTheme}
+              onChange={setPaneTheme}
+              options={[
+                { value: 'app' as const, label: 'Follow app' },
+                { value: 'light' as const, label: 'Light' },
+                { value: 'dark' as const, label: 'Dark' },
+              ]}
+            />
+          </SettingRow>
           <SettingRow label="Repo view" hint="What the centre panel opens as.">
             <Segmented
               value={view}
@@ -112,6 +128,39 @@ export function SettingsPage() {
               onChange={setMonoFont}
               options={MONO_FONTS.map((f) => ({ id: f.id, label: f.label, stack: f.stack }))}
             />
+          </SettingRow>
+          <SettingRow
+            label="Zoom"
+            hint="Scales the whole interface, not just the text. Also in the appearance menu, and on ⌘/Ctrl + − and 0."
+          >
+            <Button
+              variant="waOutline"
+              size="waIcon"
+              aria-label="Zoom out"
+              disabled={!canShrink}
+              onClick={() => nudgeZoom(-1)}
+            >
+              −
+            </Button>
+            {/* Wider than the terminal stepper's `w-6`: "100%" is four characters. */}
+            <span className="wa-num w-10 text-center font-mono text-xs">{zoomLabel}</span>
+            <Button
+              variant="waOutline"
+              size="waIcon"
+              aria-label="Zoom in"
+              disabled={!canGrow}
+              onClick={() => nudgeZoom(1)}
+            >
+              +
+            </Button>
+            <Button
+              variant="waGhost"
+              size="waXs"
+              disabled={zoom === 1}
+              onClick={() => setZoom(1)}
+            >
+              Reset
+            </Button>
           </SettingRow>
           <SettingRow
             label="Terminal text size"

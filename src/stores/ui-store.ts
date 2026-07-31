@@ -7,6 +7,10 @@ export type ViewMode = 'cards' | 'list'
 
 export type ThemeMode = 'light' | 'dark'
 
+/** The console's lighting: follow the app, or pin it. See `UiState.paneTheme`. */
+export const PANE_THEMES = ['app', 'light', 'dark'] as const
+export type PaneTheme = (typeof PANE_THEMES)[number]
+
 /**
  * The skin: which *design language* the app is painted in, independent of the
  * theme's lighting. Two axes, four real looks.
@@ -89,6 +93,24 @@ export function uiFontStack(id: UiFont): string {
 
 export function monoFontStack(id: MonoFont): string {
   return (MONO_FONTS.find((f) => f.id === id) ?? MONO_FONTS[0]).stack
+}
+
+/* Interface scale.
+ *
+ * The floor is 80%: the table's narrowest breakpoint already drops columns at
+ * ~1000px, and below 0.8 the 9.5px metadata type stops being legible on a 1x
+ * display. The ceiling is 150%, where the repo row's five columns still fit a
+ * 1280px window — past that the layout is fighting itself rather than helping.
+ * 10% steps, because 5% is a change you cannot see and 25% overshoots. */
+export const ZOOM_MIN = 0.8
+export const ZOOM_MAX = 1.5
+export const ZOOM_STEP = 0.1
+
+/** Clamped and snapped to the step, so the stored value is always one of the stops. */
+export function clampZoom(z: number): number {
+  if (!Number.isFinite(z)) return 1
+  const snapped = Math.round(z / ZOOM_STEP) * ZOOM_STEP
+  return Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, Math.round(snapped * 100) / 100))
 }
 
 /**
@@ -196,6 +218,20 @@ interface UiState {
    * would also clear the repo table's selection.
    */
   outputScope: RepoId | null
+  /**
+   * Repos the output pane keeps a tab for.
+   *
+   * The tabs used to be derived purely from activity, so a scope disappeared the
+   * moment its last run finished and was dismissed — the tab you were reading
+   * closed itself and the pane jumped back to the workspace. A tab now stays until
+   * it is closed by hand: opened by selecting a scope or by activity appearing in
+   * one, removed only by `closeScope`.
+   *
+   * Not persisted. Runs and shells are restored from the backend on launch, and
+   * that restoration is what re-opens the tabs — a saved list would otherwise offer
+   * tabs for scopes with nothing left in them.
+   */
+  openScopes: RepoId[]
   filterText: string
   filterChip: NeedsYouKind | null
   view: ViewMode
@@ -208,6 +244,26 @@ interface UiState {
    * 80, so being able to shrink the type is how you fit one without resizing.
    */
   termFontSize: number
+  /**
+   * Interface scale, 1 = 100%. Written to `<html>`'s `zoom`; see `applyToDom`.
+   *
+   * A separate axis from the font choice, and it has to be: this app's chrome is
+   * sized in px (11px labels, 22px chips, a 214px rail), so a bigger typeface alone
+   * gives you larger text in boxes that did not grow. Zoom scales the whole layout,
+   * which is what "this window is too small to read" actually asks for — and it is
+   * per app, unlike the OS display scale.
+   */
+  zoom: number
+  /**
+   * Light or dark for the output pane and terminals, independent of the app.
+   *
+   * A real preference rather than a gimmick: a dark console under a light app is
+   * how most terminals are set up, and the pane is the one surface here whose
+   * content is a *program's* output — with its own ANSI colours, tuned by whoever
+   * wrote the tool for a dark background. `'app'` follows the app theme and is the
+   * default, so nobody who does not want this has to know it exists.
+   */
+  paneTheme: PaneTheme
   /** UI typeface. Written to `--font-sans`; see `applyToDom`. */
   uiFont: UiFont
   /** Monospace typeface, for the output pane, the terminal and every numeric column. */
@@ -234,6 +290,11 @@ interface UiState {
   toggleSkin(): void
   setSkin(skin: Skin): void
   setTermFontSize(size: number): void
+  /** Clamped to ZOOM_MIN..ZOOM_MAX and rounded to the step. */
+  setPaneTheme(theme: PaneTheme): void
+  setZoom(zoom: number): void
+  /** One step out or in. `dir` is +1 or -1. */
+  nudgeZoom(dir: 1 | -1): void
   setUiFont(font: UiFont): void
   setMonoFont(font: MonoFont): void
   setWorkspaceRoot(root: string): void
@@ -246,6 +307,10 @@ interface UiState {
   setDetailTab(tab: DetailTab): void
   toggleDetailHeader(): void
   setOutputScope(scope: RepoId | null): void
+  /** Adds scopes to the pane's tab strip, ignoring the ones already there. */
+  rememberScopes(ids: RepoId[]): void
+  /** The only thing that removes a tab. Falls back to the workspace scope. */
+  closeScope(id: RepoId): void
   /** Opens the setup page focused on one step. */
   openSetupAt(stepId: string): void
   clearSetupFocus(): void
@@ -273,6 +338,8 @@ export function migrateUiState(persisted: unknown) {
     view?: unknown
     expandedCategory?: unknown
     termFontSize?: unknown
+    zoom?: unknown
+    paneTheme?: unknown
     detailHeaderCollapsed?: unknown
     allRepos?: unknown
     uiFont?: unknown
@@ -295,6 +362,12 @@ export function migrateUiState(persisted: unknown) {
       typeof p.termFontSize === 'number' && p.termFontSize >= 8 && p.termFontSize <= 20
         ? p.termFontSize
         : 12,
+    // Through the same clamp the setter uses, so a blob written by a build with a
+    // different range — or hand-edited — cannot pin the window at 300%.
+    zoom: typeof p.zoom === 'number' ? clampZoom(p.zoom) : 1,
+    // Validated against the list like `skin`. A blob with no key lands on 'app',
+    // which is the behaviour every build before this one had.
+    paneTheme: PANE_THEMES.includes(p.paneTheme as PaneTheme) ? (p.paneTheme as PaneTheme) : 'app',
     detailHeaderCollapsed: p.detailHeaderCollapsed === true,
     // Validated against the tables, exactly like `skin`: an id from a build that
     // shipped a family this one does not lands on the default rather than on a
@@ -321,6 +394,7 @@ export const useUiStore = create<UiState>()(
       detailTab: DETAIL_TABS[0],
       detailHeaderCollapsed: false,
       outputScope: null,
+      openScopes: [],
       setupFocusStepId: null,
       filterText: '',
       filterChip: null,
@@ -328,6 +402,8 @@ export const useUiStore = create<UiState>()(
       page: 'repos',
       paletteOpen: false,
       termFontSize: 12,
+      zoom: 1,
+      paneTheme: 'app',
       uiFont: 'archivo',
       monoFont: 'jetbrains',
       expandedCategoryRoot: null,
@@ -342,6 +418,9 @@ export const useUiStore = create<UiState>()(
         set((s) => ({ skin: SKINS[(SKINS.indexOf(s.skin) + 1) % SKINS.length]! })),
       setSkin: (skin) => set({ skin }),
       setTermFontSize: (size) => set({ termFontSize: Math.min(20, Math.max(8, size)) }),
+      setPaneTheme: (paneTheme) => set({ paneTheme }),
+      setZoom: (zoom) => set({ zoom: clampZoom(zoom) }),
+      nudgeZoom: (dir) => set((s) => ({ zoom: clampZoom(s.zoom + dir * ZOOM_STEP) })),
       setUiFont: (uiFont) => set({ uiFont }),
       setMonoFont: (monoFont) => set({ monoFont }),
       setWorkspaceRoot: (workspaceRoot) => set({ workspaceRoot }),
@@ -395,6 +474,24 @@ export const useUiStore = create<UiState>()(
       toggleDetailHeader: () =>
         set((s) => ({ detailHeaderCollapsed: !s.detailHeaderCollapsed })),
       setOutputScope: (outputScope) => set({ outputScope }),
+
+      rememberScopes: (ids) =>
+        set((s) => {
+          const missing = ids.filter((id) => !s.openScopes.includes(id))
+          // The same array when nothing is new: this is called from an effect on
+          // every activity change, and a fresh array each time would re-render the
+          // tab strip on every log line.
+          return missing.length ? { openScopes: [...s.openScopes, ...missing] } : s
+        }),
+
+      closeScope: (id) =>
+        set((s) => ({
+          openScopes: s.openScopes.filter((x) => x !== id),
+          // Closing the tab you are on has to land somewhere, and the workspace is
+          // the one scope that always exists. `activeRepoId` is deliberately left
+          // alone — closing a pane tab is not deselecting the repo row.
+          outputScope: s.outputScope === id ? null : s.outputScope,
+        })),
       openSetupAt: (stepId) => set({ page: 'setup', setupFocusStepId: stepId }),
       clearSetupFocus: () => set({ setupFocusStepId: null }),
       setFilterText: (filterText) => set({ filterText }),
@@ -417,6 +514,8 @@ export const useUiStore = create<UiState>()(
         expandedCategoryRoot: s.expandedCategoryRoot,
         allRepos: s.allRepos,
         termFontSize: s.termFontSize,
+        zoom: s.zoom,
+        paneTheme: s.paneTheme,
         uiFont: s.uiFont,
         monoFont: s.monoFont,
         detailHeaderCollapsed: s.detailHeaderCollapsed,
@@ -425,7 +524,7 @@ export const useUiStore = create<UiState>()(
       // an older build is still merged over the defaults on load, keys and all. So
       // the version is bumped whenever the shape changes, and `migrate` rebuilds the
       // state from scratch rather than trusting whatever was stored.
-      version: 11,
+      version: 13,
       migrate: migrateUiState,
     }
   )

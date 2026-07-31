@@ -10,8 +10,10 @@ import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
 import { TerminalView } from '@/features/terminal/TerminalView'
 import { useTermPalette } from '@/features/terminal/use-term-palette'
+import { usePaneTheme } from '@/hooks/use-theme'
+import { cn } from '@/lib/utils'
 import { runStatusLabel } from '@/domain/run-status'
-import type { RepoRef } from '@/domain/types'
+import type { RepoId, RepoRef } from '@/domain/types'
 import { estimateGeometry } from './term-geometry'
 import { activityLabel, computeActivity, scopesToOffer } from './activity'
 import { buildTabs, type OutputView } from './output-view'
@@ -53,19 +55,23 @@ export function OutputPane() {
   const scanRepos = useScanStore((s) => s.repos)
   const bodyRef = useRef<HTMLDivElement>(null)
 
-  useTermPalette()
+  const { className: paneClass } = usePaneTheme()
+  useTermPalette(bodyRef)
   // Terminal typography is pushed by `features/terminal/font-sync`, at module
   // scope. It lived here as an effect, which meant it only ran on pages where this
   // pane is mounted — not the Toolbox, setup or settings pages.
 
   // The pane is scoped: the selected repo's own runs and terminals, or the workspace
   // scope for anything that belongs to no single repo.
-  // In the store, not local state: the bridge moves it when a run or a terminal
-  // spawns, so the pane shows the thing that just started even when it belongs to a
-  // scope you were not looking at.
+  // In the store, not local state: it has to survive this pane unmounting when a
+  // full-window page opens. Nothing moves it on its own — see the note in the
+  // bridge's `run:started`.
   const scope = useUiStore((s) => s.outputScope)
   const setScope = useUiStore((s) => s.setOutputScope)
   const setActiveRepo = useUiStore((s) => s.setActiveRepo)
+  const openScopes = useUiStore((s) => s.openScopes)
+  const rememberScopes = useUiStore((s) => s.rememberScopes)
+  const closeScope = useUiStore((s) => s.closeScope)
 
   // Computed, not selected: a selector returning a fresh object on every call breaks
   // useSyncExternalStore's snapshot caching.
@@ -82,6 +88,14 @@ export function OutputPane() {
     () => computeActivity(runs.values(), tabs.values()),
     [runs, tabs]
   )
+
+  // A scope that has anything in it gets a tab, and keeps it: `rememberScopes` is
+  // additive, and only the tab's own × takes one away. Joined into a string so the
+  // effect does not re-run on every fresh array `computeActivity` returns.
+  const activeScopeKey = allActivity.scopes.filter((s): s is RepoId => s !== null).join('\u0000')
+  useEffect(() => {
+    if (activeScopeKey) rememberScopes(activeScopeKey.split('\u0000') as RepoId[])
+  }, [activeScopeKey, rememberScopes])
 
   const shownRun = shown?.kind === 'run' ? runs.get(shown.id) : undefined
   const shownTerm = shown?.kind === 'term' ? tabs.get(shown.id) : undefined
@@ -108,7 +122,7 @@ export function OutputPane() {
   // and no shells has an empty pane, so offering every repo made the menu long and
   // most of it a dead end.
   const scopeOptions: ScopeOption[] = useMemo(() => {
-    return scopesToOffer(allActivity, scope).map((id) => {
+    return scopesToOffer(allActivity, scope, openScopes).map((id) => {
       const a = computeActivity(runs.values(), tabs.values(), id)
       return {
         id,
@@ -117,7 +131,7 @@ export function OutputPane() {
         terms: a.terms,
       }
     })
-  }, [allActivity, scope, runs, tabs, scanRepos])
+  }, [allActivity, scope, openScopes, runs, tabs, scanRepos])
 
   const openTerminal = (external = false) =>
     run({
@@ -151,7 +165,14 @@ export function OutputPane() {
   return (
     <div
       data-slot="output-pane"
-      className="wa-output flex h-full flex-col border-l border-adaptive-200 bg-adaptive-50"
+      className={cn(
+        'wa-output flex h-full flex-col border-l border-adaptive-200 bg-adaptive-50',
+        // Empty unless the console has been pinned against the app's own theme, in
+        // which case this is what re-declares the ramp for the whole subtree — the
+        // header, the scope tabs and the log, so a dark console is not a dark box
+        // under light chrome. See `usePaneTheme`.
+        paneClass
+      )}
     >
       {/* Scope first, then the header for the scope you picked. The dropdown this
           replaces sat inside the header and showed one name at a time. */}
@@ -163,6 +184,7 @@ export function OutputPane() {
           // Keep the pane and the repo table pointing at the same thing.
           if (id) setActiveRepo(id)
         }}
+        onClose={closeScope}
       />
 
       <div className="flex h-10 flex-none items-center gap-2 border-b border-adaptive-200 px-2.5">

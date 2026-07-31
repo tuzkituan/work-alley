@@ -33,7 +33,12 @@
  */
 
 /* ══════════════════════════════════════════════════════════ tokens: light ══ */
-html[data-skin='adwaita']:not(.dark) {
+/* The `.wa-pane-*` alternates are the console pinned against the app's own theme:
+   these token blocks select `html`, so a pane that carries `.dark` would otherwise
+   keep inheriting this skin's *light* surfaces and paint itself white. See
+   `usePaneTheme`. */
+html[data-skin='adwaita']:not(.dark),
+html[data-skin='adwaita'] .wa-pane-light {
   /* libadwaita's named colours, light. These are the real values — window at
      #fafafa, view at #ffffff, headerbar and sidebar a step darker at #ebebeb —
      which is what produces the recessed-chrome look described above.
@@ -129,7 +134,8 @@ html[data-skin='adwaita']:not(.dark) {
 }
 
 /* ═══════════════════════════════════════════════════════════ tokens: dark ══ */
-html[data-skin='adwaita'].dark {
+html[data-skin='adwaita'].dark,
+html[data-skin='adwaita'] .wa-pane-dark {
   /* libadwaita dark, again the real values. Note the ordering *inverts*: the view
      (#1e1e1e) is now darker than the window (#242424), and chrome (#303030) is
      lighter than both. Adwaita dark keeps chrome distinct by going up rather than
@@ -317,11 +323,13 @@ html[data-skin='adwaita'] [data-slot='button'][data-variant='waOutline']:hover:n
   border-color: transparent;
   color: var(--adaptive-900);
 }
-html[data-skin='adwaita']:not(.dark) {
+html[data-skin='adwaita']:not(.dark),
+html[data-skin='adwaita'] .wa-pane-light {
   --wa-btn: rgba(0, 0, 0, 0.08);
   --wa-btn-hover: rgba(0, 0, 0, 0.13);
 }
-html[data-skin='adwaita'].dark {
+html[data-skin='adwaita'].dark,
+html[data-skin='adwaita'] .wa-pane-dark {
   --wa-btn: rgba(255, 255, 255, 0.1);
   --wa-btn-hover: rgba(255, 255, 255, 0.16);
 }

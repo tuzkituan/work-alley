@@ -34,7 +34,7 @@ interface ActionState {
 
   request(spec: ActionSpec): Promise<void>
   /** Re-prepares the open intent with a different package manager. */
-  useManager(manager: string | null): Promise<void>
+  pickManager(manager: string | null): Promise<void>
   recheck(): Promise<void>
   confirm(typedConfirm?: string): Promise<void>
   dismiss(): void
@@ -77,7 +77,7 @@ export const useActionStore = create<ActionState>()((set, get) => ({
    * Also remembered for the repo, so the next Run or script in it agrees with what
    * was chosen here rather than reverting to the detected manager.
    */
-  useManager: async (manager) => {
+  pickManager: async (manager) => {
     const spec = get().spec
     if (!spec) return
     if (spec.kind !== 'runScript' && spec.kind !== 'devStart' && spec.kind !== 'runChore') return

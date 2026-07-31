@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 import { X } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { SectionLabel, StatusDot } from '@/components/wa/primitives'
@@ -6,6 +6,7 @@ import { useTerminalStore, type TermTab } from '@/stores/terminal-store'
 import { useUiStore } from '@/stores/ui-store'
 import { cn } from '@/lib/utils'
 import { TerminalView } from './TerminalView'
+import { usePaneTheme } from '@/hooks/use-theme'
 import { useTermPalette } from './use-term-palette'
 
 /**
@@ -27,9 +28,11 @@ export function MachineTerminalDock() {
   const setActive = useTerminalStore((s) => s.setActive)
   const close = useTerminalStore((s) => s.close)
   const termFontSize = useUiStore((s) => s.termFontSize)
-  // The output pane is not mounted on these pages, so the palette is this
-  // component's job here.
-  useTermPalette()
+  // The output pane is not mounted on these pages, so the palette — and the
+  // console's own light/dark choice — are this component's job here.
+  const paneRef = useRef<HTMLDivElement>(null)
+  const { className: paneClass } = usePaneTheme()
+  useTermPalette(paneRef)
 
   const ids = useMemo(
     () => order.filter((id) => tabs.get(id)?.kind === 'package'),
@@ -48,8 +51,12 @@ export function MachineTerminalDock() {
   return (
     <div
       // A chrome surface rather than content, which is what the skin styles it as.
+      ref={paneRef}
       data-slot="terminal-dock"
-      className="flex h-full min-h-0 flex-col border-t border-adaptive-200 bg-adaptive-50"
+      className={cn(
+        'flex h-full min-h-0 flex-col border-t border-adaptive-200 bg-adaptive-50',
+        paneClass
+      )}
     >
       <div className="flex h-10 flex-none items-center gap-2 border-b border-adaptive-200 px-2.5">
         <SectionLabel>Terminal</SectionLabel>

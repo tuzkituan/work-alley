@@ -36,7 +36,9 @@ const Toaster = ({ ...props }: ToasterProps) => {
           "--normal-bg": "var(--popover)",
           "--normal-text": "var(--popover-foreground)",
           "--normal-border": "var(--border)",
-          "--border-radius": "var(--radius)",
+          // `rounded-md`, which is what every menu and popover uses — not
+          // `--radius` itself, which is the container radius.
+          "--border-radius": "var(--radius-md)",
         } as React.CSSProperties
       }
       {...props}

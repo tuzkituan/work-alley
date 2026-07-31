@@ -66,20 +66,28 @@ export function computeActivity(
 }
 
 /**
- * The scopes worth offering in the pane's scope menu.
+ * The scopes worth offering in the pane's tab strip.
  *
- * Only the workspace, scopes with something happening, and whatever is selected
- * right now. A repo with no runs and no shells has an empty pane, so listing every
- * repo in the workspace made the menu long and every extra entry a dead end.
+ * The workspace, whatever is selected, scopes with something happening, and scopes
+ * that have been opened and not closed. Never every repo in the workspace: a repo
+ * with no runs and no shells has an empty pane, so listing all of them made the
+ * strip long and most of it a dead end.
  *
- * `current` is always included even when quiet, or the menu could not show what the
- * pane is actually scoped to.
+ * `opened` is what stops a tab closing itself. Activity alone used to decide, so
+ * dismissing the last run in a repo removed the tab out from under you — and if it
+ * was the one you were on, the pane fell back to the workspace. It is a separate
+ * argument rather than folded into `activity` because the two answer different
+ * questions: one is "what is happening", the other "what did the user ask to keep".
+ *
+ * `current` is always included even when quiet, or the strip could not show what
+ * the pane is actually scoped to.
  */
 export function scopesToOffer(
   activity: Activity,
-  current: RepoId | null
+  current: RepoId | null,
+  opened: RepoId[] = []
 ): (RepoId | null)[] {
-  const ids = new Set<RepoId | null>([null, ...activity.scopes])
+  const ids = new Set<RepoId | null>([null, ...activity.scopes, ...opened])
   ids.add(current)
   return [...ids]
 }

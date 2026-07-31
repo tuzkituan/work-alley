@@ -34,10 +34,11 @@ import { useRepoLists } from '@/stores/repo-lists'
 import { useCategoryScan } from '@/hooks/use-category-scan'
 import { IpcError } from '@/ipc/errors'
 import { keys } from '@/queries/keys'
-import { useApplyTheme, useTheme } from '@/hooks/use-theme'
+import { useApplyTheme, useTheme, useZoomKeys } from '@/hooks/use-theme'
 
 export function App() {
   useApplyTheme()
+  useZoomKeys()
 
   if (!isTauri()) return <NotInTauri />
   return <Dashboard />
@@ -312,17 +313,11 @@ function Dashboard() {
       <ConfirmActionDialog />
       <CommandPalette boot={boot} />
       {/* Sonner sniffs the theme itself, so it must be told explicitly. */}
-      <Toaster
-        theme={theme}
-        position="bottom-left"
-        style={
-          {
-            '--normal-bg': 'var(--card)',
-            '--normal-border': 'var(--adaptive-200)',
-            '--normal-text': 'var(--adaptive-900)',
-          } as React.CSSProperties
-        }
-      />
+      {/* No per-mount styling: the surface, border and radius live in
+          `components/ui/sonner.tsx` and wa-bridge.css, so the toast over the
+          dashboard is the same object as the toast over setup. This one used to
+          paint itself from `--card` while the other three used `--popover`. */}
+      <Toaster theme={theme} position="bottom-left" />
     </TooltipProvider>
   )
 }

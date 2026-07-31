@@ -43,6 +43,15 @@ pub struct SpawnSpec {
     /// the field was always left unset. The emitter tracks which of these is in
     /// flight by watching the script's own `[..]/[OK]/[FAIL]` markers.
     pub target_keys: Vec<String>,
+    /// What the log's opening `$ …` line should say, when the argv itself is not
+    /// worth reading.
+    ///
+    /// A bulk run's argv is a generated shell script — forty `git -C … && echo
+    /// [OK] … || echo [FAIL] …` statements on one line — and printing it verbatim
+    /// buried the first page of actual output under a wall of markers the pane
+    /// then parses away anyway. The confirm dialog already draws this distinction;
+    /// this is the same preview, in the log.
+    pub header: Option<String>,
 }
 
 /// Spawns a child, streams its output in batches, and always reaps it.
@@ -95,14 +104,18 @@ pub fn spawn_run(app: &AppHandle, spec: SpawnSpec) -> AppResult<String> {
 
     let _ = app.emit(events::RUN_STARTED, events::RunStarted { run: summary });
 
-    // The command header, so the log always opens with exactly what ran.
+    // The command header, so the log always opens with what ran — the per-repo
+    // form for a bulk run, whose real argv is a generated script nobody reads.
     push_and_record(
         app,
         &handle,
         &run_id,
         Stream::Meta,
         Severity::Cmd,
-        format!("$ {}", shell_join(&spec.argv)),
+        format!(
+            "$ {}",
+            spec.header.clone().unwrap_or_else(|| shell_join(&spec.argv))
+        ),
         None,
     );
 

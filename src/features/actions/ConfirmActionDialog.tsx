@@ -23,7 +23,7 @@ import { useScanStore } from '@/stores/scan-store'
 export function ConfirmActionDialog() {
   const intent = useActionStore((s) => s.intent)
   const spec = useActionStore((s) => s.spec)
-  const useManager = useActionStore((s) => s.useManager)
+  const pickManager = useActionStore((s) => s.pickManager)
   const submitting = useActionStore((s) => s.submitting)
   const confirm = useActionStore((s) => s.confirm)
   const recheck = useActionStore((s) => s.recheck)
@@ -128,7 +128,7 @@ export function ConfirmActionDialog() {
                       ? `This repo says nothing, so your default is used — ${detected}`
                       : 'Resolved when it runs'
                 }
-                onClick={() => void useManager(null)}
+                onClick={() => void pickManager(null)}
               >
                 Auto
                 {detected && (
@@ -143,7 +143,7 @@ export function ConfirmActionDialog() {
                   aria-pressed={chosen === m}
                   className="rounded-none border-0 font-mono"
                   disabled={submitting}
-                  onClick={() => void useManager(m)}
+                  onClick={() => void pickManager(m)}
                 >
                   {m}
                 </Button>

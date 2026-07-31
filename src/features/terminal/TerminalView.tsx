@@ -37,7 +37,9 @@ export function TerminalView({ termId }: { termId: string }) {
     const container = containerRef.current
     if (!container) return
 
-    const handle = ensureTerm(termId, buildTermTheme(), fontSize, monoFontStack(monoFont))
+    // From the container, not <html>: the pane may be pinned light or dark, and
+    // then the palette lives on an ancestor of this element rather than on the root.
+    const handle = ensureTerm(termId, buildTermTheme(container), fontSize, monoFontStack(monoFont))
     focusRef.current = () => handle.term.focus()
     container.appendChild(handle.root)
     drainPending(termId)

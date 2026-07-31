@@ -1,4 +1,4 @@
-import { Moon, Search, SquareTerminal, Sun } from 'lucide-react'
+import { Palette, Search, SquareTerminal } from 'lucide-react'
 import { WindowControls } from './WindowControls'
 import { WorkspaceSwitcher } from '@/features/workspace/WorkspacePicker'
 import { Button } from '@/components/ui/button'
@@ -14,17 +14,19 @@ import {
 } from '@/components/ui/dropdown-menu'
 import { Progress } from '@/components/ui/progress'
 import { KeyCap, Sep } from '@/components/wa/primitives'
-import { SKIN_OPTIONS, useSkin, useTheme } from '@/hooks/use-theme'
+import { SKIN_OPTIONS, usePaneTheme, useSkin, useTheme, useZoom } from '@/hooks/use-theme'
 import { useAppIdentity } from '@/hooks/use-bootstrap'
 import { useRunAction } from '@/hooks/use-action'
 import { useUiStore } from '@/stores/ui-store'
 import { useScanStore } from '@/stores/scan-store'
 import type { Bootstrap } from '@/domain/types'
-import type { Skin, ThemeMode } from '@/stores/ui-store'
+import type { PaneTheme, Skin, ThemeMode } from '@/stores/ui-store'
 
 export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
   const { theme, setTheme, label: themeLabel } = useTheme()
   const { skin, setSkin, label: skinLabel } = useSkin()
+  const { paneTheme, setPaneTheme } = usePaneTheme()
+  const { setZoom, nudgeZoom, label: zoomLabel, canGrow, canShrink } = useZoom()
   const { name } = useAppIdentity()
   const run = useRunAction()
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen)
@@ -109,9 +111,13 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
               size="waIconLg"
               // Stronger edge than the page default: see the note on the search field.
               className="border-adaptive-300"
-              title={`Appearance: ${themeLabel} · Skin: ${skinLabel}`}
+              title={`Appearance: ${themeLabel} · Skin: ${skinLabel} · Zoom: ${zoomLabel}`}
             >
-              {theme === 'dark' ? <Sun className="size-3.5" /> : <Moon className="size-3.5" />}
+              {/* A palette, not a sun/moon: the menu behind this button is no longer
+                  a light/dark toggle — it holds the skin, the zoom and the console's
+                  own lighting, and an icon that shows only one of four axes is an
+                  icon that lies about three of them. */}
+              <Palette className="size-3.5" />
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-44">
@@ -140,6 +146,70 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
                 </DropdownMenuRadioItem>
               ))}
             </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
+              Console
+            </DropdownMenuLabel>
+            {/* The output pane and terminals. Here as well as in Settings because a
+                dark console under a light app is a thing people flip while looking
+                at the log, not while reading a settings page. */}
+            <DropdownMenuRadioGroup
+              value={paneTheme}
+              onValueChange={(v) => setPaneTheme(v as PaneTheme)}
+            >
+              <DropdownMenuRadioItem value="app">Follow app</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="light">Light</DropdownMenuRadioItem>
+              <DropdownMenuRadioItem value="dark">Dark</DropdownMenuRadioItem>
+            </DropdownMenuRadioGroup>
+            <DropdownMenuSeparator />
+            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
+              Zoom
+            </DropdownMenuLabel>
+            {/* Plain buttons in a plain div, not DropdownMenuItems: an item closes
+                the menu on select, and a stepper you must reopen the menu to press
+                twice is not a stepper. */}
+            <div
+              className="flex items-center gap-1 px-2 py-1"
+              onKeyDown={(e) => e.stopPropagation()}
+            >
+              <Button
+                variant="waOutline"
+                size="waIcon"
+                aria-label="Zoom out"
+                disabled={!canShrink}
+                onClick={(e) => {
+                  e.preventDefault()
+                  nudgeZoom(-1)
+                }}
+              >
+                −
+              </Button>
+              <button
+                type="button"
+                // The readout doubles as reset, which is where every browser puts
+                // it and saves a third button in a 176px menu.
+                className="wa-num flex-1 rounded-md py-1 text-center font-mono text-xs text-adaptive-700 hover:bg-adaptive-200"
+                title="Reset to 100%"
+                onClick={(e) => {
+                  e.preventDefault()
+                  setZoom(1)
+                }}
+              >
+                {zoomLabel}
+              </button>
+              <Button
+                variant="waOutline"
+                size="waIcon"
+                aria-label="Zoom in"
+                disabled={!canGrow}
+                onClick={(e) => {
+                  e.preventDefault()
+                  nudgeZoom(1)
+                }}
+              >
+                +
+              </Button>
+            </div>
             <DropdownMenuSeparator />
             {/* This menu stays the one-click path for the two things people flip
                 hourly; fonts, scanning and background fetch are a page away. */}

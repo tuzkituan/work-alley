@@ -1075,6 +1075,17 @@ pub async fn run_action(
             let run_id = procs::spawn_run(
                 &app,
                 SpawnSpec {
+                    // The dialog's preview, when there is one: it is the per-repo
+                    // command, and `per_target` says how many repos it runs in.
+                    header: if pending.intent.per_target {
+                        Some(format!(
+                            "{}   (in {} repos)",
+                            crate::procs::shell_join(&pending.intent.argv_preview),
+                            pending.intent.targets.len()
+                        ))
+                    } else {
+                        None
+                    },
                     argv: pending.argv,
                     cwd: pending.cwd,
                     env: pending.env,
