@@ -79,6 +79,20 @@ describe('staleKeysFor', () => {
     )
   })
 
+  it('refetches workflow runs after a re-run, and nothing git', () => {
+    const h = heads('ghRunRerun')
+    expect(h.sort()).toEqual(['ghRuns', 'runs'].sort())
+    // No git command ran, and `prs` is a 20s network call that a workflow re-run
+    // cannot have changed.
+    expect(h).not.toContain('changedFiles')
+    expect(h).not.toContain('prs')
+    expect(heads('ghRunCancel')).toEqual(h)
+  })
+
+  it('treats reading a run log as the read-only inspection it is', () => {
+    expect(heads('ghRunLog')).toEqual(['runs'])
+  })
+
   it('treats an unknown kind as harmless rather than throwing', () => {
     expect(heads('somethingNew')).toEqual(['runs'])
   })

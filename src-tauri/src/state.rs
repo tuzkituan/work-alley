@@ -33,6 +33,27 @@ pub struct PendingIntent {
     pub size: Option<crate::model::TermSize>,
 }
 
+/// What a workflow run is, in the words the confirmation dialog needs.
+///
+/// Stored beside the id rather than passed in with the action, so every string in
+/// "Re-runs CI #482 on main" comes from the backend's own last answer instead of
+/// from whatever the frontend believed at click time.
+#[derive(Debug, Clone)]
+pub struct GhRunLabel {
+    pub workflow: String,
+    pub number: u64,
+    pub branch: String,
+}
+
+/// A workflow, in the words a dispatch needs: its display name, and the inputs it
+/// declares once anyone has asked.
+#[derive(Debug, Clone, Default)]
+pub struct GhWorkflowLabel {
+    pub name: String,
+    /// Empty until the dispatch form has been fetched for this workflow.
+    pub inputs: Vec<String>,
+}
+
 /// `"libs/design-system#storybook"`.
 pub fn task_key(repo_key: &str, task: &str) -> String {
     format!("{repo_key}#{task}")
@@ -87,6 +108,25 @@ pub struct AppState {
     /// can have dev and storybook up simultaneously.
     pub dev: Mutex<HashMap<String, String>>,
     pub dev_meta: Mutex<HashMap<String, DevServer>>,
+    /// Workflow run ids most recently listed for each repo, by `RepoRef::key()`.
+    ///
+    /// The closed set the `ghRun*` actions are checked against, the same way
+    /// `RunScript` is checked against `pkg::available_scripts`. Worth being clear
+    /// about what it buys: a run id is a `u64` and argv never touches a shell, so
+    /// injection is impossible by construction — the type is the sanitiser. What
+    /// this adds is *scope*, so a stale render after switching repos cannot cancel
+    /// a run in a repository nobody is looking at.
+    ///
+    /// The label rides along so the confirmation dialog's text is server-derived
+    /// too. Bounded: one 50-ish entry map per repo, cleared on workspace switch.
+    pub gh_runs: Mutex<HashMap<String, HashMap<u64, GhRunLabel>>>,
+    /// Workflows most recently listed for each repo, by `RepoRef::key()` then by
+    /// path — the closed set `GhWorkflowRun` is checked against.
+    ///
+    /// `inputs` fills in when the dispatch form is opened, which is the only route
+    /// to running one, so by the time an argv is built the declared names are
+    /// known and a key GitHub would reject never reaches it.
+    pub gh_workflows: Mutex<HashMap<String, HashMap<String, GhWorkflowLabel>>>,
     pub last_scan: RwLock<Option<WorkspaceSnapshot>>,
     pub scan_cancel: Mutex<HashMap<String, Arc<AtomicBool>>>,
     /// Integrated terminal sessions, keyed by term id.
@@ -116,6 +156,8 @@ impl AppState {
             runs: Mutex::new(HashMap::new()),
             dev: Mutex::new(HashMap::new()),
             dev_meta: Mutex::new(HashMap::new()),
+            gh_runs: Mutex::new(HashMap::new()),
+            gh_workflows: Mutex::new(HashMap::new()),
             last_scan: RwLock::new(None),
             scan_cancel: Mutex::new(HashMap::new()),
             ptys: Mutex::new(HashMap::new()),
@@ -141,6 +183,8 @@ impl AppState {
         *self.last_scan.write().unwrap() = None;
         self.dev.lock().unwrap().clear();
         self.dev_meta.lock().unwrap().clear();
+        self.gh_runs.lock().unwrap().clear();
+        self.gh_workflows.lock().unwrap().clear();
         self.intents.lock().unwrap().clear();
         // `ptys` is deliberately *not* cleared. A shell you are halfway through a
         // command in is still a valid shell, and killing it because you switched
@@ -328,6 +372,92 @@ impl AppState {
     /// The run id currently supervised for this task, if any.
     pub fn live_dev_run(&self, key: &str) -> Option<String> {
         self.dev.lock().unwrap().get(key).cloned()
+    }
+
+    /// Records the run ids a listing just handed to the UI.
+    ///
+    /// `replace` for the unfiltered view, which is authoritative, and a merge for
+    /// a per-workflow one: selecting a workflow in the sidebar must not disarm the
+    /// re-run button on every row that was on screen a moment ago. The merge is
+    /// capped so a long session of clicking through workflows cannot grow it
+    /// without bound.
+    pub fn remember_gh_runs(&self, repo_key: &str, runs: &[crate::model::WorkflowRun], replace: bool) {
+        const CAP: usize = 500;
+        let mut all = self.gh_runs.lock().unwrap();
+        let entry = all.entry(repo_key.to_string()).or_default();
+        if replace {
+            entry.clear();
+        } else if entry.len() > CAP {
+            // Oldest-first would need an ordering this map does not keep; the
+            // point is only that it stays bounded, and the next unfiltered fetch
+            // replaces it wholesale anyway.
+            entry.clear();
+        }
+        for r in runs {
+            entry.insert(
+                r.id,
+                GhRunLabel {
+                    workflow: r.workflow_name.clone(),
+                    number: r.number,
+                    branch: r.branch.clone(),
+                },
+            );
+        }
+    }
+
+    /// Records the workflows a listing just handed to the UI.
+    ///
+    /// Replaces wholesale: unlike the runs, this is always the complete set for a
+    /// repo, so a workflow deleted upstream should stop being dispatchable here.
+    /// Known input names are carried across, since they came from a separate call
+    /// and re-listing does not invalidate them.
+    pub fn remember_gh_workflows(&self, repo_key: &str, workflows: &[crate::model::Workflow]) {
+        let mut all = self.gh_workflows.lock().unwrap();
+        let entry = all.entry(repo_key.to_string()).or_default();
+        let carried: HashMap<String, Vec<String>> = entry
+            .iter()
+            .map(|(p, l)| (p.clone(), l.inputs.clone()))
+            .collect();
+        entry.clear();
+        for w in workflows {
+            entry.insert(
+                w.path.clone(),
+                GhWorkflowLabel {
+                    name: w.name.clone(),
+                    inputs: carried.get(&w.path).cloned().unwrap_or_default(),
+                },
+            );
+        }
+    }
+
+    /// Records the inputs a dispatch form just rendered, so the argv built from it
+    /// can be checked against them without a second network call.
+    pub fn remember_gh_inputs(&self, repo_key: &str, path: &str, inputs: Vec<String>) {
+        let mut all = self.gh_workflows.lock().unwrap();
+        let entry = all.entry(repo_key.to_string()).or_default();
+        entry.entry(path.to_string()).or_default().inputs = inputs;
+    }
+
+    /// The label for a workflow this app listed, or None if it never did.
+    pub fn gh_workflow_label(&self, repo_key: &str, path: &str) -> Option<GhWorkflowLabel> {
+        self.gh_workflows
+            .lock()
+            .unwrap()
+            .get(repo_key)
+            .and_then(|m| m.get(path))
+            .cloned()
+    }
+
+    /// The label for a run this app listed, or None if it never did.
+    ///
+    /// None is the gate: an action for an id that was never listed is refused.
+    pub fn gh_run_label(&self, repo_key: &str, run_id: u64) -> Option<GhRunLabel> {
+        self.gh_runs
+            .lock()
+            .unwrap()
+            .get(repo_key)
+            .and_then(|m| m.get(&run_id))
+            .cloned()
     }
 
     /// Task keys with a live run, for the liveness sweep.

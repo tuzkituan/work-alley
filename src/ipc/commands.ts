@@ -30,6 +30,9 @@ import type {
   StashEntry,
   TermInfo,
   UpdateReport,
+  WorkflowDispatchResult,
+  WorkflowRunsResult,
+  WorkflowsResult,
   WorkspaceSnapshot,
 } from '@/domain/types'
 
@@ -140,6 +143,20 @@ export const api = {
     call<PackageVersion[]>('list_dep_versions', { repo, package: pkg }),
 
   listPullRequests: (repo: RepoRef) => call<PullRequestsResult>('list_pull_requests', { repo }),
+  /** Every workflow the repo defines, including disabled ones. Read-only. */
+  listWorkflows: (repo: RepoRef) => call<WorkflowsResult>('list_workflows', { repo }),
+  /**
+   * The last 50 workflow runs, optionally for one workflow — by *path*, which is
+   * what survives a rename.
+   */
+  listWorkflowRuns: (repo: RepoRef, workflow?: string) =>
+    call<WorkflowRunsResult>('list_workflow_runs', { repo, workflow: workflow ?? null }),
+  /**
+   * Whether a workflow can be started by hand, and what it asks for. Reads the
+   * workflow's YAML — the REST API does not expose dispatch inputs at all.
+   */
+  workflowDispatchInputs: (repo: RepoRef, workflow: string) =>
+    call<WorkflowDispatchResult>('workflow_dispatch_inputs', { repo, workflow }),
   listChangedFiles: (repo: RepoRef) => call<ChangedFile[]>('list_changed_files', { repo }),
   repoCommits: (repo: RepoRef, limit?: number) =>
     call<CommitEntry[]>('repo_commits', { repo, limit }),

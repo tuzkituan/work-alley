@@ -458,6 +458,100 @@ export interface PullRequest {
 }
 
 /** gh is optional and often unauthenticated, so absence is data, not an error. */
+// --- github actions ---------------------------------------------------------
+
+/**
+ * What a workflow run is doing, from gh's (status, conclusion) pair.
+ *
+ * Named `WorkflowRunState`, not `RunState`: `RunStatus` in this file is already
+ * the state of *this app's* own processes, and the Actions tab sits next to a
+ * Runs tab that means that other thing.
+ */
+export type WorkflowRunState =
+  | 'queued'
+  | 'running'
+  | 'success'
+  | 'failure'
+  | 'cancelled'
+  /** skipped / neutral / stale — "did not apply", not "went wrong". */
+  | 'skipped'
+  /** A deployment waiting on approval. The only state that wants a click. */
+  | 'actionRequired'
+  | 'unknown'
+
+export interface WorkflowRun {
+  /** gh's databaseId — what every `gh run` subcommand takes. */
+  id: number
+  /** Per-workflow run number: the #5356 github.com shows. */
+  number: number
+  attempt: number
+  /** The commit subject, or the dispatch title. */
+  title: string
+  /** Empty for runs created by an org ruleset. The row still renders. */
+  workflowName: string
+  workflowId: number
+  event: string
+  branch: string
+  headSha: string
+  /** Raw gh values, for the row's tooltip. */
+  status: string
+  conclusion: string
+  state: WorkflowRunState
+  url: string
+  createdUnix: number
+  startedUnix: number
+  updatedUnix: number
+  /** Zero while queued and when a timestamp did not parse. Never negative. */
+  durationSecs: number
+  updatedRelative: string
+}
+
+export interface Workflow {
+  id: number
+  name: string
+  /** `.github/workflows/ci.yml`. What the runs query filters on. */
+  path: string
+  /** active / disabled_manually / disabled_inactivity, verbatim. */
+  state: string
+}
+
+/** One `workflow_dispatch` input, as the form needs it. */
+export interface WorkflowInput {
+  name: string
+  description: string
+  required: boolean
+  /** string / boolean / choice / number / environment. Anything else is a text field. */
+  kind: string
+  default: string
+  /** Only for `type: choice`. */
+  options: string[]
+}
+
+export type WorkflowDispatchResult =
+  | { kind: 'ghMissing' }
+  | { kind: 'notAuthenticated'; message: string }
+  | { kind: 'noRemote' }
+  | { kind: 'failed'; message: string }
+  /** No `workflow_dispatch:` trigger — GitHub offers no way to start it by hand. */
+  | { kind: 'notDispatchable' }
+  /** Dispatchable. An empty `inputs` is common and is not `notDispatchable`. */
+  | { kind: 'ok'; inputs: WorkflowInput[] }
+
+export type WorkflowsResult =
+  | { kind: 'ghMissing' }
+  | { kind: 'notAuthenticated'; message: string }
+  | { kind: 'noRemote' }
+  | { kind: 'failed'; message: string }
+  /** An empty list means the repo has no workflows — a state to render. */
+  | { kind: 'ok'; slug: string; workflows: Workflow[] }
+
+export type WorkflowRunsResult =
+  | { kind: 'ghMissing' }
+  | { kind: 'notAuthenticated'; message: string }
+  | { kind: 'noRemote' }
+  | { kind: 'failed'; message: string }
+  | { kind: 'ok'; slug: string; runs: WorkflowRun[]; fetchedUnix: number }
+
 export type PullRequestsResult =
   | { kind: 'ghMissing' }
   | { kind: 'notAuthenticated'; message: string }
@@ -796,6 +890,18 @@ export type ActionSpec =
   | { kind: 'logGraph'; ref: RepoRef }
   | { kind: 'diff'; ref: RepoRef; staged?: boolean }
   | { kind: 'prList' }
+  /** One workflow run's log, into the output pane. Read-only. */
+  | { kind: 'ghRunLog'; ref: RepoRef; runId: number; failedOnly?: boolean }
+  | { kind: 'ghRunRerun'; ref: RepoRef; runId: number; failedOnly?: boolean }
+  | { kind: 'ghRunCancel'; ref: RepoRef; runId: number }
+  /** `workflow_dispatch`. Values are free text; keys are checked in Rust. */
+  | {
+      kind: 'ghWorkflowRun'
+      ref: RepoRef
+      workflow: string
+      gitRef: string
+      inputs: [string, string][]
+    }
 
 export interface ActionIntent {
   id: string

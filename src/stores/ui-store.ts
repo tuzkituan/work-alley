@@ -104,6 +104,7 @@ export const DETAIL_TABS = [
   'branches',
   'packages',
   'prs',
+  'actions',
   'runs',
 ] as const
 export type DetailTab = (typeof DETAIL_TABS)[number]

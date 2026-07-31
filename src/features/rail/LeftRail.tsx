@@ -33,6 +33,7 @@ import { useScanStore } from '@/stores/scan-store'
 import { useUiStore, type Page } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
 import { api } from '@/ipc/commands'
+import { CiSection } from './CiSection'
 
 /**
  * Three zones: a header, a scrolling middle, and a pinned footer.
@@ -97,6 +98,8 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
         <ScriptsMenu scripts={scripts} run={run} />
 
         <RunningSection />
+
+        <CiSection />
       </div>
 
       {/* Pinned under the scroll, directly above the card that reports the same

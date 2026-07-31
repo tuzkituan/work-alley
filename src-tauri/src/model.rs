@@ -490,6 +490,148 @@ pub enum PullRequestsResult {
     },
 }
 
+// --- github actions ---------------------------------------------------------
+
+/// What a workflow run is doing, from gh's `(status, conclusion)` pair.
+///
+/// Two fields is one too many for a list row: nothing renders `timed_out`
+/// differently from `failure`, and `completed` with an empty conclusion is a state
+/// the API genuinely emits for a moment. The raw pair is carried on the row beside
+/// this, for the tooltip and for triaging a mapping that has drifted.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum RunState {
+    Queued,
+    Running,
+    Success,
+    Failure,
+    Cancelled,
+    /// skipped / neutral / stale — "this did not apply", not "this went wrong".
+    Skipped,
+    /// A deployment waiting on an approval. The only state that wants a click.
+    ActionRequired,
+    /// Completed with no conclusion yet, or a value gh grew after this shipped.
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowRun {
+    /// gh's `databaseId` — the id every `gh run` subcommand takes.
+    pub id: u64,
+    /// Per-workflow run number: the `#5356` github.com shows.
+    pub number: u64,
+    pub attempt: u64,
+    /// gh's `displayTitle`: the commit subject, or the dispatch title.
+    pub title: String,
+    /// Empty for runs created by an org ruleset — a documented API limitation,
+    /// not a parse failure, so the row still renders.
+    pub workflow_name: String,
+    /// Joins to `Workflow.id`.
+    pub workflow_id: u64,
+    pub event: String,
+    pub branch: String,
+    pub head_sha: String,
+    /// Raw gh values, kept for the row's tooltip.
+    pub status: String,
+    pub conclusion: String,
+    pub state: RunState,
+    pub url: String,
+    pub created_unix: i64,
+    pub started_unix: i64,
+    pub updated_unix: i64,
+    /// Wall clock. Zero while queued — nothing has run yet — and zero when a
+    /// timestamp did not parse. Never negative.
+    pub duration_secs: i64,
+    pub updated_relative: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Workflow {
+    pub id: u64,
+    pub name: String,
+    /// `.github/workflows/ci.yml`, or `dynamic/dependabot/dependabot-updates`
+    /// for the synthetic ones GitHub injects. This is what `--workflow` takes:
+    /// stable across renames, and unambiguous when two share a `name:`.
+    pub path: String,
+    /// active / disabled_manually / disabled_inactivity, verbatim.
+    pub state: String,
+}
+
+/// One `workflow_dispatch` input, as the form needs it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WorkflowInput {
+    pub name: String,
+    pub description: String,
+    pub required: bool,
+    /// Verbatim from the file: string / boolean / choice / number / environment.
+    /// Unknown values render as a text field, which is what the API accepts anyway.
+    pub kind: String,
+    pub default: String,
+    /// Only for `type: choice`.
+    pub options: Vec<String>,
+}
+
+/// Whether a workflow can be started by hand, and what it wants if so.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WorkflowDispatchResult {
+    GhMissing,
+    #[serde(rename_all = "camelCase")]
+    NotAuthenticated { message: String },
+    #[serde(rename_all = "camelCase")]
+    NoRemote,
+    #[serde(rename_all = "camelCase")]
+    Failed { message: String },
+    /// The workflow declares no `workflow_dispatch:` trigger, so GitHub offers no
+    /// way to start it by hand — a push, a PR or a schedule is the only way in.
+    NotDispatchable,
+    /// Dispatchable. `inputs` is empty for a workflow that takes none, which is
+    /// common and is *not* the same as `NotDispatchable`.
+    #[serde(rename_all = "camelCase")]
+    Ok { inputs: Vec<WorkflowInput> },
+}
+
+/// Same shape as `PullRequestsResult`, and for the same reason: `gh` is optional
+/// and often unauthenticated, so absence is data rather than an error.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WorkflowsResult {
+    GhMissing,
+    #[serde(rename_all = "camelCase")]
+    NotAuthenticated { message: String },
+    #[serde(rename_all = "camelCase")]
+    NoRemote,
+    #[serde(rename_all = "camelCase")]
+    Failed { message: String },
+    /// An empty `workflows` means the repo genuinely has none — a state to render,
+    /// and distinct from `Failed`. Only reachable when gh exited 0, which matters:
+    /// `gh workflow list` prints *nothing at all* for such a repo, so an empty
+    /// parse cannot be told from a broken one.
+    #[serde(rename_all = "camelCase")]
+    Ok { slug: String, workflows: Vec<Workflow> },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum WorkflowRunsResult {
+    GhMissing,
+    #[serde(rename_all = "camelCase")]
+    NotAuthenticated { message: String },
+    #[serde(rename_all = "camelCase")]
+    NoRemote,
+    #[serde(rename_all = "camelCase")]
+    Failed { message: String },
+    #[serde(rename_all = "camelCase")]
+    Ok {
+        slug: String,
+        runs: Vec<WorkflowRun>,
+        fetched_unix: i64,
+    },
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChangedFile {
@@ -1145,6 +1287,54 @@ pub enum ActionSpec {
         staged: bool,
     },
     PrList,
+    /// Stream one workflow run's log into the output pane. Read-only.
+    ///
+    /// `run_id` is caller-supplied but checked against the ids `list_workflow_runs`
+    /// last handed out for this repo — the same closed-set gate `RunScript` holds
+    /// against `available_scripts`. The slug comes from the repo's own remote,
+    /// never from the caller.
+    GhRunLog {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        run_id: u64,
+        /// `--log-failed`: only the steps that failed. On a wide matrix this is
+        /// the difference between a readable pane and two hundred thousand lines.
+        #[serde(default)]
+        failed_only: bool,
+    },
+    /// Re-run a workflow run. Same closed-set gate as `GhRunLog`.
+    GhRunRerun {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        run_id: u64,
+        /// `--failed`: only the jobs that failed, rather than the whole run.
+        #[serde(default)]
+        failed_only: bool,
+    },
+    /// Start a workflow by hand — GitHub's `workflow_dispatch`.
+    ///
+    /// `workflow` is a path checked against the ones `list_workflows` last handed
+    /// out, `git_ref` against `git::valid_branch_name`, and every input key
+    /// against the names the dispatch form was built from. The *values* are free
+    /// text by design — that is the feature — and reach the child as argv, never
+    /// through a shell.
+    GhWorkflowRun {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        /// `.github/workflows/deploy.yml`.
+        workflow: String,
+        /// The branch or tag to run on.
+        git_ref: String,
+        /// `-f name=value`, in the order the form declared them.
+        #[serde(default)]
+        inputs: Vec<(String, String)>,
+    },
+    /// Cancel a run that is queued or in progress.
+    GhRunCancel {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        run_id: u64,
+    },
 }
 
 /// Initial terminal geometry, measured by the pane that will host it.

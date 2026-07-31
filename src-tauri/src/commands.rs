@@ -1333,6 +1333,208 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
             })
         }
 
+        ActionSpec::GhRunLog {
+            repo,
+            run_id,
+            failed_only,
+        } => {
+            let (gh, cwd, slug, label) = gh_run_target(state, &root, &repo, run_id).await?;
+            let mut argv = vec![
+                gh.display().to_string(),
+                "run".into(),
+                "view".into(),
+                run_id.to_string(),
+                "--repo".into(),
+                slug,
+            ];
+            argv.push(if failed_only { "--log-failed".into() } else { "--log".into() });
+
+            Ok(Built {
+                kind: "ghRunLog".into(),
+                title: format!("Log — {} #{}", label.workflow, label.number),
+                // Said here because gh refuses on a run that has not finished, and
+                // the pane is otherwise a single confusing line.
+                description: "Read-only. A run that is still going has no log yet.".into(),
+                argv,
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: true,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhRunRerun {
+            repo,
+            run_id,
+            failed_only,
+        } => {
+            let (gh, cwd, slug, label) = gh_run_target(state, &root, &repo, run_id).await?;
+            let mut argv = vec![
+                gh.display().to_string(),
+                "run".into(),
+                "rerun".into(),
+                run_id.to_string(),
+                "--repo".into(),
+                slug,
+            ];
+            if failed_only {
+                argv.push("--failed".into());
+            }
+
+            Ok(Built {
+                kind: "ghRunRerun".into(),
+                title: format!(
+                    "Re-run {}{} #{}",
+                    if failed_only { "failed jobs of " } else { "" },
+                    label.workflow,
+                    label.number
+                ),
+                description: format!("Starts a new attempt on {}.", label.branch),
+                argv,
+                cwd,
+                env: vec![],
+                // Medium rather than a typed confirm: typed confirm is for
+                // destroying local work, and making someone type a phrase to
+                // re-run a flaky test teaches them to stop reading dialogs.
+                danger: Danger::Medium,
+                warnings: vec![
+                    "This spends Actions minutes.".into(),
+                    // Always, not when the name looks deployment-shaped: a
+                    // heuristic that stays quiet on `release.yml` because the
+                    // spelling did not match is worse than no heuristic.
+                    "If this workflow deploys, re-running it will deploy again.".into(),
+                ],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhWorkflowRun {
+            repo,
+            workflow,
+            git_ref,
+            inputs,
+        } => {
+            let tc = state.toolchain();
+            let gh = tc.require("gh")?;
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+            let key = repo.key();
+
+            // The same closed-set gate the run actions hold: a path this app never
+            // listed for this repo is not a workflow it will start.
+            let label = state.gh_workflow_label(&key, &workflow).ok_or_else(|| {
+                AppError::Invalid(format!("{key} has no workflow at {workflow}"))
+            })?;
+
+            // A ref reaches gh as argv, so this is not about quoting — it is about
+            // failing here, with a sentence, rather than after a network round trip
+            // with git's own wording.
+            if !crate::git::valid_branch_name(&git_ref) {
+                return Err(AppError::Invalid(format!("not a branch or tag: {git_ref}")));
+            }
+
+            // Keys are checked against what the form declared; values are not, and
+            // cannot be — arbitrary values are the whole point of an input.
+            for (name, _) in &inputs {
+                if !label.inputs.iter().any(|d| d == name) {
+                    return Err(AppError::Invalid(format!(
+                        "{} does not declare an input called \"{name}\"",
+                        label.name
+                    )));
+                }
+            }
+
+            let git = tc.require("git")?;
+            let slug = crate::git::remote_slug(&git, &cwd)
+                .await
+                .ok_or_else(|| AppError::Invalid("this repo has no origin remote".into()))?;
+
+            let mut argv = vec![
+                gh.display().to_string(),
+                "workflow".into(),
+                "run".into(),
+                workflow.clone(),
+                "--repo".into(),
+                slug,
+                "--ref".into(),
+                git_ref.clone(),
+            ];
+            for (name, value) in &inputs {
+                argv.push("-f".into());
+                argv.push(format!("{name}={value}"));
+            }
+
+            Ok(Built {
+                kind: "ghWorkflowRun".into(),
+                title: format!("Run {} on {git_ref}", label.name),
+                description: format!("Starts {} in {key} by hand.", workflow),
+                argv,
+                cwd,
+                env: vec![],
+                // Same as a re-run, and for the same reason: this spends real
+                // minutes and may be the workflow that deploys.
+                danger: Danger::Medium,
+                warnings: vec![
+                    "This spends Actions minutes.".into(),
+                    "If this workflow deploys, running it will deploy.".into(),
+                ],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                // The argv above is the preview, and it lists every input value —
+                // which is exactly what wants reading before a deploy.
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhRunCancel { repo, run_id } => {
+            let (gh, cwd, slug, label) = gh_run_target(state, &root, &repo, run_id).await?;
+
+            Ok(Built {
+                kind: "ghRunCancel".into(),
+                title: format!("Cancel {} #{}", label.workflow, label.number),
+                description: format!("Stops the run on {}.", label.branch),
+                argv: vec![
+                    gh.display().to_string(),
+                    "run".into(),
+                    "cancel".into(),
+                    run_id.to_string(),
+                    "--repo".into(),
+                    slug,
+                ],
+                cwd,
+                env: vec![],
+                danger: Danger::Medium,
+                warnings: vec![
+                    "Jobs that already finished stay finished. A cancelled run cannot be \
+                     resumed, only re-run."
+                        .into(),
+                ],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
         ActionSpec::PrList => {
             let gh = tc.require("gh")?;
             Ok(Built {
@@ -3449,6 +3651,222 @@ pub async fn list_package_versions(
 
 // ------------------------------------------------------------- repo detail ---
 
+/// Resolves everything a `gh run` action needs, and refuses an unknown run.
+///
+/// The gate is `gh_run_label`: an id this app never listed for this repo has no
+/// label, and without one there is no action. It is also where the dialog's words
+/// come from, so "Re-run CI #482 on main" is the backend's own last answer rather
+/// than whatever the frontend believed when the button was clicked.
+async fn gh_run_target(
+    state: &Arc<AppState>,
+    root: &std::path::Path,
+    repo: &RepoRef,
+    run_id: u64,
+) -> AppResult<(PathBuf, PathBuf, String, crate::state::GhRunLabel)> {
+    let tc = state.toolchain();
+    let gh = tc.require("gh")?;
+    let cwd = crate::paths::resolve_repo(root, repo)?;
+
+    let label = state.gh_run_label(&repo.key(), run_id).ok_or_else(|| {
+        AppError::Invalid(
+            "that workflow run is not in the current list — refresh the Actions tab".into(),
+        )
+    })?;
+
+    // `--repo` as well as the cwd: a repo with two GitHub remotes must not be able
+    // to surprise someone into re-running a fork's workflow.
+    let git = tc.require("git")?;
+    let slug = crate::git::remote_slug(&git, &cwd)
+        .await
+        .ok_or_else(|| AppError::Invalid("this repo has no origin remote".into()))?;
+
+    Ok((gh, cwd, slug, label))
+}
+
+/// How a `gh --json` call can fail before it has produced anything to parse.
+///
+/// Internal: each command maps this onto its *own* public result enum, because
+/// those enums are the wire contract and the house style is to write them out
+/// rather than share one. What is shared is the twenty lines of getting there.
+enum GhFail {
+    Missing,
+    NotAuthed(String),
+    NoRemote,
+    Failed(String),
+}
+
+/// Runs `gh <args> --repo <slug>` in a repo and returns its stdout.
+///
+/// Everything `list_pull_requests` learned the hard way, in one place: the child
+/// is hardened the way every other subprocess here is, the network call has a
+/// ceiling, and gh's "you are not logged in" is sniffed out of stderr so the UI
+/// can offer the fix rather than printing a stack of words at someone.
+///
+/// **`Ok("")` is a success.** `gh workflow list` prints nothing at all for a repo
+/// with no workflows, so an empty stdout must not be read as a failure — only a
+/// non-zero exit is one.
+async fn gh_json(
+    tc: &crate::toolchain::Toolchain,
+    repo_path: &std::path::Path,
+    args: &[&str],
+) -> Result<(String, String), GhFail> {
+    let git = tc.require("git").map_err(|_| GhFail::Failed("git is not available".into()))?;
+    let gh = tc.path("gh").cloned().ok_or(GhFail::Missing)?;
+    let slug = crate::git::remote_slug(&git, repo_path)
+        .await
+        .ok_or(GhFail::NoRemote)?;
+
+    let mut cmd = tokio::process::Command::new(&gh);
+    crate::platform::hide_console(&mut cmd);
+    cmd.args(args)
+        .args(["--repo", &slug])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    crate::git::harden(&mut cmd);
+    tc.apply_path(&mut cmd);
+
+    let out = match tokio::time::timeout(Duration::from_secs(20), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        Ok(Err(e)) => return Err(GhFail::Failed(e.to_string())),
+        Err(_) => return Err(GhFail::Failed("gh timed out after 20s".into())),
+    };
+
+    if !out.status.success() {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        let lower = err.to_lowercase();
+        if lower.contains("auth") || lower.contains("logged in") || lower.contains("token") {
+            return Err(GhFail::NotAuthed(err));
+        }
+        return Err(GhFail::Failed(err));
+    }
+
+    Ok((slug, String::from_utf8_lossy(&out.stdout).into_owned()))
+}
+
+/// Every workflow this repo defines, for the Actions sidebar. Read-only.
+///
+/// `--all` because github.com greys a disabled workflow rather than hiding it,
+/// and one disabled by sixty days of inactivity is exactly the thing you open
+/// this tab to notice.
+#[tauri::command]
+pub async fn list_workflows(
+    repo: RepoRef,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<WorkflowsResult> {
+    let root = state.workspace_root();
+    let tc = state.toolchain();
+    let path = crate::paths::resolve_repo(&root, &repo)?;
+
+    match gh_json(
+        &tc,
+        &path,
+        &["workflow", "list", "--limit", "100", "--all", "--json", "id,name,path,state"],
+    )
+    .await
+    {
+        // Exit 0 with no rows is the real answer for a repo with no workflows —
+        // and the *only* way to tell it from a broken parse, since gh prints
+        // nothing rather than `[]`.
+        Ok((slug, stdout)) => {
+            let workflows = parse_gh_workflows(&stdout);
+            // The closed set `GhWorkflowRun` is checked against.
+            state.remember_gh_workflows(&repo.key(), &workflows);
+            Ok(WorkflowsResult::Ok { slug, workflows })
+        }
+        Err(GhFail::Missing) => Ok(WorkflowsResult::GhMissing),
+        Err(GhFail::NoRemote) => Ok(WorkflowsResult::NoRemote),
+        Err(GhFail::NotAuthed(message)) => Ok(WorkflowsResult::NotAuthenticated { message }),
+        Err(GhFail::Failed(message)) => Ok(WorkflowsResult::Failed { message }),
+    }
+}
+
+/// Whether a workflow can be started by hand, and what it asks for. Read-only.
+///
+/// Reads the workflow's own YAML, because the REST API does not expose dispatch
+/// inputs at all — `gh` parses the file client-side to build its own prompt, and
+/// this does the same.
+#[tauri::command]
+pub async fn workflow_dispatch_inputs(
+    repo: RepoRef,
+    workflow: String,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<WorkflowDispatchResult> {
+    let root = state.workspace_root();
+    let tc = state.toolchain();
+    let path = crate::paths::resolve_repo(&root, &repo)?;
+
+    match gh_json(&tc, &path, &["workflow", "view", &workflow, "--yaml"]).await {
+        Ok((_slug, yaml)) => match parse_dispatch_inputs(&yaml) {
+            Some(inputs) => {
+                // Remembered so the argv built from this form can be checked
+                // against it later without asking GitHub a second time.
+                state.remember_gh_inputs(
+                    &repo.key(),
+                    &workflow,
+                    inputs.iter().map(|i| i.name.clone()).collect(),
+                );
+                Ok(WorkflowDispatchResult::Ok { inputs })
+            }
+            None => Ok(WorkflowDispatchResult::NotDispatchable),
+        },
+        Err(GhFail::Missing) => Ok(WorkflowDispatchResult::GhMissing),
+        Err(GhFail::NoRemote) => Ok(WorkflowDispatchResult::NoRemote),
+        Err(GhFail::NotAuthed(message)) => {
+            Ok(WorkflowDispatchResult::NotAuthenticated { message })
+        }
+        Err(GhFail::Failed(message)) => Ok(WorkflowDispatchResult::Failed { message }),
+    }
+}
+
+/// The last 50 workflow runs, optionally for one workflow. Read-only.
+///
+/// `workflow` is a *path* (`.github/workflows/ci.yml`) rather than a display
+/// name: gh accepts either, but the path survives a rename and is unambiguous
+/// when two workflows share a `name:`.
+#[tauri::command]
+pub async fn list_workflow_runs(
+    repo: RepoRef,
+    workflow: Option<String>,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<WorkflowRunsResult> {
+    let root = state.workspace_root();
+    let tc = state.toolchain();
+    let path = crate::paths::resolve_repo(&root, &repo)?;
+
+    let mut args: Vec<&str> = vec![
+        "run",
+        "list",
+        "--limit",
+        "50",
+        "--json",
+        "databaseId,number,attempt,displayTitle,workflowName,workflowDatabaseId,\
+         event,headBranch,headSha,status,conclusion,url,createdAt,startedAt,updatedAt",
+    ];
+    if let Some(w) = workflow.as_deref() {
+        args.extend(["--workflow", w]);
+    }
+
+    match gh_json(&tc, &path, &args).await {
+        Ok((slug, stdout)) => {
+            let now = crate::git::now_unix();
+            let runs = parse_gh_runs(&stdout, now);
+            // The closed set the run actions are checked against. Replaced by the
+            // unfiltered view, merged into by a filtered one — see `remember_gh_runs`.
+            state.remember_gh_runs(&repo.key(), &runs, workflow.is_none());
+            Ok(WorkflowRunsResult::Ok {
+                slug,
+                runs,
+                fetched_unix: now,
+            })
+        }
+        Err(GhFail::Missing) => Ok(WorkflowRunsResult::GhMissing),
+        Err(GhFail::NoRemote) => Ok(WorkflowRunsResult::NoRemote),
+        Err(GhFail::NotAuthed(message)) => Ok(WorkflowRunsResult::NotAuthenticated { message }),
+        Err(GhFail::Failed(message)) => Ok(WorkflowRunsResult::Failed { message }),
+    }
+}
+
 /// Open PRs for one repo.
 ///
 /// Never returns Err for the ordinary failure modes — gh missing, not logged in,
@@ -3687,6 +4105,240 @@ fn rollup_state(v: Option<&serde_json::Value>) -> String {
     if pending { "pending".into() } else { "passing".into() }
 }
 
+/// gh's `(status, conclusion)` pair, collapsed into the one thing a row renders.
+///
+/// A table rather than a chain of `contains`, because the interesting cells are
+/// the ones that are not obvious: `skipped` and `neutral` are *not* failures, a
+/// `completed` run with no conclusion yet is genuinely unknown rather than
+/// successful, and a conclusion gh adds after this ships must land in `Unknown`
+/// rather than being guessed at.
+pub fn run_state(status: &str, conclusion: &str) -> RunState {
+    match status.to_ascii_lowercase().as_str() {
+        "queued" | "requested" | "waiting" | "pending" => return RunState::Queued,
+        "in_progress" => return RunState::Running,
+        "completed" => {}
+        _ => return RunState::Unknown,
+    }
+    match conclusion.to_ascii_lowercase().as_str() {
+        "success" => RunState::Success,
+        "failure" | "timed_out" | "startup_failure" => RunState::Failure,
+        "cancelled" => RunState::Cancelled,
+        "skipped" | "neutral" | "stale" => RunState::Skipped,
+        "action_required" => RunState::ActionRequired,
+        _ => RunState::Unknown,
+    }
+}
+
+/// `gh run list --json …` into rows.
+///
+/// `now` is a parameter rather than a call to the clock, so durations and the
+/// relative string can be pinned in a test — `parse_gh_prs` reads the clock
+/// internally, which is exactly why its own tests can only assert the fields that
+/// are not time.
+///
+/// Unparseable JSON is an empty list, matching `parse_gh_prs`: the caller has
+/// already decided from gh's exit code whether this was a failure.
+pub fn parse_gh_runs(stdout: &str, now: i64) -> Vec<WorkflowRun> {
+    let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(stdout) else {
+        return Vec::new();
+    };
+
+    items
+        .into_iter()
+        .filter_map(|v| {
+            let str_of = |k: &str| {
+                v.get(k)
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            let time_of = |k: &str| {
+                v.get(k)
+                    .and_then(|x| x.as_str())
+                    .and_then(parse_iso8601)
+                    .unwrap_or(0)
+            };
+
+            // The one field whose absence makes a row unusable — it is what every
+            // `gh run` subcommand takes. Same role `number` plays for a PR.
+            let id = v.get("databaseId")?.as_u64()?;
+
+            let status = str_of("status");
+            let conclusion = str_of("conclusion");
+            let state = run_state(&status, &conclusion);
+
+            let started_unix = time_of("startedAt");
+            let updated_unix = time_of("updatedAt");
+            let duration_secs = match state {
+                // A queued run has not started, so a duration ticking up from its
+                // creation would be describing time it did not spend.
+                RunState::Queued => 0,
+                RunState::Running if started_unix > 0 => (now - started_unix).max(0),
+                _ if started_unix > 0 && updated_unix > 0 => {
+                    // Clamped: clock skew between the runner and the API does
+                    // produce an `updatedAt` before `startedAt`.
+                    (updated_unix - started_unix).max(0)
+                }
+                _ => 0,
+            };
+
+            Some(WorkflowRun {
+                id,
+                number: v.get("number").and_then(|x| x.as_u64()).unwrap_or(0),
+                attempt: v.get("attempt").and_then(|x| x.as_u64()).unwrap_or(1),
+                title: str_of("displayTitle"),
+                workflow_name: str_of("workflowName"),
+                workflow_id: v
+                    .get("workflowDatabaseId")
+                    .and_then(|x| x.as_u64())
+                    .unwrap_or(0),
+                event: str_of("event"),
+                branch: str_of("headBranch"),
+                head_sha: str_of("headSha"),
+                status,
+                conclusion,
+                state,
+                url: str_of("url"),
+                created_unix: time_of("createdAt"),
+                started_unix,
+                updated_unix,
+                duration_secs,
+                updated_relative: if updated_unix > 0 {
+                    crate::git::relative_time(updated_unix, now)
+                } else {
+                    "?".to_string()
+                },
+            })
+        })
+        .collect()
+}
+
+/// `gh workflow list --json …` into the sidebar's rows.
+///
+/// Note what an empty result means here: `gh workflow list` prints *nothing at
+/// all* for a repo with no workflows — not `[]` — so this returns an empty list
+/// for both that and for junk. The caller distinguishes them by gh's exit code,
+/// and must not read an empty list as a failure.
+pub fn parse_gh_workflows(stdout: &str) -> Vec<Workflow> {
+    let Ok(items) = serde_json::from_str::<Vec<serde_json::Value>>(stdout) else {
+        return Vec::new();
+    };
+
+    items
+        .into_iter()
+        .filter_map(|v| {
+            let str_of = |k: &str| {
+                v.get(k)
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("")
+                    .to_string()
+            };
+            Some(Workflow {
+                id: v.get("id")?.as_u64()?,
+                name: str_of("name"),
+                path: str_of("path"),
+                state: str_of("state"),
+            })
+        })
+        .collect()
+}
+
+/// The `workflow_dispatch` inputs a workflow declares, from its YAML.
+///
+/// `None` means the workflow has no `workflow_dispatch:` trigger at all — GitHub
+/// then offers no way to start it by hand, and the UI must say so rather than
+/// showing an empty form. `Some(vec![])` is a dispatchable workflow that simply
+/// takes no inputs, which is the common case.
+///
+/// The YAML is read rather than the API asked, because the REST API does not
+/// expose dispatch inputs at all — `gh` itself parses the file client-side to
+/// build its own prompt.
+pub fn parse_dispatch_inputs(yaml: &str) -> Option<Vec<WorkflowInput>> {
+    use yaml_rust2::{Yaml, YamlLoader};
+
+    let docs = YamlLoader::load_from_str(yaml).ok()?;
+    let doc = docs.first()?;
+
+    // `on` is the Norway problem's cousin: under YAML 1.1 the bare key `on` is the
+    // *boolean true*, and which reading you get depends on the parser's version
+    // and mood. Both are checked, because a workflow file's most important key
+    // must not hinge on that.
+    let on = match doc {
+        Yaml::Hash(h) => h
+            .get(&Yaml::String("on".into()))
+            .or_else(|| h.get(&Yaml::Boolean(true)))?,
+        _ => return None,
+    };
+
+    // `on: [push, workflow_dispatch]` and `on: workflow_dispatch` are both legal
+    // and both mean dispatchable with no inputs.
+    match on {
+        Yaml::String(s) => return (s == "workflow_dispatch").then(Vec::new),
+        Yaml::Array(items) => {
+            let listed = items
+                .iter()
+                .any(|i| i.as_str() == Some("workflow_dispatch"));
+            return listed.then(Vec::new);
+        }
+        _ => {}
+    }
+
+    let dispatch = on.as_hash()?.get(&Yaml::String("workflow_dispatch".into()))?;
+    // `workflow_dispatch:` with nothing under it parses as null — dispatchable,
+    // no inputs.
+    let Some(inputs) = dispatch
+        .as_hash()
+        .and_then(|h| h.get(&Yaml::String("inputs".into())))
+        .and_then(|i| i.as_hash())
+    else {
+        return Some(Vec::new());
+    };
+
+    Some(
+        inputs
+            .iter()
+            .filter_map(|(name, spec)| {
+                let name = name.as_str()?.to_string();
+                let get = |k: &str| spec.as_hash().and_then(|h| h.get(&Yaml::String(k.into())));
+                let text = |k: &str| {
+                    get(k)
+                        .map(|v| match v {
+                            Yaml::String(s) => s.clone(),
+                            Yaml::Boolean(b) => b.to_string(),
+                            Yaml::Integer(i) => i.to_string(),
+                            Yaml::Real(r) => r.clone(),
+                            _ => String::new(),
+                        })
+                        .unwrap_or_default()
+                };
+                Some(WorkflowInput {
+                    name,
+                    description: text("description"),
+                    // `required: true` is the only truthy spelling GitHub honours.
+                    required: get("required").and_then(|v| v.as_bool()).unwrap_or(false),
+                    kind: {
+                        let t = text("type");
+                        if t.is_empty() { "string".to_string() } else { t }
+                    },
+                    default: text("default"),
+                    options: get("options")
+                        .and_then(|v| v.as_vec())
+                        .map(|v| {
+                            v.iter()
+                                .filter_map(|o| match o {
+                                    Yaml::String(s) => Some(s.clone()),
+                                    Yaml::Integer(i) => Some(i.to_string()),
+                                    _ => None,
+                                })
+                                .collect()
+                        })
+                        .unwrap_or_default(),
+                })
+            })
+            .collect(),
+    )
+}
+
 /// Minimal ISO-8601 -> unix. Avoids pulling in chrono for one field.
 /// gh always emits `2026-07-29T13:15:04Z`.
 pub fn parse_iso8601(s: &str) -> Option<i64> {
@@ -3923,6 +4575,273 @@ pub async fn repo_commits(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- github actions ---------------------------------------------------
+
+    /// 2026-07-31T03:12:48Z, the fixture's clock.
+    const T0: i64 = 1_785_467_568;
+
+    #[test]
+    fn run_state_maps_every_pair_gh_emits() {
+        use RunState::*;
+        let cases: &[(&str, &str, RunState)] = &[
+            ("queued", "", Queued),
+            ("requested", "", Queued),
+            ("waiting", "", Queued),
+            ("pending", "", Queued),
+            ("in_progress", "", Running),
+            ("completed", "success", Success),
+            ("completed", "failure", Failure),
+            // Nothing renders a timeout differently from a failure, and a startup
+            // failure is a failure you cannot even read a log for.
+            ("completed", "timed_out", Failure),
+            ("completed", "startup_failure", Failure),
+            ("completed", "cancelled", Cancelled),
+            // Not failures: "this did not apply".
+            ("completed", "skipped", Skipped),
+            ("completed", "neutral", Skipped),
+            ("completed", "stale", Skipped),
+            ("completed", "action_required", ActionRequired),
+            // Completed with no conclusion is a real, momentary API state.
+            ("completed", "", Unknown),
+            // A conclusion gh grows after this ships must not be guessed at.
+            ("completed", "some_future_thing", Unknown),
+            ("something_new", "", Unknown),
+            // gh is consistent about case, but nothing here should depend on it.
+            ("QUEUED", "", Queued),
+            ("In_Progress", "", Running),
+            ("COMPLETED", "SUCCESS", Success),
+        ];
+        for (status, conclusion, want) in cases {
+            assert_eq!(
+                run_state(status, conclusion),
+                *want,
+                "({status}, {conclusion})"
+            );
+        }
+    }
+
+    #[test]
+    fn garbage_parses_to_nothing_rather_than_panicking() {
+        for bad in ["", "not json", "{}", "[null]", "[1,2]"] {
+            assert!(parse_gh_runs(bad, T0).is_empty(), "runs: {bad:?}");
+            assert!(parse_gh_workflows(bad).is_empty(), "workflows: {bad:?}");
+        }
+        // The empty string is not hypothetical: `gh workflow list` prints exactly
+        // that for a repo with no workflows. The caller tells it apart from junk
+        // by gh's exit code, never by this being empty.
+        assert!(parse_gh_workflows("").is_empty());
+    }
+
+    #[test]
+    fn parses_a_real_run() {
+        // Captured from `gh run list` against cli/cli.
+        let json = r#"[{"attempt":1,"conclusion":"success","createdAt":"2026-07-31T03:12:48Z",
+          "databaseId":30601004684,"displayTitle":"Triage Scheduled Tasks","event":"schedule",
+          "headBranch":"trunk","headSha":"abc123","number":5356,
+          "startedAt":"2026-07-31T03:12:48Z","status":"completed",
+          "updatedAt":"2026-07-31T03:13:06Z",
+          "url":"https://github.com/cli/cli/actions/runs/30601004684",
+          "workflowDatabaseId":235328803,"workflowName":"Triage Scheduled Tasks"}]"#;
+        let runs = parse_gh_runs(json, T0 + 3600);
+        assert_eq!(runs.len(), 1);
+        let r = &runs[0];
+        assert_eq!(r.id, 30_601_004_684);
+        assert_eq!(r.number, 5356);
+        assert_eq!(r.workflow_id, 235_328_803);
+        assert_eq!(r.event, "schedule");
+        assert_eq!(r.state, RunState::Success);
+        // 03:12:48 -> 03:13:06.
+        assert_eq!(r.duration_secs, 18);
+    }
+
+    #[test]
+    fn a_running_run_counts_up_from_when_it_started() {
+        let json = format!(
+            r#"[{{"databaseId":1,"status":"in_progress","conclusion":"",
+                 "startedAt":"{}","updatedAt":"{}"}}]"#,
+            iso(T0),
+            iso(T0)
+        );
+        let r = &parse_gh_runs(&json, T0 + 600)[0];
+        assert_eq!(r.state, RunState::Running);
+        assert_eq!(r.duration_secs, 600);
+    }
+
+    #[test]
+    fn a_queued_run_has_no_duration() {
+        // It has a timestamp, but nothing has run — a duration ticking up here
+        // would be describing time the run did not spend.
+        let json = format!(
+            r#"[{{"databaseId":1,"status":"queued","conclusion":"",
+                 "startedAt":"{}","updatedAt":"{}"}}]"#,
+            iso(T0),
+            iso(T0)
+        );
+        let r = &parse_gh_runs(&json, T0 + 600)[0];
+        assert_eq!(r.state, RunState::Queued);
+        assert_eq!(r.duration_secs, 0);
+    }
+
+    #[test]
+    fn clock_skew_never_yields_a_negative_duration() {
+        let json = format!(
+            r#"[{{"databaseId":1,"status":"completed","conclusion":"success",
+                 "startedAt":"{}","updatedAt":"{}"}}]"#,
+            iso(T0 + 30),
+            iso(T0)
+        );
+        assert_eq!(parse_gh_runs(&json, T0 + 600)[0].duration_secs, 0);
+    }
+
+    #[test]
+    fn a_row_needs_an_id_and_nothing_else() {
+        // No databaseId: unusable, because it is what every `gh run` takes.
+        assert!(parse_gh_runs(r#"[{"number":7}]"#, T0).is_empty());
+
+        // Only an id: renders, with everything else at its default rather than
+        // taking the whole list down.
+        let r = &parse_gh_runs(r#"[{"databaseId":9}]"#, T0)[0];
+        assert_eq!(r.title, "");
+        assert_eq!(r.state, RunState::Unknown);
+        assert_eq!(r.attempt, 1);
+        assert_eq!(r.updated_relative, "?");
+    }
+
+    #[test]
+    fn a_ruleset_run_with_no_workflow_name_still_renders() {
+        // Runs created by an org ruleset carry no workflowName. Documented API
+        // behaviour, not a parse failure — dropping them would hide real CI.
+        let json = r#"[{"databaseId":5,"workflowName":"","status":"completed",
+                        "conclusion":"failure"}]"#;
+        let r = &parse_gh_runs(json, T0)[0];
+        assert_eq!(r.workflow_name, "");
+        assert_eq!(r.state, RunState::Failure);
+    }
+
+    #[test]
+    fn parses_workflows_including_disabled_ones() {
+        let json = r#"[{"id":1,"name":"CI","path":".github/workflows/ci.yml","state":"active"},
+                       {"id":2,"name":"Old","path":".github/workflows/old.yml",
+                        "state":"disabled_inactivity"},
+                       {"name":"no id"}]"#;
+        let ws = parse_gh_workflows(json);
+        assert_eq!(ws.len(), 2, "a workflow with no id cannot be filtered on");
+        // The state string is passed through rather than parsed: the sidebar only
+        // needs to know it is not "active", and gh may add more of these.
+        assert_eq!(ws[1].state, "disabled_inactivity");
+        assert_eq!(ws[1].path, ".github/workflows/old.yml");
+    }
+
+    #[test]
+    fn a_workflow_with_no_dispatch_trigger_cannot_be_started_by_hand() {
+        // The real cli/cli test workflow. None, not an empty input list: GitHub
+        // offers no way in, and an empty form would imply there is one.
+        let yaml = "name: Unit and Integration Tests\non:\n  push:\n    branches:\n      - trunk\n  pull_request:\n";
+        assert_eq!(parse_dispatch_inputs(yaml), None);
+    }
+
+    #[test]
+    fn on_survives_being_read_as_the_boolean_true() {
+        // YAML 1.1 reads a bare `on` key as `true`. Which reading a parser gives
+        // depends on its version, and a workflow file's most important key must
+        // not hinge on that — so both are looked up.
+        let yaml = "on:\n  workflow_dispatch:\njobs: {}\n";
+        assert_eq!(parse_dispatch_inputs(yaml), Some(Vec::new()));
+    }
+
+    #[test]
+    fn the_short_trigger_spellings_all_mean_dispatchable() {
+        // `workflow_dispatch:` with nothing under it, in every legal shape.
+        assert_eq!(parse_dispatch_inputs("on: workflow_dispatch\n"), Some(Vec::new()));
+        assert_eq!(
+            parse_dispatch_inputs("on: [push, workflow_dispatch]\n"),
+            Some(Vec::new())
+        );
+        assert_eq!(parse_dispatch_inputs("on:\n  - workflow_dispatch\n"), Some(Vec::new()));
+        // …and a list that does not include it is still not dispatchable.
+        assert_eq!(parse_dispatch_inputs("on: [push]\n"), None);
+    }
+
+    #[test]
+    fn parses_a_real_dispatch_form() {
+        // Trimmed from cli/cli's deployment.yml.
+        let yaml = r#"
+name: Deployment
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        required: true
+        type: string
+        description: "The tag name for the release (e.g. v2.100.0)."
+      environment:
+        default: production
+        type: environment
+        description: "The deployment environment."
+      dry_run:
+        type: boolean
+        default: true
+      channel:
+        type: choice
+        options:
+          - stable
+          - beta
+      untyped:
+        description: no type given
+"#;
+        let inputs = parse_dispatch_inputs(yaml).expect("dispatchable");
+        let by = |n: &str| inputs.iter().find(|i| i.name == n).unwrap().clone();
+
+        assert_eq!(inputs.len(), 5);
+        assert!(by("tag_name").required);
+        assert_eq!(by("environment").default, "production");
+        // A boolean default is not a string in the file, but the form and the
+        // `-f k=v` argv both need one.
+        assert_eq!(by("dry_run").default, "true");
+        assert_eq!(by("channel").options, vec!["stable", "beta"]);
+        // No `type:` means string — that is what GitHub assumes too.
+        assert_eq!(by("untyped").kind, "string");
+        assert!(!by("untyped").required);
+    }
+
+    #[test]
+    fn junk_yaml_is_not_dispatchable_rather_than_a_panic() {
+        for bad in ["", "\t\tbroken:\n  - [", "just a string", "42"] {
+            assert_eq!(parse_dispatch_inputs(bad), None, "{bad:?}");
+        }
+    }
+
+    /// Unix -> the ISO-8601 gh emits, for building fixtures.
+    fn iso(unix: i64) -> String {
+        let days = unix.div_euclid(86_400);
+        let secs = unix.rem_euclid(86_400);
+        // 1970-01-01 + days, the inverse of parse_iso8601's civil-from-days.
+        let (mut y, mut d) = (1970, days);
+        loop {
+            let len = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
+            if d < len {
+                break;
+            }
+            d -= len;
+            y += 1;
+        }
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        let months = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let mut m = 0;
+        while d >= months[m] {
+            d -= months[m];
+            m += 1;
+        }
+        format!(
+            "{y:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            m + 1,
+            d + 1,
+            secs / 3600,
+            (secs % 3600) / 60,
+            secs % 60
+        )
+    }
 
     fn name_set<'a>(names: &[&'a str]) -> std::collections::HashSet<&'a str> {
         names.iter().copied().collect()
@@ -4175,6 +5094,273 @@ mod tests {
 mod golden {
     use super::*;
     use crate::model::DirtyPolicy;
+
+    // --- github actions ---------------------------------------------------
+
+    /// 2026-07-31T03:12:48Z, the fixture's clock.
+    const T0: i64 = 1_785_467_568;
+
+    #[test]
+    fn run_state_maps_every_pair_gh_emits() {
+        use RunState::*;
+        let cases: &[(&str, &str, RunState)] = &[
+            ("queued", "", Queued),
+            ("requested", "", Queued),
+            ("waiting", "", Queued),
+            ("pending", "", Queued),
+            ("in_progress", "", Running),
+            ("completed", "success", Success),
+            ("completed", "failure", Failure),
+            // Nothing renders a timeout differently from a failure, and a startup
+            // failure is a failure you cannot even read a log for.
+            ("completed", "timed_out", Failure),
+            ("completed", "startup_failure", Failure),
+            ("completed", "cancelled", Cancelled),
+            // Not failures: "this did not apply".
+            ("completed", "skipped", Skipped),
+            ("completed", "neutral", Skipped),
+            ("completed", "stale", Skipped),
+            ("completed", "action_required", ActionRequired),
+            // Completed with no conclusion is a real, momentary API state.
+            ("completed", "", Unknown),
+            // A conclusion gh grows after this ships must not be guessed at.
+            ("completed", "some_future_thing", Unknown),
+            ("something_new", "", Unknown),
+            // gh is consistent about case, but nothing here should depend on it.
+            ("QUEUED", "", Queued),
+            ("In_Progress", "", Running),
+            ("COMPLETED", "SUCCESS", Success),
+        ];
+        for (status, conclusion, want) in cases {
+            assert_eq!(
+                run_state(status, conclusion),
+                *want,
+                "({status}, {conclusion})"
+            );
+        }
+    }
+
+    #[test]
+    fn garbage_parses_to_nothing_rather_than_panicking() {
+        for bad in ["", "not json", "{}", "[null]", "[1,2]"] {
+            assert!(parse_gh_runs(bad, T0).is_empty(), "runs: {bad:?}");
+            assert!(parse_gh_workflows(bad).is_empty(), "workflows: {bad:?}");
+        }
+        // The empty string is not hypothetical: `gh workflow list` prints exactly
+        // that for a repo with no workflows. The caller tells it apart from junk
+        // by gh's exit code, never by this being empty.
+        assert!(parse_gh_workflows("").is_empty());
+    }
+
+    #[test]
+    fn parses_a_real_run() {
+        // Captured from `gh run list` against cli/cli.
+        let json = r#"[{"attempt":1,"conclusion":"success","createdAt":"2026-07-31T03:12:48Z",
+          "databaseId":30601004684,"displayTitle":"Triage Scheduled Tasks","event":"schedule",
+          "headBranch":"trunk","headSha":"abc123","number":5356,
+          "startedAt":"2026-07-31T03:12:48Z","status":"completed",
+          "updatedAt":"2026-07-31T03:13:06Z",
+          "url":"https://github.com/cli/cli/actions/runs/30601004684",
+          "workflowDatabaseId":235328803,"workflowName":"Triage Scheduled Tasks"}]"#;
+        let runs = parse_gh_runs(json, T0 + 3600);
+        assert_eq!(runs.len(), 1);
+        let r = &runs[0];
+        assert_eq!(r.id, 30_601_004_684);
+        assert_eq!(r.number, 5356);
+        assert_eq!(r.workflow_id, 235_328_803);
+        assert_eq!(r.event, "schedule");
+        assert_eq!(r.state, RunState::Success);
+        // 03:12:48 -> 03:13:06.
+        assert_eq!(r.duration_secs, 18);
+    }
+
+    #[test]
+    fn a_running_run_counts_up_from_when_it_started() {
+        let json = format!(
+            r#"[{{"databaseId":1,"status":"in_progress","conclusion":"",
+                 "startedAt":"{}","updatedAt":"{}"}}]"#,
+            iso(T0),
+            iso(T0)
+        );
+        let r = &parse_gh_runs(&json, T0 + 600)[0];
+        assert_eq!(r.state, RunState::Running);
+        assert_eq!(r.duration_secs, 600);
+    }
+
+    #[test]
+    fn a_queued_run_has_no_duration() {
+        // It has a timestamp, but nothing has run — a duration ticking up here
+        // would be describing time the run did not spend.
+        let json = format!(
+            r#"[{{"databaseId":1,"status":"queued","conclusion":"",
+                 "startedAt":"{}","updatedAt":"{}"}}]"#,
+            iso(T0),
+            iso(T0)
+        );
+        let r = &parse_gh_runs(&json, T0 + 600)[0];
+        assert_eq!(r.state, RunState::Queued);
+        assert_eq!(r.duration_secs, 0);
+    }
+
+    #[test]
+    fn clock_skew_never_yields_a_negative_duration() {
+        let json = format!(
+            r#"[{{"databaseId":1,"status":"completed","conclusion":"success",
+                 "startedAt":"{}","updatedAt":"{}"}}]"#,
+            iso(T0 + 30),
+            iso(T0)
+        );
+        assert_eq!(parse_gh_runs(&json, T0 + 600)[0].duration_secs, 0);
+    }
+
+    #[test]
+    fn a_row_needs_an_id_and_nothing_else() {
+        // No databaseId: unusable, because it is what every `gh run` takes.
+        assert!(parse_gh_runs(r#"[{"number":7}]"#, T0).is_empty());
+
+        // Only an id: renders, with everything else at its default rather than
+        // taking the whole list down.
+        let r = &parse_gh_runs(r#"[{"databaseId":9}]"#, T0)[0];
+        assert_eq!(r.title, "");
+        assert_eq!(r.state, RunState::Unknown);
+        assert_eq!(r.attempt, 1);
+        assert_eq!(r.updated_relative, "?");
+    }
+
+    #[test]
+    fn a_ruleset_run_with_no_workflow_name_still_renders() {
+        // Runs created by an org ruleset carry no workflowName. Documented API
+        // behaviour, not a parse failure — dropping them would hide real CI.
+        let json = r#"[{"databaseId":5,"workflowName":"","status":"completed",
+                        "conclusion":"failure"}]"#;
+        let r = &parse_gh_runs(json, T0)[0];
+        assert_eq!(r.workflow_name, "");
+        assert_eq!(r.state, RunState::Failure);
+    }
+
+    #[test]
+    fn parses_workflows_including_disabled_ones() {
+        let json = r#"[{"id":1,"name":"CI","path":".github/workflows/ci.yml","state":"active"},
+                       {"id":2,"name":"Old","path":".github/workflows/old.yml",
+                        "state":"disabled_inactivity"},
+                       {"name":"no id"}]"#;
+        let ws = parse_gh_workflows(json);
+        assert_eq!(ws.len(), 2, "a workflow with no id cannot be filtered on");
+        // The state string is passed through rather than parsed: the sidebar only
+        // needs to know it is not "active", and gh may add more of these.
+        assert_eq!(ws[1].state, "disabled_inactivity");
+        assert_eq!(ws[1].path, ".github/workflows/old.yml");
+    }
+
+    #[test]
+    fn a_workflow_with_no_dispatch_trigger_cannot_be_started_by_hand() {
+        // The real cli/cli test workflow. None, not an empty input list: GitHub
+        // offers no way in, and an empty form would imply there is one.
+        let yaml = "name: Unit and Integration Tests\non:\n  push:\n    branches:\n      - trunk\n  pull_request:\n";
+        assert_eq!(parse_dispatch_inputs(yaml), None);
+    }
+
+    #[test]
+    fn on_survives_being_read_as_the_boolean_true() {
+        // YAML 1.1 reads a bare `on` key as `true`. Which reading a parser gives
+        // depends on its version, and a workflow file's most important key must
+        // not hinge on that — so both are looked up.
+        let yaml = "on:\n  workflow_dispatch:\njobs: {}\n";
+        assert_eq!(parse_dispatch_inputs(yaml), Some(Vec::new()));
+    }
+
+    #[test]
+    fn the_short_trigger_spellings_all_mean_dispatchable() {
+        // `workflow_dispatch:` with nothing under it, in every legal shape.
+        assert_eq!(parse_dispatch_inputs("on: workflow_dispatch\n"), Some(Vec::new()));
+        assert_eq!(
+            parse_dispatch_inputs("on: [push, workflow_dispatch]\n"),
+            Some(Vec::new())
+        );
+        assert_eq!(parse_dispatch_inputs("on:\n  - workflow_dispatch\n"), Some(Vec::new()));
+        // …and a list that does not include it is still not dispatchable.
+        assert_eq!(parse_dispatch_inputs("on: [push]\n"), None);
+    }
+
+    #[test]
+    fn parses_a_real_dispatch_form() {
+        // Trimmed from cli/cli's deployment.yml.
+        let yaml = r#"
+name: Deployment
+on:
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        required: true
+        type: string
+        description: "The tag name for the release (e.g. v2.100.0)."
+      environment:
+        default: production
+        type: environment
+        description: "The deployment environment."
+      dry_run:
+        type: boolean
+        default: true
+      channel:
+        type: choice
+        options:
+          - stable
+          - beta
+      untyped:
+        description: no type given
+"#;
+        let inputs = parse_dispatch_inputs(yaml).expect("dispatchable");
+        let by = |n: &str| inputs.iter().find(|i| i.name == n).unwrap().clone();
+
+        assert_eq!(inputs.len(), 5);
+        assert!(by("tag_name").required);
+        assert_eq!(by("environment").default, "production");
+        // A boolean default is not a string in the file, but the form and the
+        // `-f k=v` argv both need one.
+        assert_eq!(by("dry_run").default, "true");
+        assert_eq!(by("channel").options, vec!["stable", "beta"]);
+        // No `type:` means string — that is what GitHub assumes too.
+        assert_eq!(by("untyped").kind, "string");
+        assert!(!by("untyped").required);
+    }
+
+    #[test]
+    fn junk_yaml_is_not_dispatchable_rather_than_a_panic() {
+        for bad in ["", "\t\tbroken:\n  - [", "just a string", "42"] {
+            assert_eq!(parse_dispatch_inputs(bad), None, "{bad:?}");
+        }
+    }
+
+    /// Unix -> the ISO-8601 gh emits, for building fixtures.
+    fn iso(unix: i64) -> String {
+        let days = unix.div_euclid(86_400);
+        let secs = unix.rem_euclid(86_400);
+        // 1970-01-01 + days, the inverse of parse_iso8601's civil-from-days.
+        let (mut y, mut d) = (1970, days);
+        loop {
+            let len = if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 { 366 } else { 365 };
+            if d < len {
+                break;
+            }
+            d -= len;
+            y += 1;
+        }
+        let leap = (y % 4 == 0 && y % 100 != 0) || y % 400 == 0;
+        let months = [31, if leap { 29 } else { 28 }, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+        let mut m = 0;
+        while d >= months[m] {
+            d -= months[m];
+            m += 1;
+        }
+        format!(
+            "{y:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+            m + 1,
+            d + 1,
+            secs / 3600,
+            (secs % 3600) / 60,
+            secs % 60
+        )
+    }
 
     fn name_set<'a>(names: &[&'a str]) -> std::collections::HashSet<&'a str> {
         names.iter().copied().collect()

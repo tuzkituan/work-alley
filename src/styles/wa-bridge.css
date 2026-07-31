@@ -474,6 +474,35 @@ body,
   gap: 8px;
   grid-template-columns: 46px minmax(0, 1fr) 132px 116px 44px 16px;
 }
+/* GitHub Actions: a workflow rail beside the run list, the shape github.com uses.
+ *
+ * 150px of rail because the longest realistic workflow name that must stay
+ * readable ("Unit and Integration Tests") truncates gracefully there, and because
+ * this panel is resizable down to 420px and the list needs the rest. */
+.wa-wf-split {
+  display: grid;
+  min-height: 0;
+  grid-template-columns: 150px minmax(0, 1fr);
+}
+.wa-wf-side {
+  min-width: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--adaptive-200);
+}
+/* The dropdown that stands in for the rail on a narrow panel. Off by default, so
+   the wide case costs nothing. */
+.wa-wf-picker {
+  display: none;
+}
+
+/* state / title+meta / #run / duration / relative / link */
+.wa-wf-cols {
+  display: grid;
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: 14px minmax(0, 1fr) 64px 56px 48px 16px;
+}
+
 .wa-file-cols {
   display: grid;
   align-items: center;
@@ -514,6 +543,12 @@ body,
 }
 
 @container detail (max-width: 760px) {
+  /* The run number goes first: it is an ordinal, and the relative time already
+     answers "which one is this". The track has to go with the cell or it leaves
+     a 64px hole. */
+  .wa-wf-cols {
+    grid-template-columns: 14px minmax(0, 1fr) 56px 48px 16px;
+  }
   .wa-pr-cols {
     grid-template-columns: 46px minmax(0, 1fr) 116px 44px 16px;
   }
@@ -538,6 +573,21 @@ body,
 @container detail (max-width: 560px) {
   .wa-stat-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  /* Below this the rail and a readable commit subject cannot both fit: 150px of
+     rail out of a ~396px content box leaves 84px for the title. So the rail
+     becomes a picker in the header's action row. */
+  .wa-wf-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .wa-wf-side {
+    display: none;
+  }
+  .wa-wf-picker {
+    display: block;
+  }
+  .wa-wf-cols {
+    grid-template-columns: 14px minmax(0, 1fr) 48px 16px;
   }
   .wa-pr-cols {
     grid-template-columns: 46px minmax(0, 1fr) 44px 16px;

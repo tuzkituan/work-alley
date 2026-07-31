@@ -47,6 +47,7 @@ portable-pty = "0.9"
 # Terminal output is raw bytes and Tauri events are JSON. See pty::flush for why
 # this is base64 and not from_utf8_lossy.
 base64 = "0.22"
+yaml-rust2 = "0.11.0"
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

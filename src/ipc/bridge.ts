@@ -8,6 +8,7 @@ import { writeToTerm } from '@/features/terminal/xterm-instance'
 import { useScanStore } from '@/stores/scan-store'
 import { useRunStore } from '@/stores/run-store'
 import { useTerminalStore } from '@/stores/terminal-store'
+import { useCiStore } from '@/stores/ci-store'
 import { useUiStore } from '@/stores/ui-store'
 import { keys } from '@/queries/keys'
 import { staleKeysFor } from '@/queries/invalidate'
@@ -239,6 +240,8 @@ async function wire(qc: QueryClient) {
       .catch(() => {})
     useUiStore.getState().setCategory(null)
     useUiStore.getState().closeDetail()
+    // The CI watch list is a set of repos in the folder being left.
+    useCiStore.getState().reset()
     void qc.invalidateQueries()
   })
 

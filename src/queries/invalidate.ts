@@ -20,6 +20,7 @@ export function staleKeysFor(kind: string, id: RepoId): readonly unknown[][] {
   const commits = ['repoCommits', id]
   const branches = [...keys.branches(id)]
   const prs = [...keys.prs(id)]
+  const ghRuns = ['ghRuns', id]
   const deps = [...keys.repoPackages(id)]
   const depUpdates = [...keys.repoPackageUpdates(id)]
 
@@ -66,6 +67,13 @@ export function staleKeysFor(kind: string, id: RepoId): readonly unknown[][] {
 
     case 'prList':
       return [prs, ...always]
+
+    // A re-run or a cancel changes what GitHub reports and nothing on disk, so
+    // none of the git views move. The prefix covers every workflow filter.
+    case 'ghRunRerun':
+    case 'ghRunCancel':
+    case 'ghWorkflowRun':
+      return [ghRuns, ...always]
 
     // Read-only, or nothing to do with git state: status, diff, logGraph,
     // branchList, stashList, openShell, openInEditor, killPort, dockerPs…

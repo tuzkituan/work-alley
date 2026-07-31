@@ -19,6 +19,7 @@ export function TabPanel({
   icon,
   title,
   right,
+  trailing,
   isFetching,
   onRefresh,
   actions,
@@ -29,6 +30,8 @@ export function TabPanel({
   title: ReactNode
   /** Extra header content, left of the spacer. */
   right?: ReactNode
+  /** Header content immediately before Refresh — the tab's own primary action. */
+  trailing?: ReactNode
   isFetching: boolean
   onRefresh: () => void
   /** A second header row, for per-tab action chips. */
@@ -47,6 +50,7 @@ export function TabPanel({
             <SectionLabel>{title}</SectionLabel>
             {right}
             <div className="flex-1" />
+            {trailing}
             {/* Rendered in every state on purpose. The PR tab used to return early
                 on each failure, taking its Refresh button with it — so after
                 running `gh auth login` in the terminal next door, the only way to

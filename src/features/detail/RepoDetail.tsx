@@ -7,6 +7,7 @@ import { BranchesPanel } from './panels/BranchesPanel'
 import { ChangesPanel } from './panels/ChangesPanel'
 import { CommitsPanel } from './panels/CommitsPanel'
 import { PackagesPanel } from './panels/PackagesPanel'
+import { GhActionsPanel } from './panels/GhActionsPanel'
 import { PullRequestsPanel } from './panels/PullRequestsPanel'
 import { RunsPanel } from './panels/RunsPanel'
 
@@ -42,12 +43,18 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
         {/* `line` rather than the default filled pill group: that variant is a 36px
             bar of muted background, which is too much weight directly under a
             header that already carries three rows. */}
-        <TabsList variant="line" className="flex-none">
+        {/* Seven triggers now, against a panel that can be dragged to 420px. It
+            scrolls rather than shortening labels — "PRs" and "Pkgs" save 60px and
+            cost the two tabs nobody visits daily. */}
+        <TabsList variant="line" className="wa-scroll flex-none overflow-x-auto">
           <TabsTrigger value="changes">Changes</TabsTrigger>
           <TabsTrigger value="commits">Commits</TabsTrigger>
           <TabsTrigger value="branches">Branches</TabsTrigger>
           <TabsTrigger value="packages">Packages</TabsTrigger>
           <TabsTrigger value="prs">Pull requests</TabsTrigger>
+          {/* GitHub's Actions, not this app's — the Runs tab beside it is the
+              local process log. */}
+          <TabsTrigger value="actions">Actions</TabsTrigger>
           <TabsTrigger value="runs">Runs</TabsTrigger>
         </TabsList>
 
@@ -67,6 +74,9 @@ export function RepoDetail({ repoId: id }: { repoId: RepoId }) {
         </TabsContent>
         <TabsContent value="prs" className="flex min-h-0 flex-1 flex-col">
           <PullRequestsPanel repo={ctx.repo} id={id} />
+        </TabsContent>
+        <TabsContent value="actions" className="flex min-h-0 flex-1 flex-col">
+          <GhActionsPanel repo={ctx.repo} id={id} />
         </TabsContent>
         <TabsContent value="runs" className="flex min-h-0 flex-1 flex-col">
           <RunsPanel id={id} />
