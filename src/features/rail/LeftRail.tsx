@@ -1,9 +1,32 @@
 import { memo } from 'react'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { ExternalLink, Folder, FolderOpen, Layers, ListChecks, Play, Square, Wrench } from 'lucide-react'
+import {
+  ChevronDown,
+  ExternalLink,
+  Folder,
+  FolderOpen,
+  Layers,
+  ListChecks,
+  Play,
+  Square,
+  Wrench,
+} from 'lucide-react'
 import { KvRow, SectionLabel, StatusDot } from '@/components/wa/primitives'
 import { cn } from '@/lib/utils'
-import { repoId, type Bootstrap, type Category, type DevServer } from '@/domain/types'
+import {
+  repoId,
+  type ActionSpec,
+  type Bootstrap,
+  type Category,
+  type DevServer,
+  type ScriptDescriptor,
+} from '@/domain/types'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import { useScanStore } from '@/stores/scan-store'
 import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
@@ -68,37 +91,7 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
           )}
         </div>
 
-        <div className="flex flex-col gap-1">
-          <div className="px-1.5 pb-1">
-            <SectionLabel>Scripts</SectionLabel>
-          </div>
-          {scripts.map((s) => (
-            <button
-              key={s.id}
-              type="button"
-              onClick={() =>
-                run(
-                  s.mode === 'headless'
-                    ? { kind: 'script', script: s.id, args: defaultArgs(s.argSchema) }
-                    : { kind: 'openInTerminal', script: s.id, ref: null }
-                )
-              }
-              className="flex h-[30px] items-center gap-2 rounded-md border border-transparent px-2 text-left hover:bg-adaptive-200"
-              title={s.description}
-            >
-              <Play className="size-2.5 flex-none text-adaptive-400" />
-              <span className="flex-1 truncate text-xs font-medium text-adaptive-800">
-                {s.title}
-              </span>
-              <span className="flex-none font-mono text-[10px] text-adaptive-400">{s.hint}</span>
-            </button>
-          ))}
-          {scripts.length === 0 && (
-            <div className="px-2 py-1.5 text-[11px] text-adaptive-400">
-              No scripts/ directory here.
-            </div>
-          )}
-        </div>
+        <ScriptsMenu scripts={scripts} run={run} />
 
         <RunningSection />
       </div>
@@ -122,6 +115,94 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
       </div>
 
       <ToolchainCard boot={boot} />
+    </div>
+  )
+}
+
+/**
+ * Every script behind one row.
+ *
+ * These used to be a flat always-expanded list, which cost one 30px row per
+ * script in a 214px column — eight of them pushed the Running section off the
+ * bottom, and the rail's own job (choosing a folder) was the thing that got
+ * scrolled away. A menu costs one row whatever the workspace declares.
+ *
+ * A dropdown rather than a collapsible section: collapsing keeps the height
+ * problem the moment it is open, and the list is somewhere you *go* to pick one
+ * thing and leave, not something to keep in view while working.
+ *
+ * Kept in the same shape as `MachineButton` and the folder rows, so the rail
+ * still reads as one column of the same control repeated.
+ */
+function ScriptsMenu({
+  scripts,
+  run,
+}: {
+  scripts: ScriptDescriptor[]
+  run: (spec: ActionSpec) => void
+}) {
+  // Nothing to open, but the section still appears — its absence is a fact about
+  // the workspace, and silently omitting it reads as a missing feature.
+  if (scripts.length === 0) {
+    return (
+      <div className="flex flex-col gap-1">
+        <div className="px-1.5 pb-1">
+          <SectionLabel>Scripts</SectionLabel>
+        </div>
+        <div className="px-2 py-1.5 text-[11px] text-adaptive-400">
+          No scripts/ directory here.
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="flex items-center justify-between px-1.5 pb-1">
+        <SectionLabel>Scripts</SectionLabel>
+        <span className="wa-num font-mono text-[11px] text-adaptive-400">{scripts.length}</span>
+      </div>
+
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="flex h-[30px] items-center gap-2 rounded-md border border-transparent px-2 text-left hover:bg-adaptive-200 data-[state=open]:bg-adaptive-200"
+            title={`${scripts.length} script${scripts.length === 1 ? '' : 's'} in scripts/`}
+          >
+            <Play className="size-2.5 flex-none text-adaptive-400" />
+            <span className="flex-1 truncate text-xs font-medium text-adaptive-800">
+              Run a script
+            </span>
+            <ChevronDown className="size-3 flex-none text-adaptive-400" />
+          </button>
+        </DropdownMenuTrigger>
+
+        {/* Opened to the side: the rail is 214px at its default, and a menu
+            constrained to that would truncate the very titles it exists to show. */}
+        <DropdownMenuContent side="right" align="start" className="max-h-96 w-72 overflow-y-auto">
+          {scripts.map((s) => (
+            <DropdownMenuItem
+              key={s.id}
+              onClick={() =>
+                run(
+                  s.mode === 'headless'
+                    ? { kind: 'script', script: s.id, args: defaultArgs(s.argSchema) }
+                    : { kind: 'openInTerminal', script: s.id, ref: null }
+                )
+              }
+              title={s.description}
+            >
+              <Play className="size-2.5 flex-none text-adaptive-400" />
+              <span className="flex-1 truncate">{s.title}</span>
+              {/* The tool the script leans on — gh / npm / git / jq. Worth keeping:
+                  it is the difference between a script that will run here and one
+                  that needs something installed first. */}
+              <span className="flex-none font-mono text-[10px] text-adaptive-400">{s.hint}</span>
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
     </div>
   )
 }
