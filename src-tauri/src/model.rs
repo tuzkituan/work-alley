@@ -612,11 +612,21 @@ pub struct ToolPackage {
     pub label: String,
     pub description: String,
     pub group: String,
-    /// dnf / nvm / bun / npm / rustup / cargo
+    /// dnf / winget / nvm / bun / npm / rustup / cargo
     pub manager: String,
     /// True when the operation must run in a terminal for a password prompt.
     pub needs_root: bool,
     pub removable: bool,
+    /// How privileges are acquired: "sudo", "uac" or "none".
+    ///
+    /// Separate from `needs_root` because winget needs neither a prefix nor a
+    /// terminal, but does raise a consent dialog outside the app — so "root", and the
+    /// tooltip about typing a password, would both be wrong there.
+    pub elevation: String,
+    /// Why this tool cannot be installed here, when there is something more useful to
+    /// say than "not available through <manager>". `kcat` has no Windows build at all;
+    /// `curl` is already in the OS.
+    pub unavailable_note: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -764,6 +774,13 @@ pub struct Bootstrap {
     /// rather than assumed: it is `/home/x` on Linux and `/Users/x` on macOS, and
     /// neither is guaranteed.
     pub home_dir: Option<PathBuf>,
+    /// Which OS this is: "windows", "macos" or "linux".
+    ///
+    /// Carried on the payload the frontend already fetches on mount rather than
+    /// through a command of its own, and rather than through `@tauri-apps/plugin-os`.
+    /// Before this there was no way at all for the UI to branch on platform, which the
+    /// window controls and the path abbreviation both need.
+    pub os: String,
     pub warnings: Vec<String>,
     /// Whether this machine can actually do what the dashboard offers.
     ///

@@ -197,11 +197,9 @@ async fn supervise(
     {
         // On Windows the raw handle is what lets the job be assigned without
         // reopening the process by pid, which could race pid reuse.
+        // tokio exposes this inherently on Windows, and it is already an Option.
         #[cfg(windows)]
-        let os_handle = {
-            use std::os::windows::io::AsRawHandle as _;
-            child.raw_handle().map(|h| h as isize)
-        };
+        let os_handle = child.raw_handle().map(|h| h as isize);
         #[cfg(not(windows))]
         let os_handle = None;
         *handle.group.lock().unwrap() = Some(crate::platform::adopt(pid, os_handle));
@@ -561,14 +559,8 @@ pub async fn port_in_use(port: u16) -> bool {
 
 // Terminal-emulator discovery lives in `platform`: eight Linux emulators there,
 // `wt.exe` on Windows.
-pub use crate::platform::{external_terminal_available, find_terminal, TerminalCmd};
+use crate::platform::{find_terminal, TerminalCmd};
 
-// Both moved to `platform`, which owns every difference between the POSIX shells
-// and PowerShell. Re-exported rather than relocated at every call site, because
-// `sh_quote` is still exactly the right quoter for a POSIX script — it is just no
-// longer the *only* quoter.
-pub use crate::platform::sh_quote;
-use crate::platform::which as which_path;
 
 /// Launches a GUI program and forgets about it.
 ///
@@ -749,8 +741,6 @@ pub fn open_terminal(
 
 // Port inspection lives in `platform`: `ss`/`lsof` on unix, `netstat` on Windows.
 pub use crate::platform::port_holders;
-// Moved to `platform::ports`, which parses the Windows equivalents beside it.
-pub use crate::platform::parse_ss_holders;
 
 #[cfg(test)]
 mod tests {
@@ -803,26 +793,4 @@ mod tests {
         assert_eq!(built(&term, "echo hi"), ["--tab", "--", "bash", "-lc", "echo hi"]);
     }
 
-    #[test]
-    fn parses_ss_single_holder() {
-        let out = r#"LISTEN 0 511 *:8100 *:* users:(("node",pid=12345,fd=20))"#;
-        assert_eq!(parse_ss_holders(out), vec![(12345, "node".to_string())]);
-    }
-
-    #[test]
-    fn parses_ss_multiple_holders_and_dedupes() {
-        let out = "LISTEN 0 511 *:3000 *:* users:((\"node\",pid=111,fd=20),(\"node\",pid=222,fd=21))\n\
-                   LISTEN 0 511 [::]:3000 [::]:* users:((\"node\",pid=111,fd=22))";
-        let h = parse_ss_holders(out);
-        assert_eq!(h.len(), 2);
-        assert!(h.contains(&(111, "node".to_string())));
-        assert!(h.contains(&(222, "node".to_string())));
-    }
-
-    #[test]
-    fn no_holders_when_nothing_listens() {
-        assert!(parse_ss_holders("").is_empty());
-        assert!(parse_ss_holders("LISTEN 0 511 *:8100 *:*").is_empty());
-    }
 }
-

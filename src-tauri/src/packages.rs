@@ -28,6 +28,27 @@ pub enum SystemPm {
     Zypper,
     Apk,
     Brew,
+    /// Windows' own. Added unconditionally rather than behind `cfg(windows)` so
+    /// every winget verb, plan and parser below is exercised by the test suite on a
+    /// Linux dev box — only *detection* is platform-gated.
+    Winget,
+}
+
+/// How a manager acquires the privileges an install needs.
+///
+/// `needs_root` used to answer two questions at once: "prefix sudo" and "a password
+/// prompt is coming, so warn and use a terminal". winget separates them — it takes no
+/// prefix, but it does raise a UAC dialog outside the terminal, and a run that looks
+/// hung is a run silently waiting for a click nobody mentioned.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Elevation {
+    /// Prefix `sudo`; the password is typed into the integrated terminal.
+    Sudo,
+    /// None needed: a user-owned prefix. Homebrew, and every per-user manager.
+    None,
+    /// The manager elevates itself per operation, through a consent dialog this app
+    /// cannot render or even see.
+    Uac,
 }
 
 impl SystemPm {
@@ -39,13 +60,28 @@ impl SystemPm {
             SystemPm::Zypper => "zypper",
             SystemPm::Apk => "apk",
             SystemPm::Brew => "brew",
+            SystemPm::Winget => "winget",
         }
     }
 
-    /// Homebrew refuses to run under sudo and installs into a user-owned prefix,
-    /// so it is the one manager that needs no password and can stream in-app.
+    pub fn elevation(&self) -> Elevation {
+        match self {
+            // Homebrew refuses to run under sudo and installs into a user-owned
+            // prefix, so it needs no password and can stream in-app.
+            SystemPm::Brew => Elevation::None,
+            SystemPm::Winget => Elevation::Uac,
+            _ => Elevation::Sudo,
+        }
+    }
+
+    /// Kept, and now means exactly one thing: whether to prefix `sudo`.
     pub fn needs_root(&self) -> bool {
-        !matches!(self, SystemPm::Brew)
+        matches!(self.elevation(), Elevation::Sudo)
+    }
+
+    /// One package per invocation, so a group has to be chained rather than batched.
+    fn one_at_a_time(&self) -> bool {
+        matches!(self, SystemPm::Winget)
     }
 
     /// Arguments between the program and the package name.
@@ -77,6 +113,47 @@ impl SystemPm {
             (SystemPm::Brew, PackageOp::Install) => &["install"],
             (SystemPm::Brew, PackageOp::Upgrade) => &["upgrade"],
             (SystemPm::Brew, PackageOp::Remove) => &["uninstall"],
+
+            // Each verb ends with `--id`, so the package name that every caller
+            // appends last becomes its value. That keeps "the target is the last
+            // argv element" true for every other manager here.
+            //
+            // `--exact` stops a substring query matching several packages and exiting
+            // to ask which. `--source winget` pins to the community repo so an msstore
+            // package with a colliding name cannot win. The two `--accept-*` flags
+            // stop the first run of a licensed package blocking on y/n.
+            // `--disable-interactivity` is the one that makes winget safe to drive
+            // from a GUI at all: it turns every remaining prompt into a non-zero exit
+            // instead of a hang.
+            //
+            // Deliberately no `--silent`: winget's default is already silent-with-
+            // progress, and forcing it makes a handful of installers (Docker Desktop,
+            // the VS Build Tools) fail rather than show their own UI.
+            (SystemPm::Winget, PackageOp::Install) => &[
+                "install",
+                "--exact",
+                "--source",
+                "winget",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--disable-interactivity",
+                "--id",
+            ],
+            (SystemPm::Winget, PackageOp::Upgrade) => &[
+                "upgrade",
+                "--exact",
+                "--accept-package-agreements",
+                "--accept-source-agreements",
+                "--disable-interactivity",
+                "--id",
+            ],
+            // A different flag set on purpose: `winget uninstall` rejects
+            // --accept-package-agreements and --source as unrecognised arguments,
+            // which is why this belongs in the per-verb table and a single shared
+            // "non-interactive flags" constant would be wrong.
+            (SystemPm::Winget, PackageOp::Remove) => {
+                &["uninstall", "--exact", "--disable-interactivity", "--id"]
+            }
         }
     }
 }
@@ -85,18 +162,71 @@ impl SystemPm {
 /// Homebrew when both are present.
 pub fn detect_system_pm(tc: &Toolchain) -> Option<SystemPm> {
     let dirs = search_dirs(tc);
-    [
+
+    // winget.exe lives in %LOCALAPPDATA%\Microsoft\WindowsApps as an App Execution
+    // Alias — a zero-length reparse point — so finding it depends on `which_in`
+    // being PATHEXT-aware. A bare `dir.join("winget")` never sees it.
+    #[cfg(windows)]
+    let candidates: &[(&str, SystemPm)] = &[("winget", SystemPm::Winget)];
+    #[cfg(not(windows))]
+    let candidates: &[(&str, SystemPm)] = &[
         ("dnf", SystemPm::Dnf),
         ("apt-get", SystemPm::Apt),
         ("pacman", SystemPm::Pacman),
         ("zypper", SystemPm::Zypper),
         ("apk", SystemPm::Apk),
         ("brew", SystemPm::Brew),
-    ]
-    .into_iter()
-    .find(|(bin, _)| which_in(&dirs, bin).is_some() || tc.has(bin))
-    .map(|(_, pm)| pm)
+    ];
+
+    candidates
+        .iter()
+        .copied()
+        .find(|(bin, _)| which_in(&dirs, bin).is_some() || tc.has(bin))
+        .map(|(_, pm)| pm)
 }
+
+/// Why nothing can be installed, worded for the platform the user is actually on.
+///
+/// Keeps the phrase "no system package manager" on both, which is what the caller's
+/// test asserts and what the frontend matches on.
+fn no_system_pm() -> String {
+    #[cfg(windows)]
+    {
+        "no system package manager found — winget was not found. Install \"App \
+         Installer\" from the Microsoft Store, then restart Work Alley."
+            .to_string()
+    }
+    #[cfg(not(windows))]
+    {
+        "no system package manager found (looked for dnf, apt-get, pacman, zypper, \
+         apk and brew)"
+            .to_string()
+    }
+}
+
+/// The platform a catalog entry can exist on at all.
+///
+/// Distinct from "a manager packages it", which an empty alias already says. A row
+/// nothing could ever install is noise — and worse than noise for the ones marked
+/// `removable: false`, which would sit permanently unfinishable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Os {
+    Unix,
+    Windows,
+}
+
+impl Os {
+    pub fn current() -> Os {
+        if cfg!(windows) {
+            Os::Windows
+        } else {
+            Os::Unix
+        }
+    }
+}
+
+pub const EVERYWHERE: &[Os] = &[Os::Unix, Os::Windows];
+pub const UNIX_ONLY: &[Os] = &[Os::Unix];
 
 /// How a package is managed. Determines the command and whether root is needed.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +269,14 @@ impl Manager {
             _ => false,
         }
     }
+
+    /// How this manager gets its privileges, for the warning and the danger level.
+    pub fn elevation(&self, sys: Option<SystemPm>) -> Elevation {
+        match self {
+            Manager::System => sys.map(|s| s.elevation()).unwrap_or(Elevation::Sudo),
+            _ => Elevation::None,
+        }
+    }
 }
 
 pub struct Entry {
@@ -157,6 +295,53 @@ pub struct Entry {
     bin: &'static str,
     /// Removal is not offered for things the app itself depends on.
     removable: bool,
+    /// Where this tool can exist at all. `EVERYWHERE` for almost everything.
+    ///
+    /// Not the same question as "does a manager package it" — an empty alias already
+    /// answers that, and an annotated missing row is *useful*. This is for the four
+    /// tools that cannot exist on Windows in any form, which would otherwise sit
+    /// permanently amber.
+    platforms: &'static [Os],
+    /// Overrides `manager` on Windows. Only `node` and `bun` need it.
+    manager_windows: Option<Manager>,
+    /// Overrides `bin` on Windows. Only `python` needs it (`python.exe`, not `python3`).
+    bin_windows: &'static str,
+    /// Shown instead of the generic "not available through <manager>" when a tool is
+    /// genuinely absent on this platform and there is something better to say.
+    unavailable_note: Option<&'static str>,
+}
+
+impl Entry {
+    /// The manager for this platform.
+    pub fn manager_for(&self, os: Os) -> Manager {
+        match (os, self.manager_windows) {
+            (Os::Windows, Some(m)) => m,
+            _ => self.manager,
+        }
+    }
+
+    /// The binary to probe on this platform.
+    pub fn bin_for(&self, os: Os) -> &'static str {
+        if os == Os::Windows && !self.bin_windows.is_empty() {
+            self.bin_windows
+        } else {
+            self.bin
+        }
+    }
+
+    pub fn note_for_unavailable(&self) -> Option<&'static str> {
+        self.unavailable_note
+    }
+}
+
+/// The catalog for one platform.
+///
+/// Filtered at the command boundary rather than in `find`, deliberately: a stale id
+/// from a cached frontend query must reach `plan`'s real refusal instead of becoming
+/// "unknown package", and the setup tests must be able to resolve Windows-only step
+/// ids while running on Linux.
+fn catalog(os: Os) -> impl Iterator<Item = &'static Entry> {
+    CATALOG.iter().filter(move |e| e.platforms.contains(&os))
 }
 
 /// A deliberately curated list. Not a package browser — the point is the tools a
@@ -166,93 +351,93 @@ pub struct Entry {
 /// `package` is the name most managers use; `aliases` covers the ones that don't.
 const CATALOG: &[Entry] = &[
     // --- runtimes -----------------------------------------------------------
-    Entry { id: "node", label: "Node.js", description: "JavaScript runtime, installed as the latest LTS via nvm.", group: "Runtimes", manager: Manager::Nvm, package: "--lts", aliases: &[], bin: "node", removable: false },
-    Entry { id: "bun", label: "Bun", description: "Fast JavaScript runtime and package manager.", group: "Runtimes", manager: Manager::BunSelf, package: "bun", aliases: &[], bin: "bun", removable: false },
-    Entry { id: "pnpm", label: "pnpm", description: "Alternative Node package manager.", group: "Runtimes", manager: Manager::NpmGlobal, package: "pnpm", aliases: &[], bin: "pnpm", removable: true },
-    Entry { id: "yarn", label: "Yarn", description: "Node package manager, for repos with a yarn.lock.", group: "Runtimes", manager: Manager::NpmGlobal, package: "yarn", aliases: &[], bin: "yarn", removable: true },
-    Entry { id: "rustup", label: "Rust toolchain", description: "rustc and cargo, managed by rustup.", group: "Runtimes", manager: Manager::Rustup, package: "stable", aliases: &[], bin: "rustc", removable: false },
+    Entry { id: "node", label: "Node.js", description: "JavaScript runtime, installed as the latest LTS via nvm.", group: "Runtimes", manager: Manager::Nvm, package: "--lts", aliases: &[("winget", "OpenJS.NodeJS.LTS")], bin: "node", removable: false, platforms: EVERYWHERE, manager_windows: Some(Manager::System), bin_windows: "", unavailable_note: None },
+    Entry { id: "bun", label: "Bun", description: "Fast JavaScript runtime and package manager.", group: "Runtimes", manager: Manager::BunSelf, package: "bun", aliases: &[("winget", "Oven-sh.Bun")], bin: "bun", removable: false, platforms: EVERYWHERE, manager_windows: Some(Manager::System), bin_windows: "", unavailable_note: None },
+    Entry { id: "pnpm", label: "pnpm", description: "Alternative Node package manager.", group: "Runtimes", manager: Manager::NpmGlobal, package: "pnpm", aliases: &[], bin: "pnpm", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "yarn", label: "Yarn", description: "Node package manager, for repos with a yarn.lock.", group: "Runtimes", manager: Manager::NpmGlobal, package: "yarn", aliases: &[], bin: "yarn", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "rustup", label: "Rust toolchain", description: "rustc and cargo, managed by rustup.", group: "Runtimes", manager: Manager::Rustup, package: "stable", aliases: &[], bin: "rustc", removable: false, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
 
     // --- web dev ------------------------------------------------------------
-    Entry { id: "typescript", label: "TypeScript", description: "The tsc compiler, available globally.", group: "Web dev", manager: Manager::NpmGlobal, package: "typescript", aliases: &[], bin: "tsc", removable: true },
-    Entry { id: "vercel", label: "Vercel CLI", description: "Deploy and manage Vercel projects.", group: "Web dev", manager: Manager::NpmGlobal, package: "vercel", aliases: &[], bin: "vercel", removable: true },
-    Entry { id: "firebase", label: "Firebase CLI", description: "Deploy and manage Firebase projects.", group: "Web dev", manager: Manager::NpmGlobal, package: "firebase-tools", aliases: &[], bin: "firebase", removable: true },
-    Entry { id: "serve", label: "serve", description: "Static file server for checking a build output.", group: "Web dev", manager: Manager::NpmGlobal, package: "serve", aliases: &[], bin: "serve", removable: true },
-    Entry { id: "nest", label: "NestJS CLI", description: "nest generate/build, for the backend services.", group: "Web dev", manager: Manager::NpmGlobal, package: "@nestjs/cli", aliases: &[], bin: "nest", removable: true },
+    Entry { id: "typescript", label: "TypeScript", description: "The tsc compiler, available globally.", group: "Web dev", manager: Manager::NpmGlobal, package: "typescript", aliases: &[], bin: "tsc", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "vercel", label: "Vercel CLI", description: "Deploy and manage Vercel projects.", group: "Web dev", manager: Manager::NpmGlobal, package: "vercel", aliases: &[], bin: "vercel", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "firebase", label: "Firebase CLI", description: "Deploy and manage Firebase projects.", group: "Web dev", manager: Manager::NpmGlobal, package: "firebase-tools", aliases: &[], bin: "firebase", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "serve", label: "serve", description: "Static file server for checking a build output.", group: "Web dev", manager: Manager::NpmGlobal, package: "serve", aliases: &[], bin: "serve", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "nest", label: "NestJS CLI", description: "nest generate/build, for the backend services.", group: "Web dev", manager: Manager::NpmGlobal, package: "@nestjs/cli", aliases: &[], bin: "nest", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
 
     // --- git & github -------------------------------------------------------
-    Entry { id: "git", label: "Git", description: "Required — the whole dashboard reads git state.", group: "Git", manager: Manager::System, package: "git", aliases: &[], bin: "git", removable: false },
-    Entry { id: "gh", label: "GitHub CLI", description: "Powers the pull-request list on each repo.", group: "Git", manager: Manager::System, package: "gh", aliases: &[("pacman", "github-cli"), ("apk", "github-cli")], bin: "gh", removable: true },
-    Entry { id: "lazygit", label: "lazygit", description: "Terminal UI for git.", group: "Git", manager: Manager::System, package: "lazygit", aliases: &[("apt-get", ""), ("zypper", "")], bin: "lazygit", removable: true },
-    Entry { id: "delta", label: "delta", description: "Better git diffs in the terminal.", group: "Git", manager: Manager::System, package: "git-delta", aliases: &[("pacman", "git-delta"), ("apk", "delta"), ("brew", "git-delta")], bin: "delta", removable: true },
+    Entry { id: "git", label: "Git", description: "Required — the whole dashboard reads git state.", group: "Git", manager: Manager::System, package: "git", aliases: &[("winget", "Git.Git")], bin: "git", removable: false, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "gh", label: "GitHub CLI", description: "Powers the pull-request list on each repo.", group: "Git", manager: Manager::System, package: "gh", aliases: &[("pacman", "github-cli"), ("apk", "github-cli"), ("winget", "GitHub.cli")], bin: "gh", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "lazygit", label: "lazygit", description: "Terminal UI for git.", group: "Git", manager: Manager::System, package: "lazygit", aliases: &[("apt-get", ""), ("zypper", ""), ("winget", "JesseDuffield.lazygit")], bin: "lazygit", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "delta", label: "delta", description: "Better git diffs in the terminal.", group: "Git", manager: Manager::System, package: "git-delta", aliases: &[("pacman", "git-delta"), ("apk", "delta"), ("brew", "git-delta"), ("winget", "dandavison.delta")], bin: "delta", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
 
     // --- shell --------------------------------------------------------------
-    Entry { id: "zsh", label: "Zsh", description: "Shell. Work Alley probes it to find your tools.", group: "Shell", manager: Manager::System, package: "zsh", aliases: &[], bin: "zsh", removable: false },
-    Entry { id: "fish", label: "Fish", description: "Friendly interactive shell.", group: "Shell", manager: Manager::System, package: "fish", aliases: &[], bin: "fish", removable: true },
-    Entry { id: "starship", label: "Starship", description: "Cross-shell prompt.", group: "Shell", manager: Manager::System, package: "starship", aliases: &[("apt-get", "")], bin: "starship", removable: true },
-    Entry { id: "tmux", label: "tmux", description: "Terminal multiplexer.", group: "Shell", manager: Manager::System, package: "tmux", aliases: &[], bin: "tmux", removable: true },
+    Entry { id: "zsh", label: "Zsh", description: "Shell. Work Alley probes it to find your tools.", group: "Shell", manager: Manager::System, package: "zsh", aliases: &[("winget", "")], bin: "zsh", removable: false, platforms: UNIX_ONLY, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "fish", label: "Fish", description: "Friendly interactive shell.", group: "Shell", manager: Manager::System, package: "fish", aliases: &[("winget", "")], bin: "fish", removable: true, platforms: UNIX_ONLY, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "starship", label: "Starship", description: "Cross-shell prompt.", group: "Shell", manager: Manager::System, package: "starship", aliases: &[("apt-get", ""), ("winget", "Starship.Starship")], bin: "starship", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "tmux", label: "tmux", description: "Terminal multiplexer.", group: "Shell", manager: Manager::System, package: "tmux", aliases: &[("winget", "")], bin: "tmux", removable: true, platforms: UNIX_ONLY, manager_windows: None, bin_windows: "", unavailable_note: None },
 
     // --- cli ----------------------------------------------------------------
-    Entry { id: "ripgrep", label: "ripgrep", description: "Fast recursive search.", group: "CLI", manager: Manager::System, package: "ripgrep", aliases: &[], bin: "rg", removable: true },
-    Entry { id: "fd", label: "fd", description: "Fast file finder.", group: "CLI", manager: Manager::System, package: "fd-find", aliases: &[("pacman", "fd"), ("zypper", "fd"), ("apk", "fd"), ("brew", "fd")], bin: "fd", removable: true },
-    Entry { id: "fzf", label: "fzf", description: "Fuzzy finder.", group: "CLI", manager: Manager::System, package: "fzf", aliases: &[], bin: "fzf", removable: true },
-    Entry { id: "jq", label: "jq", description: "JSON processor. Some workspace scripts need it.", group: "CLI", manager: Manager::System, package: "jq", aliases: &[], bin: "jq", removable: false },
-    Entry { id: "httpie", label: "HTTPie", description: "Human-friendly HTTP client.", group: "CLI", manager: Manager::System, package: "httpie", aliases: &[("brew", "httpie")], bin: "http", removable: true },
-    Entry { id: "neovim", label: "Neovim", description: "Terminal editor.", group: "CLI", manager: Manager::System, package: "neovim", aliases: &[], bin: "nvim", removable: true },
+    Entry { id: "ripgrep", label: "ripgrep", description: "Fast recursive search.", group: "CLI", manager: Manager::System, package: "ripgrep", aliases: &[("winget", "BurntSushi.ripgrep.MSVC")], bin: "rg", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "fd", label: "fd", description: "Fast file finder.", group: "CLI", manager: Manager::System, package: "fd-find", aliases: &[("pacman", "fd"), ("zypper", "fd"), ("apk", "fd"), ("brew", "fd"), ("winget", "sharkdp.fd")], bin: "fd", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "fzf", label: "fzf", description: "Fuzzy finder.", group: "CLI", manager: Manager::System, package: "fzf", aliases: &[("winget", "junegunn.fzf")], bin: "fzf", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "jq", label: "jq", description: "JSON processor. Some workspace scripts need it.", group: "CLI", manager: Manager::System, package: "jq", aliases: &[("winget", "jqlang.jq")], bin: "jq", removable: false, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "httpie", label: "HTTPie", description: "Human-friendly HTTP client.", group: "CLI", manager: Manager::System, package: "httpie", aliases: &[("brew", "httpie"), ("winget", "")], bin: "http", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("winget carries the HTTPie desktop app, not the `http` command line tool. Install it with `pipx install httpie`.") },
+    Entry { id: "neovim", label: "Neovim", description: "Terminal editor.", group: "CLI", manager: Manager::System, package: "neovim", aliases: &[("winget", "Neovim.Neovim")], bin: "nvim", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
 
     // --- backend languages --------------------------------------------------
     //
     // Names diverge more here than anywhere else, so an empty alias marks the
     // managers that do not package a tool at all rather than guessing a name and
     // producing an install that cannot succeed.
-    Entry { id: "go", label: "Go", description: "Go toolchain, for Go services.", group: "Languages", manager: Manager::System, package: "golang", aliases: &[("apt-get", "golang-go"), ("pacman", "go"), ("zypper", "go"), ("apk", "go"), ("brew", "go")], bin: "go", removable: true },
-    Entry { id: "python", label: "Python 3", description: "Python interpreter.", group: "Languages", manager: Manager::System, package: "python3", aliases: &[("pacman", "python"), ("brew", "python")], bin: "python3", removable: false },
-    Entry { id: "php", label: "PHP", description: "PHP command-line interpreter.", group: "Languages", manager: Manager::System, package: "php-cli", aliases: &[("pacman", "php"), ("zypper", "php8-cli"), ("apk", "php"), ("brew", "php")], bin: "php", removable: true },
-    Entry { id: "ruby", label: "Ruby", description: "Ruby interpreter.", group: "Languages", manager: Manager::System, package: "ruby", aliases: &[], bin: "ruby", removable: true },
-    Entry { id: "jdk", label: "Java (JDK)", description: "Java compiler and runtime.", group: "Languages", manager: Manager::System, package: "java-latest-openjdk-devel", aliases: &[("apt-get", "default-jdk"), ("pacman", "jdk-openjdk"), ("zypper", "java-openjdk-devel"), ("apk", "openjdk17"), ("brew", "openjdk")], bin: "javac", removable: true },
+    Entry { id: "go", label: "Go", description: "Go toolchain, for Go services.", group: "Languages", manager: Manager::System, package: "golang", aliases: &[("apt-get", "golang-go"), ("pacman", "go"), ("zypper", "go"), ("apk", "go"), ("brew", "go"), ("winget", "GoLang.Go")], bin: "go", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "python", label: "Python 3", description: "Python interpreter.", group: "Languages", manager: Manager::System, package: "python3", aliases: &[("pacman", "python"), ("brew", "python"), ("winget", "Python.Python.3.13")], bin: "python3", removable: false, platforms: EVERYWHERE, manager_windows: None, bin_windows: "python.exe", unavailable_note: None },
+    Entry { id: "php", label: "PHP", description: "PHP command-line interpreter.", group: "Languages", manager: Manager::System, package: "php-cli", aliases: &[("pacman", "php"), ("zypper", "php8-cli"), ("apk", "php"), ("brew", "php"), ("winget", "")], bin: "php", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("winget's PHP packaging is unreliable; download from windows.php.net instead.") },
+    Entry { id: "ruby", label: "Ruby", description: "Ruby interpreter.", group: "Languages", manager: Manager::System, package: "ruby", aliases: &[("winget", "RubyInstallerTeam.Ruby.3.3")], bin: "ruby", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "jdk", label: "Java (JDK)", description: "Java compiler and runtime.", group: "Languages", manager: Manager::System, package: "java-latest-openjdk-devel", aliases: &[("apt-get", "default-jdk"), ("pacman", "jdk-openjdk"), ("zypper", "java-openjdk-devel"), ("apk", "openjdk17"), ("brew", "openjdk"), ("winget", "EclipseAdoptium.Temurin.21.JDK")], bin: "javac", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
 
     // --- python tooling -----------------------------------------------------
-    Entry { id: "uv", label: "uv", description: "Fast Python package and project manager.", group: "Languages", manager: Manager::System, package: "uv", aliases: &[("apt-get", ""), ("zypper", ""), ("apk", "")], bin: "uv", removable: true },
-    Entry { id: "pipx", label: "pipx", description: "Installs Python CLI tools in isolated environments.", group: "Languages", manager: Manager::System, package: "pipx", aliases: &[("pacman", "python-pipx"), ("apk", "")], bin: "pipx", removable: true },
-    Entry { id: "poetry", label: "Poetry", description: "Python dependency management.", group: "Languages", manager: Manager::System, package: "poetry", aliases: &[("apt-get", "python3-poetry"), ("pacman", "python-poetry"), ("apk", "")], bin: "poetry", removable: true },
+    Entry { id: "uv", label: "uv", description: "Fast Python package and project manager.", group: "Languages", manager: Manager::System, package: "uv", aliases: &[("apt-get", ""), ("zypper", ""), ("apk", ""), ("winget", "astral-sh.uv")], bin: "uv", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "pipx", label: "pipx", description: "Installs Python CLI tools in isolated environments.", group: "Languages", manager: Manager::System, package: "pipx", aliases: &[("pacman", "python-pipx"), ("apk", ""), ("winget", "")], bin: "pipx", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("pipx is installed with pip: `python -m pip install --user pipx`.") },
+    Entry { id: "poetry", label: "Poetry", description: "Python dependency management.", group: "Languages", manager: Manager::System, package: "poetry", aliases: &[("apt-get", "python3-poetry"), ("pacman", "python-poetry"), ("apk", ""), ("winget", "")], bin: "poetry", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("Poetry is installed with pipx: `pipx install poetry`.") },
 
     // --- database clients ---------------------------------------------------
     //
     // Clients only, never servers: a dashboard should not be quietly installing a
     // daemon that then listens on a port.
-    Entry { id: "psql", label: "PostgreSQL client", description: "psql, for connecting to Postgres.", group: "Databases", manager: Manager::System, package: "postgresql", aliases: &[("apt-get", "postgresql-client"), ("zypper", "postgresql"), ("apk", "postgresql-client"), ("brew", "libpq")], bin: "psql", removable: true },
-    Entry { id: "mysql", label: "MySQL/MariaDB client", description: "mysql, for connecting to MySQL or MariaDB.", group: "Databases", manager: Manager::System, package: "mariadb", aliases: &[("apt-get", "mariadb-client"), ("pacman", "mariadb-clients"), ("apk", "mariadb-client"), ("brew", "mysql-client")], bin: "mysql", removable: true },
-    Entry { id: "redis-cli", label: "Redis client", description: "redis-cli, for inspecting a Redis instance.", group: "Databases", manager: Manager::System, package: "redis", aliases: &[("apt-get", "redis-tools"), ("brew", "redis")], bin: "redis-cli", removable: true },
-    Entry { id: "sqlite", label: "SQLite", description: "sqlite3 command-line shell.", group: "Databases", manager: Manager::System, package: "sqlite", aliases: &[("apt-get", "sqlite3")], bin: "sqlite3", removable: true },
-    Entry { id: "mongosh", label: "MongoDB shell", description: "mongosh, installed globally through npm.", group: "Databases", manager: Manager::NpmGlobal, package: "mongosh", aliases: &[], bin: "mongosh", removable: true },
-    Entry { id: "prisma", label: "Prisma CLI", description: "Migrations and schema tooling for Prisma.", group: "Databases", manager: Manager::NpmGlobal, package: "prisma", aliases: &[], bin: "prisma", removable: true },
+    Entry { id: "psql", label: "PostgreSQL client", description: "psql, for connecting to Postgres.", group: "Databases", manager: Manager::System, package: "postgresql", aliases: &[("apt-get", "postgresql-client"), ("zypper", "postgresql"), ("apk", "postgresql-client"), ("brew", "libpq"), ("winget", "")], bin: "psql", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("psql ships only inside the PostgreSQL server installer on Windows, and this catalog installs clients, never servers. Run Postgres in a container and use its psql.") },
+    Entry { id: "mysql", label: "MySQL/MariaDB client", description: "mysql, for connecting to MySQL or MariaDB.", group: "Databases", manager: Manager::System, package: "mariadb", aliases: &[("apt-get", "mariadb-client"), ("pacman", "mariadb-clients"), ("apk", "mariadb-client"), ("brew", "mysql-client"), ("winget", "")], bin: "mysql", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("The mysql client has no standalone Windows distribution — only the server installer. Run MySQL in a container and use `docker exec -it mysql mysql`.") },
+    Entry { id: "redis-cli", label: "Redis client", description: "redis-cli, for inspecting a Redis instance.", group: "Databases", manager: Manager::System, package: "redis", aliases: &[("apt-get", "redis-tools"), ("brew", "redis"), ("winget", "")], bin: "redis-cli", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("Redis publishes no official Windows build. Use `docker exec -it redis redis-cli`, or WSL.") },
+    Entry { id: "sqlite", label: "SQLite", description: "sqlite3 command-line shell.", group: "Databases", manager: Manager::System, package: "sqlite", aliases: &[("apt-get", "sqlite3"), ("winget", "SQLite.SQLite")], bin: "sqlite3", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "mongosh", label: "MongoDB shell", description: "mongosh, installed globally through npm.", group: "Databases", manager: Manager::NpmGlobal, package: "mongosh", aliases: &[], bin: "mongosh", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "prisma", label: "Prisma CLI", description: "Migrations and schema tooling for Prisma.", group: "Databases", manager: Manager::NpmGlobal, package: "prisma", aliases: &[], bin: "prisma", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
 
     // --- api & service tooling ----------------------------------------------
-    Entry { id: "curl", label: "curl", description: "HTTP client. A great many tools shell out to it.", group: "API", manager: Manager::System, package: "curl", aliases: &[], bin: "curl", removable: false },
-    Entry { id: "yq", label: "yq", description: "YAML processor, the jq of config files.", group: "API", manager: Manager::System, package: "yq", aliases: &[("pacman", "go-yq")], bin: "yq", removable: true },
-    Entry { id: "kcat", label: "kcat", description: "Produce to and consume from Kafka, without a JVM.", group: "API", manager: Manager::System, package: "kcat", aliases: &[("pacman", ""), ("zypper", "")], bin: "kcat", removable: true },
-    Entry { id: "grpcurl", label: "grpcurl", description: "curl for gRPC services.", group: "API", manager: Manager::System, package: "grpcurl", aliases: &[("apt-get", ""), ("zypper", ""), ("apk", "")], bin: "grpcurl", removable: true },
-    Entry { id: "pm2", label: "PM2", description: "Process manager for long-running Node services.", group: "API", manager: Manager::NpmGlobal, package: "pm2", aliases: &[], bin: "pm2", removable: true },
-    Entry { id: "nodemon", label: "nodemon", description: "Restarts a Node process when files change.", group: "API", manager: Manager::NpmGlobal, package: "nodemon", aliases: &[], bin: "nodemon", removable: true },
+    Entry { id: "curl", label: "curl", description: "HTTP client. A great many tools shell out to it.", group: "API", manager: Manager::System, package: "curl", aliases: &[("winget", "")], bin: "curl", removable: false, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("curl.exe ships with Windows 10 1803 and later, so there is nothing to install.") },
+    Entry { id: "yq", label: "yq", description: "YAML processor, the jq of config files.", group: "API", manager: Manager::System, package: "yq", aliases: &[("pacman", "go-yq"), ("winget", "MikeFarah.yq")], bin: "yq", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "kcat", label: "kcat", description: "Produce to and consume from Kafka, without a JVM.", group: "API", manager: Manager::System, package: "kcat", aliases: &[("pacman", ""), ("zypper", ""), ("winget", "")], bin: "kcat", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("kcat is librdkafka plus POSIX and has no Windows build at all. Use `docker run --rm edenhill/kcat`.") },
+    Entry { id: "grpcurl", label: "grpcurl", description: "curl for gRPC services.", group: "API", manager: Manager::System, package: "grpcurl", aliases: &[("apt-get", ""), ("zypper", ""), ("apk", ""), ("winget", "fullstorydev.grpcurl")], bin: "grpcurl", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "pm2", label: "PM2", description: "Process manager for long-running Node services.", group: "API", manager: Manager::NpmGlobal, package: "pm2", aliases: &[], bin: "pm2", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "nodemon", label: "nodemon", description: "Restarts a Node process when files change.", group: "API", manager: Manager::NpmGlobal, package: "nodemon", aliases: &[], bin: "nodemon", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
 
     // --- build toolchain ----------------------------------------------------
     //
     // Native npm modules fall back to compiling from source, so a missing compiler
     // shows up as a confusing install failure rather than as a missing compiler.
-    Entry { id: "make", label: "make", description: "Needed to build native dependencies.", group: "Build", manager: Manager::System, package: "make", aliases: &[], bin: "make", removable: true },
-    Entry { id: "cc", label: "C/C++ compiler", description: "Needed to build native npm modules from source.", group: "Build", manager: Manager::System, package: "gcc", aliases: &[("apt-get", "build-essential"), ("pacman", "base-devel"), ("apk", "build-base"), ("brew", "")], bin: "gcc", removable: true },
-    Entry { id: "cargo-watch", label: "cargo-watch", description: "Rebuilds a Rust service when files change.", group: "Build", manager: Manager::Cargo, package: "cargo-watch", aliases: &[], bin: "cargo-watch", removable: true },
+    Entry { id: "make", label: "make", description: "Needed to build native dependencies.", group: "Build", manager: Manager::System, package: "make", aliases: &[("winget", "ezwinports.make")], bin: "make", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("Git Bash does not ship make. Native npm modules on Windows build with MSVC via node-gyp rather than make, so this is rarely what blocks an install.") },
+    Entry { id: "cc", label: "C/C++ compiler", description: "Needed to build native npm modules from source.", group: "Build", manager: Manager::System, package: "gcc", aliases: &[("apt-get", "build-essential"), ("pacman", "base-devel"), ("apk", "build-base"), ("brew", ""), ("winget", "")], bin: "gcc", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: Some("Windows compiles native npm modules with MSVC, not gcc. Install \"Desktop development with C++\" from the Visual Studio Build Tools installer — winget can only fetch its bootstrapper, not choose that workload.") },
+    Entry { id: "cargo-watch", label: "cargo-watch", description: "Rebuilds a Rust service when files change.", group: "Build", manager: Manager::Cargo, package: "cargo-watch", aliases: &[], bin: "cargo-watch", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
 
     // --- kubernetes & cloud -------------------------------------------------
-    Entry { id: "kubectl", label: "kubectl", description: "Kubernetes CLI.", group: "Cloud", manager: Manager::System, package: "kubernetes-client", aliases: &[("apt-get", ""), ("pacman", "kubectl"), ("apk", "kubectl"), ("brew", "kubernetes-cli")], bin: "kubectl", removable: true },
-    Entry { id: "helm", label: "Helm", description: "Kubernetes package manager.", group: "Cloud", manager: Manager::System, package: "helm", aliases: &[("apt-get", ""), ("zypper", "")], bin: "helm", removable: true },
-    Entry { id: "k9s", label: "k9s", description: "Terminal UI for a Kubernetes cluster.", group: "Cloud", manager: Manager::System, package: "k9s", aliases: &[("dnf", ""), ("apt-get", ""), ("zypper", "")], bin: "k9s", removable: true },
-    Entry { id: "terraform", label: "Terraform", description: "Infrastructure as code.", group: "Cloud", manager: Manager::System, package: "terraform", aliases: &[("dnf", ""), ("apt-get", ""), ("zypper", "")], bin: "terraform", removable: true },
-    Entry { id: "awscli", label: "AWS CLI", description: "Amazon Web Services CLI.", group: "Cloud", manager: Manager::System, package: "awscli2", aliases: &[("apt-get", "awscli"), ("pacman", "aws-cli-v2"), ("zypper", "aws-cli"), ("apk", "aws-cli"), ("brew", "awscli")], bin: "aws", removable: true },
+    Entry { id: "kubectl", label: "kubectl", description: "Kubernetes CLI.", group: "Cloud", manager: Manager::System, package: "kubernetes-client", aliases: &[("apt-get", ""), ("pacman", "kubectl"), ("apk", "kubectl"), ("brew", "kubernetes-cli"), ("winget", "Kubernetes.kubectl")], bin: "kubectl", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "helm", label: "Helm", description: "Kubernetes package manager.", group: "Cloud", manager: Manager::System, package: "helm", aliases: &[("apt-get", ""), ("zypper", ""), ("winget", "Helm.Helm")], bin: "helm", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "k9s", label: "k9s", description: "Terminal UI for a Kubernetes cluster.", group: "Cloud", manager: Manager::System, package: "k9s", aliases: &[("dnf", ""), ("apt-get", ""), ("zypper", ""), ("winget", "Derailed.k9s")], bin: "k9s", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "terraform", label: "Terraform", description: "Infrastructure as code.", group: "Cloud", manager: Manager::System, package: "terraform", aliases: &[("dnf", ""), ("apt-get", ""), ("zypper", ""), ("winget", "Hashicorp.Terraform")], bin: "terraform", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "awscli", label: "AWS CLI", description: "Amazon Web Services CLI.", group: "Cloud", manager: Manager::System, package: "awscli2", aliases: &[("apt-get", "awscli"), ("pacman", "aws-cli-v2"), ("zypper", "aws-cli"), ("apk", "aws-cli"), ("brew", "awscli"), ("winget", "Amazon.AWSCLI")], bin: "aws", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
 
     // --- containers ---------------------------------------------------------
-    Entry { id: "podman", label: "Podman", description: "Container runtime. Feeds the Local services panel.", group: "Containers", manager: Manager::System, package: "podman", aliases: &[], bin: "podman", removable: true },
-    Entry { id: "docker", label: "Docker CLI", description: "Container runtime. Feeds the Local services panel.", group: "Containers", manager: Manager::System, package: "docker", aliases: &[("apt-get", "docker.io")], bin: "docker", removable: true },
-    Entry { id: "podman-compose", label: "podman-compose", description: "Runs a compose file against podman.", group: "Containers", manager: Manager::System, package: "podman-compose", aliases: &[("brew", ""), ("apk", "")], bin: "podman-compose", removable: true },
+    Entry { id: "podman", label: "Podman", description: "Container runtime. Feeds the Local services panel.", group: "Containers", manager: Manager::System, package: "podman", aliases: &[("winget", "RedHat.Podman")], bin: "podman", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "docker", label: "Docker CLI", description: "Container runtime. Feeds the Local services panel.", group: "Containers", manager: Manager::System, package: "docker", aliases: &[("apt-get", "docker.io"), ("winget", "Docker.DockerDesktop")], bin: "docker", removable: true, platforms: EVERYWHERE, manager_windows: None, bin_windows: "", unavailable_note: None },
+    Entry { id: "podman-compose", label: "podman-compose", description: "Runs a compose file against podman.", group: "Containers", manager: Manager::System, package: "podman-compose", aliases: &[("brew", ""), ("apk", ""), ("winget", "")], bin: "podman-compose", removable: true, platforms: UNIX_ONLY, manager_windows: None, bin_windows: "", unavailable_note: None },
 ];
 
 pub fn find(id: &str) -> Option<&'static Entry> {
@@ -260,14 +445,25 @@ pub fn find(id: &str) -> Option<&'static Entry> {
 }
 
 fn to_model(e: &Entry, sys: Option<SystemPm>) -> ToolPackage {
+    let os = Os::current();
+    let manager = e.manager_for(os);
     ToolPackage {
         id: e.id.to_string(),
         label: e.label.to_string(),
         description: e.description.to_string(),
         group: e.group.to_string(),
-        manager: e.manager.id(sys).to_string(),
-        needs_root: e.manager.needs_root(sys),
+        manager: manager.id(sys).to_string(),
+        needs_root: manager.needs_root(sys),
         removable: e.removable,
+        // "root" is wrong on Windows: winget takes no prefix and asks for consent in
+        // a dialog instead, so the chip has to say which of the two it is.
+        elevation: match manager.elevation(sys) {
+            Elevation::Sudo => "sudo",
+            Elevation::Uac => "uac",
+            Elevation::None => "none",
+        }
+        .to_string(),
+        unavailable_note: e.note_for_unavailable().map(str::to_string),
     }
 }
 
@@ -290,10 +486,12 @@ fn package_name(e: &Entry, sys: SystemPm) -> Option<&'static str> {
 pub async fn list(tc: &Toolchain) -> Vec<PackageStatus> {
     let dirs = search_dirs(tc);
     let sys = detect_system_pm(tc);
+    let os = Os::current();
     let mut out = Vec::with_capacity(CATALOG.len());
 
-    for e in CATALOG {
-        let path = which_in(&dirs, e.bin).or_else(|| tc.path(e.bin).cloned());
+    for e in catalog(os) {
+        let bin = e.bin_for(os);
+        let path = which_in(&dirs, bin).or_else(|| tc.path(bin).cloned());
 
         let version = match &path {
             Some(p) => version_of(p, &tc.path_env).await,
@@ -301,7 +499,7 @@ pub async fn list(tc: &Toolchain) -> Vec<PackageStatus> {
         };
 
         // nvm is a shell function, so its availability is the script's presence.
-        let manager_available = match e.manager {
+        let manager_available = match e.manager_for(os) {
             Manager::Nvm => nvm_script().is_some(),
             // Available only if we found a system manager *and* it packages this.
             Manager::System => sys.is_some_and(|s| package_name(e, s).is_some()),
@@ -623,8 +821,8 @@ pub async fn updates(tc: &Toolchain) -> UpdateReport {
 
     let mut report = UpdateReport::default();
 
-    for e in CATALOG {
-        match e.manager {
+    for e in catalog(Os::current()) {
+        match e.manager_for(Os::current()) {
             Manager::System => {
                 let Some(found) = &system else { continue };
                 let Some(name) = sys.and_then(|s| package_name(e, s)) else {
@@ -725,10 +923,81 @@ async fn system_updates(
                 capture_status(&bin, &["outdated", "--verbose"], &tc.path_env, timeout).await;
             (code == Some(0)).then(|| parse_brew_outdated(&out))
         }
+        SystemPm::Winget => {
+            let bin = which_in(&dirs, "winget")?;
+            // Accept only 0 and hardcode no HRESULTs. winget's failures surface as
+            // large negative i32 HRESULTs and none are needed here: "nothing to
+            // upgrade" exits 0 and prints "No installed package found matching input
+            // criteria", which parses to an empty vec — exactly the right answer.
+            //
+            // No `--include-unknown`: it adds rows whose installed version winget
+            // cannot determine, and every one becomes a phantom upgrade on a tool
+            // that is already current.
+            let (out, code) =
+                capture_status(&bin, &["upgrade", "--disable-interactivity"], &tc.path_env, timeout)
+                    .await;
+            (code == Some(0)).then(|| parse_winget_upgrade(&out))
+        }
         // `apk version` reports every package's state in a format that needs the
         // package name split back out of "name-1.2.3-r0"; not worth guessing.
         SystemPm::Apk => None,
     }
+}
+
+/// `winget upgrade` prints a fixed-width table:
+///
+/// ```text
+/// Name                           Id                    Version   Available  Source
+/// ---------------------------------------------------------------------------------
+/// Git                            Git.Git               2.50.0    2.51.1     winget
+/// Microsoft Visual Studio Code   Microsoft.VisualStu…  1.100.0   1.101.2    winget
+/// ```
+///
+/// Read from the *right*, splitting on runs of two or more spaces. Never by header
+/// column offsets: the widths vary with content, long names are elided with `…`, and
+/// the header itself is localized. Name is the only column that can contain a run of
+/// two spaces, which is precisely why right-to-left works.
+///
+/// Junk lines cannot produce a false positive, because the caller only ever looks up
+/// names it already has in the catalog.
+pub fn parse_winget_upgrade(text: &str) -> Vec<(String, Option<String>)> {
+    let mut out = Vec::new();
+    for line in text.lines() {
+        let cols: Vec<&str> = line
+            .split("  ")
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .collect();
+        // Name, Id, Version, Available, Source.
+        if cols.len() < 5 {
+            continue;
+        }
+        let n = cols.len();
+        let (id, available) = (cols[n - 4], cols[n - 2]);
+        // The header row and the `---` rule both survive the column count, so reject
+        // anything whose "version" is not version-shaped.
+        if !available.starts_with(|c: char| c.is_ascii_digit()) {
+            continue;
+        }
+        if id.is_empty() || id.contains('-') && id.chars().all(|c| c == '-') {
+            continue;
+        }
+        out.push((id.to_string(), Some(available.to_string())));
+    }
+    out
+}
+
+/// `winget show --versions` prints a heading, a `---` rule, then one version per line.
+pub fn parse_winget_versions(text: &str) -> Vec<String> {
+    text.lines()
+        .map(str::trim)
+        .filter(|l| l.starts_with(|c: char| c.is_ascii_digit()))
+        .map(|l| {
+            let mut v = l.to_string();
+            v.truncate(40);
+            v
+        })
+        .collect()
 }
 
 /// `dnf check-update` prints "name.arch  new-version  repo" per upgradable package.
@@ -1048,11 +1317,7 @@ pub fn plan_with_version(
 
     let (argv, in_terminal, description) = match e.manager {
         Manager::System => {
-            let sys = sys.ok_or_else(|| {
-                "no system package manager found (looked for dnf, apt-get, pacman, \
-                 zypper, apk and brew)"
-                    .to_string()
-            })?;
+            let sys = sys.ok_or_else(no_system_pm)?;
             let name = package_name(e, sys).ok_or_else(|| {
                 format!("{} is not available through {}", e.label, sys.id())
             })?;
@@ -1065,6 +1330,9 @@ pub fn plan_with_version(
                 (Some(v), SystemPm::Dnf | SystemPm::Zypper) => format!("{name}-{v}"),
                 (Some(v), SystemPm::Apt) => format!("{name}={v}"),
                 (Some(v), SystemPm::Brew) => format!("{name}@{v}"),
+                // winget pins with its own flag rather than in the name, appended
+                // after the target below — so the target itself is just the id.
+                (Some(_), SystemPm::Winget) => name.to_string(),
                 (Some(_), SystemPm::Pacman | SystemPm::Apk) => {
                     return Err(format!(
                         "{} installs whatever version it currently has — it cannot pin one",
@@ -1074,19 +1342,35 @@ pub fn plan_with_version(
             };
 
             let mut argv: Vec<String> = Vec::new();
-            // Homebrew refuses to run as root; everything else needs it.
-            if sys.needs_root() {
-                argv.push("sudo".to_string());
-                warnings.push("Runs in the integrated terminal, where you can enter your password.".into());
+            match sys.elevation() {
+                // Homebrew refuses to run as root; the distro managers need it.
+                Elevation::Sudo => {
+                    argv.push("sudo".to_string());
+                    warnings.push("Runs in the integrated terminal, where you can enter your password.".into());
+                }
+                // No prefix, but the user has to be told a dialog is coming: it opens
+                // outside the terminal, and a run that looks hung is a run silently
+                // waiting for a click.
+                Elevation::Uac => warnings.push(
+                    "Windows will ask you to approve this install (UAC). Accept the dialog — \
+                     the terminal below waits until you do."
+                        .into(),
+                ),
+                Elevation::None => {}
             }
             argv.push(sys.id().to_string());
             argv.extend(sys.verb(op).iter().map(|a| a.to_string()));
             argv.push(target.clone());
+            if let (Some(v), SystemPm::Winget) = (version, sys) {
+                argv.push("--version".to_string());
+                argv.push(v.to_string());
+            }
 
             (
                 argv,
                 // Root cannot be requested from inside the app, so those go to a
-                // terminal. Homebrew can stream like any other run.
+                // terminal. Homebrew and winget can stream like any other run —
+                // winget's own consent dialog is not a terminal prompt.
                 sys.needs_root(),
                 format!("System package via {}: {}", sys.id(), target),
             )
@@ -1211,8 +1495,11 @@ pub fn plan_with_version(
         in_terminal,
         danger: match op {
             PackageOp::Remove => Danger::High,
+            // Keyed off elevation rather than `needs_root`: winget takes no sudo
+            // prefix but still installs machine-wide behind a consent dialog, which
+            // is every bit as much "this changes the system" as dnf is.
             PackageOp::Install | PackageOp::Upgrade
-                if e.manager.needs_root(sys) =>
+                if e.manager.elevation(sys) != Elevation::None =>
             {
                 Danger::Medium
             }
@@ -1237,11 +1524,7 @@ pub fn plan_system_group(tc: &Toolchain, ids: &[&str]) -> Result<Plan, String> {
 /// The real implementation, with the system manager passed in so it can be tested
 /// against every distribution rather than only the one running the tests.
 pub fn plan_system_group_with(sys: Option<SystemPm>, ids: &[&str]) -> Result<Plan, String> {
-    let sys = sys.ok_or_else(|| {
-        "no system package manager found (looked for dnf, apt-get, pacman, zypper, \
-         apk and brew)"
-            .to_string()
-    })?;
+    let sys = sys.ok_or_else(no_system_pm)?;
 
     let mut names: Vec<String> = Vec::new();
     let mut skipped: Vec<&str> = Vec::new();
@@ -1268,14 +1551,52 @@ pub fn plan_system_group_with(sys: Option<SystemPm>, ids: &[&str]) -> Result<Pla
     }
 
     let mut warnings = Vec::new();
-    let mut argv: Vec<String> = Vec::new();
-    if sys.needs_root() {
-        argv.push("sudo".to_string());
-        warnings.push("Runs in the integrated terminal, where you can enter your password.".into());
+    let mut prefix: Vec<String> = Vec::new();
+    match sys.elevation() {
+        Elevation::Sudo => {
+            prefix.push("sudo".to_string());
+            warnings.push("Runs in the integrated terminal, where you can enter your password.".into());
+        }
+        Elevation::Uac => warnings.push(format!(
+            "Windows will ask you to approve each of these {} installs (UAC). Accept the \
+             dialogs — the terminal below waits until you do.",
+            names.len()
+        )),
+        Elevation::None => {}
     }
-    argv.push(sys.id().to_string());
-    argv.extend(sys.verb(PackageOp::Install).iter().map(|a| a.to_string()));
-    argv.extend(names.iter().cloned());
+
+    let one = |name: &String| {
+        let mut argv = prefix.clone();
+        argv.push(sys.id().to_string());
+        argv.extend(sys.verb(PackageOp::Install).iter().map(|a| a.to_string()));
+        argv.push(name.clone());
+        argv
+    };
+
+    let argv: Vec<String> = if sys.one_at_a_time() {
+        // winget takes one package per invocation: `--id` is single-valued, and
+        // multiple positional queries are at best version-dependent. So the group
+        // becomes a chain.
+        //
+        // `&&` rather than `;`, because the unix path is one atomic transaction and
+        // this is the closest analogue — one clear pass/fail. A partly-failed step is
+        // simply re-run, and `missing_of` narrows it to whatever is still absent.
+        let sh = crate::platform::shell().ok_or_else(|| {
+            "no shell was found — install Git for Windows, which provides Git Bash".to_string()
+        })?;
+        let chained = names
+            .iter()
+            .map(|n| sh.cmd(&one(n)))
+            .reduce(|acc, next| sh.both(&acc, &next))
+            .unwrap_or_default();
+        sh.script_argv(&chained)
+    } else {
+        let mut argv = prefix.clone();
+        argv.push(sys.id().to_string());
+        argv.extend(sys.verb(PackageOp::Install).iter().map(|a| a.to_string()));
+        argv.extend(names.iter().cloned());
+        argv
+    };
 
     if !skipped.is_empty() {
         // Named rather than silently dropped: "why is delta still missing" is a
@@ -1595,6 +1916,7 @@ mod tests {
             SystemPm::Zypper,
             SystemPm::Apk,
             SystemPm::Brew,
+            SystemPm::Winget,
         ]
         .map(|s| s.id());
         for e in CATALOG {
@@ -1707,5 +2029,194 @@ mod update_tests {
             None
         );
     }
-}
 
+    // --- winget ------------------------------------------------------------
+
+    /// The highest-value test here.
+    ///
+    /// `package_name` falls back to `e.package` when no alias matches, so without this
+    /// every `Manager::System` entry that forgot a winget row would quietly send its
+    /// *Linux* package name to a real `winget install` — `fd-find`,
+    /// `java-latest-openjdk-devel`, `postgresql`. An explicit `("winget", "")` is how
+    /// an entry says "not packaged here", which the UI already renders as unavailable.
+    #[test]
+    fn every_system_entry_declares_a_winget_id_or_declares_it_unavailable() {
+        for e in CATALOG {
+            if !matches!(e.manager_for(Os::Windows), Manager::System) {
+                continue;
+            }
+            assert!(
+                e.aliases.iter().any(|(m, _)| *m == "winget"),
+                "{}: Manager::System with no (\"winget\", …) alias — its Linux package \
+                 name would be sent to winget",
+                e.id
+            );
+        }
+    }
+
+    #[test]
+    fn winget_install_takes_no_sudo_and_cannot_block_on_a_prompt() {
+        let plan = plan_with(&Toolchain::default(), Some(SystemPm::Winget), "git", PackageOp::Install).unwrap();
+        assert_eq!(plan.argv[0], "winget", "winget elevates itself; sudo is wrong");
+        assert_eq!(plan.argv.last().unwrap(), "Git.Git");
+        // The flag that makes winget safe to drive from a GUI: every remaining prompt
+        // becomes a non-zero exit instead of a hang.
+        assert!(plan.argv.iter().any(|a| a == "--disable-interactivity"));
+        assert!(plan.argv.iter().any(|a| a == "--accept-package-agreements"));
+        assert!(plan.argv.iter().any(|a| a == "--exact"));
+        // Not a terminal: there is no password to type. But the user must still be
+        // told a consent dialog is coming, or a waiting run looks hung.
+        assert!(!plan.in_terminal);
+        assert!(
+            plan.warnings.iter().any(|w| w.contains("UAC")),
+            "got: {:?}",
+            plan.warnings
+        );
+        assert_eq!(plan.danger, Danger::Medium);
+    }
+
+    #[test]
+    fn winget_uninstall_omits_the_flags_it_rejects() {
+        // `winget uninstall` errors on --accept-package-agreements and --source as
+        // unrecognised arguments, which is why the verb table is per-operation.
+        let plan = plan_with(&Toolchain::default(), Some(SystemPm::Winget), "lazygit", PackageOp::Remove).unwrap();
+        assert!(!plan.argv.iter().any(|a| a == "--accept-package-agreements"));
+        assert!(!plan.argv.iter().any(|a| a == "--source"));
+        assert!(plan.argv.iter().any(|a| a == "--disable-interactivity"));
+    }
+
+    #[test]
+    fn winget_pins_a_version_with_a_flag_not_in_the_name() {
+        let plan =
+            plan_with_version(&Toolchain::default(), Some(SystemPm::Winget), "go", PackageOp::Install, Some("1.23.0"))
+                .unwrap();
+        // The id stays clean; the version rides alongside it.
+        assert!(plan.argv.iter().any(|a| a == "GoLang.Go"));
+        let i = plan.argv.iter().position(|a| a == "--version").unwrap();
+        assert_eq!(plan.argv[i + 1], "1.23.0");
+    }
+
+    #[test]
+    fn a_winget_group_chains_one_install_per_package() {
+        // `--id` is single-valued, so `winget install --id A --id B` is invalid. The
+        // group has to become a chain, and `&&` is the closest analogue of one atomic
+        // dnf transaction: one clear pass/fail.
+        let plan = plan_system_group_with(Some(SystemPm::Winget), &["git", "jq"]).unwrap();
+        let script = plan.argv.last().unwrap();
+        assert_eq!(script.matches("winget install").count(), 2, "got: {script}");
+        assert_eq!(script.matches("&&").count(), 1, "got: {script}");
+        assert!(script.contains("Git.Git") && script.contains("jqlang.jq"));
+        assert!(!script.contains("sudo"));
+    }
+
+    #[test]
+    fn a_winget_group_skips_what_winget_lacks_and_names_it() {
+        // "why is kcat still missing" is a question the page should have answered.
+        let plan = plan_system_group_with(Some(SystemPm::Winget), &["git", "kcat"]).unwrap();
+        let script = plan.argv.last().unwrap();
+        assert!(script.contains("Git.Git"));
+        assert!(!script.contains("kcat"), "got: {script}");
+        assert!(
+            plan.warnings.iter().any(|w| w.contains("kcat")),
+            "got: {:?}",
+            plan.warnings
+        );
+    }
+
+    #[test]
+    fn a_winget_group_of_only_unavailable_packages_is_refused() {
+        let err = plan_system_group_with(Some(SystemPm::Winget), &["redis-cli", "kcat"])
+            .unwrap_err();
+        assert!(err.contains("does not package any of these"), "got: {err}");
+    }
+
+    #[test]
+    fn the_windows_catalog_omits_what_cannot_exist_there() {
+        let ids: Vec<&str> = catalog(Os::Windows).map(|e| e.id).collect();
+        for gone in ["zsh", "fish", "tmux", "podman-compose"] {
+            assert!(!ids.contains(&gone), "{gone} cannot exist on Windows");
+        }
+        for kept in ["git", "jq", "docker", "node", "bun"] {
+            assert!(ids.contains(&kept), "{kept} missing from the Windows catalog");
+        }
+        // Annotated rather than hidden: the tool makes sense on Windows, winget just
+        // does not carry it, and the user should see that it is missing.
+        for annotated in ["kcat", "redis-cli", "mysql", "cc"] {
+            assert!(ids.contains(&annotated), "{annotated} should be listed, not hidden");
+            let e = find(annotated).unwrap();
+            assert!(
+                e.note_for_unavailable().is_some(),
+                "{annotated} is unavailable on Windows with no explanation"
+            );
+        }
+    }
+
+    #[test]
+    fn the_unix_catalog_is_unchanged() {
+        // Guards against a `platforms` typo quietly dropping a row on Linux.
+        assert_eq!(catalog(Os::Unix).count(), CATALOG.len());
+    }
+
+    #[test]
+    fn node_and_bun_come_from_winget_on_windows_not_from_nvm() {
+        // nvm-windows has no nvm.sh, no `--lts`, no `--latest-npm`, and needs
+        // administrator for every version switch. Supporting it would mean a second
+        // implementation of four code paths for a feature only ever used as
+        // "give me latest LTS".
+        let node = find("node").unwrap();
+        assert_eq!(node.manager_for(Os::Unix), Manager::Nvm);
+        assert_eq!(node.manager_for(Os::Windows), Manager::System);
+        let bun = find("bun").unwrap();
+        assert_eq!(bun.manager_for(Os::Unix), Manager::BunSelf);
+        assert_eq!(bun.manager_for(Os::Windows), Manager::System);
+    }
+
+    #[test]
+    fn python_is_probed_by_its_windows_name() {
+        let e = find("python").unwrap();
+        assert_eq!(e.bin_for(Os::Unix), "python3");
+        assert_eq!(e.bin_for(Os::Windows), "python.exe");
+    }
+
+    #[test]
+    fn parses_the_winget_upgrade_table_by_reading_from_the_right() {
+        // Widths vary with content, long names are elided, and the header is
+        // localized — so column offsets are not usable. Name is the only column that
+        // can contain a double space, which is what makes right-to-left work.
+        let out = "\
+Name                           Id                     Version   Available  Source
+----------------------------------------------------------------------------------
+Git                            Git.Git                2.50.0    2.51.1     winget
+Microsoft Visual Studio Code   Microsoft.VisualStudi…  1.100.0   1.101.2    winget
+2 upgrades available.
+";
+        let ups = parse_winget_upgrade(out);
+        assert_eq!(
+            ups,
+            vec![
+                ("Git.Git".to_string(), Some("2.51.1".to_string())),
+                ("Microsoft.VisualStudi…".to_string(), Some("1.101.2".to_string())),
+            ]
+        );
+    }
+
+    #[test]
+    fn nothing_to_upgrade_parses_to_nothing_rather_than_failing() {
+        // winget exits 0 and says this, which must not read as an error.
+        assert!(parse_winget_upgrade("No installed package found matching input criteria.\n")
+            .is_empty());
+        assert!(parse_winget_upgrade("").is_empty());
+    }
+
+    #[test]
+    fn parses_the_winget_version_list() {
+        let out = "\
+Found Git [Git.Git]
+Version
+-------
+2.51.1
+2.50.1
+";
+        assert_eq!(parse_winget_versions(out), vec!["2.51.1", "2.50.1"]);
+    }
+}

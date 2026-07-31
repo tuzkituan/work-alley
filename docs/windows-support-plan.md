@@ -366,3 +366,59 @@ Every PowerShell emitter, every winget verb and group plan, every parser, and PA
 8. Open a PTY tab; run `npm -v` (the `.cmd` shim path) and `git log` (pager/ANSI).
 9. `wt.exe` opens a shell tab at the right directory; a script action opens an integrated tab instead.
 10. Setup wizard: every step reports a real state, `credentials` detects an `ssh-add`-loaded key and a `gh auth login` session.
+
+---
+
+# Implementation status
+
+All phases are implemented. 201 Rust tests, 129 frontend tests, both targets compile.
+
+## What shipped
+
+| Area | State |
+|---|---|
+| `platform` module (mod/unix/windows) | done — all pure logic in `mod.rs`, testable on Linux |
+| Home dirs, PATHEXT, `which` | done — four duplicate `which` impls collapsed into one |
+| Toolchain discovery | done — `$SHELL -lic` probe stays unix-only, with the reason in a comment |
+| Shell layer (Git Bash → PowerShell) | done — both emitters, PowerShell twins tested on Linux |
+| Process groups (Job Objects) | done — `windows-sys` was already in `Cargo.lock` |
+| `hide_console` | done — inside `git::harden`, so coverage cannot be forgotten |
+| pty / ConPTY | done — `.cmd` shims wrapped via `pty_argv` |
+| Ports (`netstat`) | done |
+| External terminal (`wt.exe`) | done — shells only; scripts rewrite to the integrated PTY |
+| Credentials, `os_label` | done |
+| `SystemPm::Winget` + `Elevation` | done — 42 winget aliases across the catalog |
+| `STEPS_WINDOWS` | done — contains no `Kind::Script` at all |
+| Frontend platform signal | done — `os` on the bootstrap payload, `usePlatform()` |
+| `tauri.conf.json` nsis/msi | done |
+| CI | **deliberately not done** — out of scope, see the decisions table |
+
+## Verifying the Windows half without a Windows machine
+
+This is the main safety net and it caught three real errors that the Linux build
+cannot see (`portable_pty::Child::as_raw_handle` returns an `Option`, tokio's
+`raw_handle` is inherent, and `is_executable` is unix-only after the probe was gated).
+Run it after any change under `src-tauri/src/platform/`:
+
+```sh
+rustup target add x86_64-pc-windows-msvc
+cargo check --target x86_64-pc-windows-msvc --all-targets --manifest-path src-tauri/Cargo.toml
+```
+
+`tauri-winres` needs a Windows resource compiler for this. On Fedora:
+
+```sh
+sudo dnf install llvm     # provides llvm-rc
+```
+
+## Still needs a real Windows box
+
+1. **Run `scripts/verify-winget-ids.ps1`** and fix the catalog. Roughly half the ids
+   are unverified; the script reports every one that does not resolve. A wrong id is
+   an Install button that cannot work.
+2. Confirm the `winget upgrade` two-space table split survives a non-English locale.
+3. Confirm no console windows flash during a multi-repo scan.
+4. Start a Vite dev server, Stop it, and confirm via Task Manager that no
+   `esbuild.exe` survives — the job-object test that actually matters.
+5. Rename `bash.exe` and confirm the PowerShell fallback drives the bulk actions, and
+   that `.sh` scripts degrade with the "install Git for Windows" reason.

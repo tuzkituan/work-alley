@@ -23,6 +23,7 @@ import { cn } from '@/lib/utils'
 import { useActionStore, useRunAction } from '@/hooks/use-action'
 import { SEVERITY_CLASS } from '@/features/output/severity-class'
 import type { ActionSpec, SetupPlan, SetupStepStatus } from '@/domain/types'
+import { usePlatform } from '@/hooks/use-platform'
 
 /** Whether the action that last started belongs to this step. */
 function isRunning(lastRan: ActionSpec | null, step: SetupStepStatus): boolean {
@@ -508,6 +509,19 @@ function Items({ items, manager }: { items: SetupStepStatus['items']; manager: s
  * part nothing did before — the old signal was a warning saying "start an ssh-agent and
  * relaunch", which is not something a new user can act on.
  */
+/**
+ * `ssh-add` with a path the platform's own shell will accept.
+ *
+ * Windows keeps the agent as a service that ships *disabled*, so the command that
+ * fails there fails for a different reason than a missing key — which is why the step
+ * note names `Start-Service ssh-agent` rather than repeating this.
+ */
+function sshAddCommand(windows: boolean) {
+  return windows
+    ? 'ssh-add $env:USERPROFILE\\.ssh\\id_ed25519'
+    : 'ssh-add ~/.ssh/id_ed25519'
+}
+
 function CredentialsCard({
   step,
   plan,
@@ -518,6 +532,7 @@ function CredentialsCard({
   const ssh = step.items.find((i) => i.id === 'ssh')
   const gh = step.items.find((i) => i.id === 'gh')
   const done = step.done
+  const windows = usePlatform() === 'windows'
 
   // The email git already knows about, so the key comment matches the commits.
   const email = plan?.gitEmail?.trim() || 'you@example.com'
@@ -544,11 +559,14 @@ function CredentialsCard({
           title={stranded ? 'Load your existing key' : 'Create an SSH key'}
           commands={
             stranded
-              ? ['ssh-add ~/.ssh/id_ed25519']
+              ? [sshAddCommand(windows)]
               : [
                   `ssh-keygen -t ed25519 -C "${email}"`,
-                  'ssh-add ~/.ssh/id_ed25519',
-                  'cat ~/.ssh/id_ed25519.pub',
+                  sshAddCommand(windows),
+                  // `cat` is not a PowerShell command, and the separator differs.
+                  windows
+                    ? 'Get-Content $env:USERPROFILE\\.ssh\\id_ed25519.pub'
+                    : 'cat ~/.ssh/id_ed25519.pub',
                 ]
           }
           hint={

@@ -368,6 +368,14 @@ export interface Bootstrap {
    * assumed: it is `/home/x` on Linux and `/Users/x` on macOS.
    */
   homeDir: string | null
+  /**
+   * Which OS this is. Sent rather than sniffed from the user agent, which under a
+   * webview says more about the renderer than about the machine.
+   *
+   * `'windows' | 'macos' | 'linux'` in practice, but typed as a string because it is
+   * Rust's `std::env::consts::OS` and that list is longer than the three we handle.
+   */
+  os: string
   warnings: string[]
 }
 

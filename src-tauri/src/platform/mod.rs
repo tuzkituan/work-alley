@@ -996,6 +996,28 @@ mod tests {
     use super::*;
 
     #[test]
+    fn parses_ss_single_holder() {
+        let out = r#"LISTEN 0 511 *:8100 *:* users:(("node",pid=12345,fd=20))"#;
+        assert_eq!(parse_ss_holders(out), vec![(12345, "node".to_string())]);
+    }
+
+    #[test]
+    fn parses_ss_multiple_holders_and_dedupes() {
+        let out = "LISTEN 0 511 *:3000 *:* users:((\"node\",pid=111,fd=20),(\"node\",pid=222,fd=21))\n\
+                   LISTEN 0 511 [::]:3000 [::]:* users:((\"node\",pid=111,fd=22))";
+        let h = parse_ss_holders(out);
+        assert_eq!(h.len(), 2);
+        assert!(h.contains(&(111, "node".to_string())));
+        assert!(h.contains(&(222, "node".to_string())));
+    }
+
+    #[test]
+    fn no_holders_when_nothing_listens() {
+        assert!(parse_ss_holders("").is_empty());
+        assert!(parse_ss_holders("LISTEN 0 511 *:8100 *:*").is_empty());
+    }
+
+    #[test]
     fn netstat_reports_only_listeners_on_the_asked_for_port() {
         let out = "\
   Proto  Local Address          Foreign Address        State           PID

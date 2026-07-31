@@ -361,7 +361,10 @@ mod tests {
 // Both live in `platform` now: resolving a name to a program is the one thing
 // Windows does completely differently, because the name on disk is `git.exe` and a
 // bare `dir.join("git")` finds nothing at all.
-use crate::platform::{is_executable, which};
+use crate::platform::which;
+// Only the login-shell probe uses this, and that is unix-only — see `probe`.
+#[cfg(unix)]
+use crate::platform::is_executable;
 
 async fn version_of(path: &std::path::Path, tool: &str, path_env: &str) -> Option<String> {
     let mut cmd = tokio::process::Command::new(path);

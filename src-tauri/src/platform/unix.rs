@@ -118,7 +118,6 @@ pub fn strip_verbatim(p: &Path) -> PathBuf {
 // ---------------------------------------------------------------------------
 
 pub fn new_group(cmd: &mut tokio::process::Command) {
-    use std::os::unix::process::CommandExt as _;
     unsafe {
         // pre_exec runs post-fork/pre-exec and must be async-signal-safe. setsid()
         // is. Do not add anything else to this closure.

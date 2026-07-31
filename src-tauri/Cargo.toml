@@ -5,6 +5,12 @@ description = "Work Alley — multi-repo workspace dashboard"
 authors = ["Work Alley"]
 license = "MIT"
 edition = "2021"
+# A hard floor, not a guess. 1.77.2 is where `std::process::Command` started routing
+# a `.bat`/`.cmd` program through `cmd.exe /c` with correct quoting. On Windows `npm`,
+# `pnpm` and `yarn` are all `.cmd` shims, so dropping below this either breaks every
+# npm-backed plan or reintroduces the argument-injection hazard those releases fixed.
+# `platform::pty_argv` covers the same problem for portable-pty, whose ConPTY backend
+# does *not* handle it.
 rust-version = "1.77.2"
 
 [lib]

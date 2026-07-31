@@ -26,17 +26,29 @@ import { keys } from '@/queries/keys'
 import { IpcError } from '@/ipc/errors'
 import type { Bootstrap } from '@/domain/types'
 
+/** Either separator, because a Windows path uses the other one. */
+const SEP = /[/\\]/
+
 /**
- * `/home/me/projects` -> `~/projects`.
+ * `/home/me/projects` -> `~/projects`, and `C:\Users\me\projects` -> `~\projects`.
  *
  * Takes the home directory rather than assuming `/home/` — that prefix is wrong
  * on macOS (`/Users/`) and for any account outside the default location.
+ *
+ * The separator check is what makes this safe rather than merely prefix-matching:
+ * without it `/home/mel` would shorten under a home of `/home/me`, and on Windows the
+ * remainder starts with a backslash that a `/` test would never match.
  */
 export function shortenHome(p: string, home: string | null) {
   if (!home || !p.startsWith(home)) return p
   const rest = p.slice(home.length)
   if (rest === '') return '~'
-  return rest.startsWith('/') ? `~${rest}` : p
+  return SEP.test(rest.charAt(0)) ? `~${rest}` : p
+}
+
+/** The last path segment, whichever separator the platform uses. */
+export function baseName(p: string) {
+  return p.split(SEP).filter(Boolean).pop()
 }
 
 /** The home directory, for abbreviating paths. */
@@ -94,7 +106,7 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
   const current = boot?.workspaceRoot ?? ''
   const recents = (boot?.recentRoots ?? []).filter((r) => r !== current)
   // The folder name alone is enough here; the full path is on hover and in the menu.
-  const name = current.split('/').filter(Boolean).pop() ?? 'no workspace'
+  const name = baseName(current) ?? 'no workspace'
 
   // ⌘O / Ctrl+O is the conventional "open" shortcut, and makes this reachable
   // without hunting for the control at all.

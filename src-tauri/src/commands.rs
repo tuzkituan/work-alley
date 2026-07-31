@@ -92,6 +92,7 @@ async fn build_bootstrap(state: &Arc<AppState>) -> AppResult<Bootstrap> {
         scripts: crate::scripts::discover(&root),
         tracked_package: tracked,
         home_dir: dirs_home(),
+        os: std::env::consts::OS.to_string(),
         workspace_root: root,
         warnings,
         // A clone of the cached snapshot. Computing it here would put a `git config`

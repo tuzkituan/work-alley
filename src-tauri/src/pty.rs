@@ -228,11 +228,10 @@ pub fn open<R: Runtime>(
     let pid = child.process_id().unwrap_or(0);
     // Read before the `Child` is moved into the waiter thread below, which is the
     // only chance to get at it.
+    // portable-pty's own accessor, which is already an Option — a ConPTY child may
+    // not have a handle to give. Not std's `AsRawHandle`.
     #[cfg(windows)]
-    let os_handle = {
-        use std::os::windows::io::AsRawHandle as _;
-        Some(child.as_raw_handle() as isize)
-    };
+    let os_handle = child.as_raw_handle().map(|h| h as isize);
     #[cfg(not(windows))]
     let os_handle = None;
     let killer = child.clone_killer();

@@ -218,8 +218,176 @@ const STEPS: &[Step] = &[
     },
 ];
 
+
+/// The Windows table.
+///
+/// A second table rather than a parameterised one: the ids, the order, the kinds *and*
+/// the prose all differ, and the nvm step disappears entirely. Trying to express that
+/// as conditionals inside one table gets unreadable fast.
+///
+/// The single best property of this list is what it does **not** contain: there is no
+/// `Kind::Script` anywhere in it. `curl … | bash` is not translated to Windows, it is
+/// designed out — Node and Bun both come from winget — so the vendor-script warnings
+/// never need to render. There is a test that keeps it that way.
+const STEPS_WINDOWS: &[Step] = &[
+    Step {
+        id: "essentials",
+        title: "Git and jq",
+        summary: "Git for Windows, and jq.",
+        why: "Git first, because everything below is cloned with it — and because the \
+              Git for Windows installer is what provides Git Bash, which Work Alley \
+              uses to run this workspace's own scripts. curl is already part of \
+              Windows, and Windows builds native npm modules with MSVC rather than \
+              make and gcc, so neither belongs in a required step here.",
+        kind: Kind::System(&["git", "jq"]),
+        optional: false,
+        note: Some(
+            "The installer puts git on your PATH as it finishes, but this app read \
+             its PATH at launch — so restart Work Alley once it is done.",
+        ),
+    },
+    Step {
+        id: "git-identity",
+        title: "Your git identity",
+        summary: "The name and email recorded on every commit.",
+        why: "Git refuses to commit without them, and it tells you that at the first \
+              commit rather than now. Two minutes here saves that.",
+        kind: Kind::GitIdentity,
+        optional: false,
+        note: Some(
+            "Use the email your git host knows about, or your commits will not be \
+             linked to your account.",
+        ),
+    },
+    Step {
+        id: "node",
+        title: "Node.js (LTS)",
+        summary: "Node and npm, from the official LTS installer.",
+        why: "The LTS release is what almost every project targets. There is no nvm \
+              worth using here: nvm-windows re-points a symlink under Program Files, \
+              so it needs administrator rights for every single version switch. If \
+              you later need per-project versions, fnm is the tool for it.",
+        kind: Kind::System(&["node"]),
+        optional: false,
+        note: Some(
+            "npm's global folder is added to your PATH by the installer. Restart \
+             Work Alley afterwards so it can find npm.",
+        ),
+    },
+    Step {
+        id: "js-tools",
+        title: "Package managers and TypeScript",
+        summary: "pnpm, Yarn and the tsc compiler, installed globally.",
+        why: "A repo's lockfile decides which package manager it needs, and you do \
+              not get to choose. Having all three means anything you clone will \
+              install on the first try.",
+        kind: Kind::NpmGlobal(&["pnpm", "yarn", "typescript"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "github",
+        title: "GitHub CLI",
+        summary: "gh — sign-in for cloning, and the pull-request list.",
+        why: "`gh auth login` is the least painful way to get credentials for cloning \
+              over HTTPS, and it is what fills the pull-request list on each repo card.",
+        kind: Kind::System(&["gh"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "credentials",
+        title: "Credentials for cloning",
+        summary: "An SSH key in an agent, or sign in with the GitHub CLI.",
+        why: "The first thing you will do is clone, and it is the first thing that \
+              fails: git asks for a password it cannot prompt for from a window, so \
+              with neither of these a clone hangs or dies with `Permission denied \
+              (publickey)` and no explanation of what to fix.",
+        kind: Kind::Credentials,
+        optional: false,
+        note: Some(
+            "Either route is enough. Windows keeps the ssh agent as a service, and it \
+             ships disabled — if ssh-add says it cannot connect, run \
+             `Set-Service ssh-agent -StartupType Automatic; Start-Service ssh-agent` \
+             in an elevated PowerShell once.",
+        ),
+    },
+    Step {
+        id: "bun",
+        title: "Bun",
+        summary: "Fast installs, plus a bundler and test runner in one binary.",
+        why: "Optional — but a repo with a bun.lock wants it. From winget rather than \
+              from Bun's own install script, which keeps a downloaded shell script \
+              out of the setup path entirely.",
+        kind: Kind::System(&["bun"]),
+        optional: true,
+        note: None,
+    },
+    Step {
+        id: "terminal",
+        title: "Terminal tools",
+        summary: "ripgrep, fd, fzf, Neovim, and delta for readable diffs.",
+        why: "Searching a monorepo with grep is slow enough to change how you work. \
+              None of this is required; all of it pays for itself in a week.",
+        kind: Kind::System(&["ripgrep", "fd", "fzf", "neovim", "delta"]),
+        optional: true,
+        note: None,
+    },
+    Step {
+        id: "containers",
+        title: "Containers",
+        summary: "Docker Desktop, for compose files.",
+        why: "Most backends ship a compose file for their database and queue. The \
+              Local services panel reads whichever runtime is installed.",
+        kind: Kind::System(&["docker"]),
+        optional: true,
+        note: Some(
+            "Docker Desktop needs WSL2 and a sign-out before it will start. You do \
+             not need a group change: the installer adds you to the local \
+             docker-users group, which takes effect at your next sign-in.",
+        ),
+    },
+    Step {
+        id: "databases",
+        title: "Database and queue clients",
+        summary: "mysql, redis-cli and kcat — none of which exist on Windows.",
+        why: "Clients only, never servers — a dashboard should not quietly start a \
+              daemon listening on a port. Chosen from what the services in be/ \
+              actually connect to: MySQL, Redis and Kafka.",
+        kind: Kind::System(&["mysql", "redis-cli", "kcat"]),
+        optional: true,
+        note: Some(
+            "All three are genuinely unavailable on Windows: the mysql client ships \
+             only inside the server installer, Redis publishes no Windows build, and \
+             kcat has none at all. Run the servers in containers and use their own \
+             clients: `docker exec -it mysql mysql`, `docker exec -it redis \
+             redis-cli`, `docker run --rm edenhill/kcat`.",
+        ),
+    },
+    Step {
+        id: "backend",
+        title: "Backend tooling",
+        summary: "The NestJS CLI, and the MongoDB shell.",
+        why: "Every service in be/ is NestJS, so `nest generate` is a daily command, \
+              and most of them store in MongoDB — mongosh is the only way to look at \
+              what they wrote. Both come from npm, which works the same everywhere.",
+        kind: Kind::NpmGlobal(&["nest", "mongosh"]),
+        optional: true,
+        note: None,
+    },
+];
+
+/// The step list for this platform.
+fn steps() -> &'static [Step] {
+    if cfg!(windows) {
+        STEPS_WINDOWS
+    } else {
+        STEPS
+    }
+}
+
 fn find_step(id: &str) -> Option<&'static Step> {
-    STEPS.iter().find(|s| s.id == id)
+    steps().iter().find(|s| s.id == id)
 }
 
 /// The `blocked` reason for one step, or None when it can run.
@@ -227,7 +395,7 @@ fn find_step(id: &str) -> Option<&'static Step> {
 /// Its own entry point so `build_action` can refuse a blocked step up front. Costs a
 /// catalog probe, which is acceptable for a click and is what `status` does anyway.
 pub async fn blocked_reason(tc: &Toolchain, id: &str) -> Option<String> {
-    let step = STEPS.iter().find(|s| s.id == id)?;
+    let step = steps().iter().find(|s| s.id == id)?;
     let pkgs = packages::list(tc).await;
     let has_nvm = packages::nvm_script().is_some();
     let (name, email) = git_identity(tc).await;
@@ -245,7 +413,7 @@ pub async fn status(tc: &Toolchain) -> SetupPlan {
     let (git_name, git_email) = git_identity(tc).await;
     let creds = crate::creds::status(tc).await;
 
-    let steps = STEPS
+    let steps = steps()
         .iter()
         .map(|s| {
             let (items, blocked) =
@@ -643,7 +811,7 @@ impl PackageStatusExt for [crate::model::PackageStatus] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::procs::sh_quote;
+    use crate::platform::sh_quote;
 
     #[test]
     fn every_step_id_is_unique() {
@@ -658,7 +826,7 @@ mod tests {
     fn every_package_a_step_names_exists_in_the_catalog() {
         // A typo here would render a row labelled with the id, permanently "not
         // available", and no install would ever fix it.
-        for s in STEPS {
+        for s in STEPS.iter().chain(STEPS_WINDOWS) {
             let ids: &[&str] = match &s.kind {
                 Kind::System(ids) | Kind::NpmGlobal(ids) => ids,
                 Kind::Node => &["node"],
@@ -693,6 +861,51 @@ mod tests {
         // Last of the required ones: `gh auth login` is one of its two routes, so the
         // CLI has to exist before the step that offers it.
         assert!(pos("github") < pos("credentials"), "the gh route needs gh installed");
+    }
+
+    #[test]
+    fn the_windows_order_holds_the_same_invariants_without_nvm() {
+        let pos = |id: &str| STEPS_WINDOWS.iter().position(|s| s.id == id).expect(id);
+        // Git first, and not only to clone with: its installer is what provides the
+        // bash every generated script and every workspace `.sh` file needs.
+        assert_eq!(pos("essentials"), 0);
+        assert!(pos("essentials") < pos("git-identity"), "git config needs git");
+        assert!(pos("node") < pos("js-tools"), "npm -g needs Node");
+        assert!(pos("github") < pos("credentials"), "the gh route needs gh installed");
+        assert!(
+            !STEPS_WINDOWS.iter().any(|s| s.id == "nvm"),
+            "nvm-windows needs administrator for every version switch; Node comes \
+             straight from winget instead"
+        );
+    }
+
+    #[test]
+    fn the_windows_steps_never_pipe_a_download_into_a_shell() {
+        // The point of the whole Windows table. `curl … | bash` was not translated,
+        // it was designed out: Node and Bun both come from winget. One cheap test
+        // keeps it that way.
+        for s in STEPS_WINDOWS {
+            assert!(
+                !matches!(s.kind, Kind::Script { .. }),
+                "step '{}' runs a downloaded script",
+                s.id
+            );
+            let prose = format!("{} {} {}", s.summary, s.why, s.note.unwrap_or(""));
+            assert!(!prose.contains("| bash"), "step '{}' still suggests curl | bash", s.id);
+        }
+    }
+
+    #[test]
+    fn the_required_windows_steps_are_the_ones_a_web_project_cannot_start_without() {
+        let required: Vec<&str> = STEPS_WINDOWS
+            .iter()
+            .filter(|s| !s.optional)
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(
+            required,
+            ["essentials", "git-identity", "node", "js-tools", "github", "credentials"]
+        );
     }
 
     #[test]
@@ -854,6 +1067,8 @@ mod tests {
                 manager: String::new(),
                 needs_root: false,
                 removable: true,
+                elevation: "none".into(),
+                unavailable_note: None,
             },
             installed,
             path: None,
