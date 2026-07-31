@@ -3680,7 +3680,66 @@ fn bulk_fetch_argv(
 /// The toolbox listing. Read-only.
 #[tauri::command]
 pub async fn list_packages(state: State<'_, Arc<AppState>>) -> AppResult<Vec<PackageStatus>> {
-    Ok(crate::packages::list(&state.toolchain()).await)
+    let cfg = state.config();
+    let chosen = crate::ecosystems::chosen(&cfg.stacks);
+    let all = crate::packages::list(&state.toolchain()).await;
+    // Filtered here rather than in the Toolbox, so the search field, the group
+    // counts and the update check all agree about what the list is. A tool no stack
+    // claims is always kept — see `tool_allowed`.
+    Ok(all
+        .into_iter()
+        .filter(|p| crate::ecosystems::tool_allowed(&p.package.id, &chosen))
+        .collect())
+}
+
+/// The stack picker's rows: every language and framework, with what this workspace
+/// looks like and what is already installed for it.
+///
+/// Read-only and cheap: the repo counts come from the scan the app has already
+/// done, and the tool counts from the same probe the Toolbox uses.
+#[tauri::command]
+pub async fn list_stacks(state: State<'_, Arc<AppState>>) -> AppResult<Vec<crate::model::StackInfo>> {
+    let cfg = state.config();
+    // The toolchain's own probe, not `packages::list`. That one spawns each tool to
+    // read its version — forty-odd processes — and this command runs on every
+    // keystroke of the picker. Whether a binary resolved is all the count needs.
+    let tc = state.toolchain();
+    let installed = |id: &str| {
+        crate::packages::find(id)
+            .map(|e| tc.has(e.bin_for(crate::packages::Os::current())))
+            .unwrap_or(false)
+    };
+
+    // Detection is `detect.rs`'s answer, not a second opinion: whatever the last
+    // scan decided each repo is, mapped up to the stack that owns that string.
+    //
+    // Zero counts before the first scan are honest — nothing has been looked at yet
+    // — and the picker says "not scanned" rather than "none", because "0 Flutter
+    // repos" would be a claim this has not earned.
+    let mut counts: std::collections::HashMap<&'static str, usize> =
+        std::collections::HashMap::new();
+    if let Some(snap) = state.last_scan.read().unwrap().as_ref() {
+        for repo in &snap.repos {
+            for s in crate::ecosystems::for_shape(&repo.shape.stack) {
+                *counts.entry(s.id).or_default() += 1;
+            }
+        }
+    }
+
+    Ok(crate::ecosystems::STACKS
+        .iter()
+        .map(|s| crate::model::StackInfo {
+            id: s.id.to_string(),
+            label: s.label.to_string(),
+            hint: s.hint.to_string(),
+            family: format!("{:?}", s.family).to_lowercase(),
+            family_label: s.family.label().to_string(),
+            chosen: cfg.stacks.iter().any(|id| id == s.id),
+            repos: counts.get(s.id).copied().unwrap_or(0),
+            tools_installed: s.tools.iter().filter(|t| installed(t)).count(),
+            tools_total: s.tools.len(),
+        })
+        .collect())
 }
 
 /// Which installed tools have a newer version available. Read-only.
@@ -4014,7 +4073,15 @@ pub async fn refresh_toolchain(
 /// rather than a failure.
 #[tauri::command]
 pub async fn list_setup_plan(state: State<'_, Arc<AppState>>) -> AppResult<SetupPlan> {
-    Ok(crate::setup::status(&state.toolchain()).await)
+    let cfg = state.config();
+    let chosen = crate::ecosystems::chosen(&cfg.stacks);
+    let mut plan = crate::setup::status(&state.toolchain()).await;
+    // Same rule as the Toolbox: a step no stack claims is everybody's. The counts
+    // the page shows ("3/7 required") are computed from `plan.steps` in the
+    // frontend, so filtering here is what makes them mean "3 of the 7 *you* need".
+    plan.steps
+        .retain(|s| crate::ecosystems::step_allowed(&s.id, &chosen));
+    Ok(plan)
 }
 
 /// What a checkout would do, per repo. Read-only.

@@ -168,6 +168,113 @@ const STEPS: &[Step] = &[
         optional: true,
         note: None,
     },
+    // --- per-stack, and only shown when that stack is chosen --------------------
+    //
+    // `optional: false` on purpose. These are not extras — they are what "set up my
+    // machine" means for someone whose work is Flutter or Python, and the count at
+    // the top of the page should say so. The stack picker is what keeps them out of
+    // everybody else's list; see `ecosystems.rs`.
+    Step {
+        id: "flutter",
+        title: "Flutter",
+        summary: "The Flutter SDK, which brings Dart with it.",
+        why: "Everything Flutter needs after this — the analyzer, pub, the platform \
+              builds — comes from the one SDK. `flutter doctor` then reports what is \
+              still missing for each platform you target.",
+        kind: Kind::System(&["flutter"]),
+        optional: false,
+        note: Some(
+            "Flutter is a git checkout rather than a package on most distributions. \
+             If the install below is unavailable, follow docs.flutter.dev/get-started \
+             and re-check — this page only needs `flutter` on your PATH.",
+        ),
+    },
+    Step {
+        id: "android",
+        title: "Android toolchain",
+        summary: "A JDK and the Android platform tools.",
+        why: "Both Flutter and React Native build Android through Gradle, which needs \
+              a JDK, and install to a device through adb. Neither is part of the \
+              framework's own SDK.",
+        kind: Kind::System(&["jdk", "android-sdk"]),
+        optional: false,
+        note: Some(
+            "Platform tools give you adb. A full SDK — build-tools, an emulator image \
+             and the accepted licences — comes from Android Studio or `sdkmanager \
+             --licenses`, which this app deliberately does not run for you.",
+        ),
+    },
+    Step {
+        id: "python",
+        title: "Python",
+        summary: "The interpreter, plus uv for environments and dependencies.",
+        why: "uv replaces pip, venv and pip-tools with one tool that is fast enough \
+              to use per project. Django, FastAPI and Flask all install through it.",
+        kind: Kind::System(&["python", "uv"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "rust",
+        title: "Rust",
+        summary: "rustup, which installs rustc, cargo and clippy.",
+        why: "Never the distribution's rust package: rustup is how toolchains are \
+              pinned per project, and a repo with a rust-toolchain.toml expects it.",
+        kind: Kind::System(&["rustup"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "go",
+        title: "Go",
+        summary: "The Go toolchain.",
+        why: "One binary with the build, test, format and module tooling in it — \
+              there is nothing else to install.",
+        kind: Kind::System(&["go"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "java",
+        title: "Java and Kotlin",
+        summary: "A JDK, with Gradle and Maven.",
+        why: "Most repos ship a `gradlew` wrapper and need only the JDK; the system \
+              Gradle and Maven are for the ones that do not, and for running builds \
+              outside a project.",
+        kind: Kind::System(&["jdk", "gradle", "maven"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "dotnet",
+        title: ".NET",
+        summary: "The .NET SDK.",
+        why: "The SDK carries the runtime, the compiler and `dotnet` itself, which is \
+              how a C# project is restored, built and run.",
+        kind: Kind::System(&["dotnet"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "php",
+        title: "PHP",
+        summary: "The PHP interpreter and Composer.",
+        why: "Laravel is a Composer project first and a PHP one second: without \
+              Composer there is no vendor/ and nothing runs.",
+        kind: Kind::System(&["php", "composer"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "ruby",
+        title: "Ruby",
+        summary: "Ruby and Bundler.",
+        why: "Rails is a Bundler project the same way Laravel is a Composer one. \
+              Modern Ruby ships Bundler, so this is usually one package.",
+        kind: Kind::System(&["ruby", "bundler"]),
+        optional: false,
+        note: None,
+    },
     Step {
         id: "terminal",
         title: "Terminal tools",
@@ -323,6 +430,113 @@ const STEPS_WINDOWS: &[Step] = &[
         optional: true,
         note: None,
     },
+    // --- per-stack, and only shown when that stack is chosen --------------------
+    //
+    // `optional: false` on purpose. These are not extras — they are what "set up my
+    // machine" means for someone whose work is Flutter or Python, and the count at
+    // the top of the page should say so. The stack picker is what keeps them out of
+    // everybody else's list; see `ecosystems.rs`.
+    Step {
+        id: "flutter",
+        title: "Flutter",
+        summary: "The Flutter SDK, which brings Dart with it.",
+        why: "Everything Flutter needs after this — the analyzer, pub, the platform \
+              builds — comes from the one SDK. `flutter doctor` then reports what is \
+              still missing for each platform you target.",
+        kind: Kind::System(&["flutter"]),
+        optional: false,
+        note: Some(
+            "Flutter is a git checkout rather than a package on most distributions. \
+             If the install below is unavailable, follow docs.flutter.dev/get-started \
+             and re-check — this page only needs `flutter` on your PATH.",
+        ),
+    },
+    Step {
+        id: "android",
+        title: "Android toolchain",
+        summary: "A JDK and the Android platform tools.",
+        why: "Both Flutter and React Native build Android through Gradle, which needs \
+              a JDK, and install to a device through adb. Neither is part of the \
+              framework's own SDK.",
+        kind: Kind::System(&["jdk", "android-sdk"]),
+        optional: false,
+        note: Some(
+            "Platform tools give you adb. A full SDK — build-tools, an emulator image \
+             and the accepted licences — comes from Android Studio or `sdkmanager \
+             --licenses`, which this app deliberately does not run for you.",
+        ),
+    },
+    Step {
+        id: "python",
+        title: "Python",
+        summary: "The interpreter, plus uv for environments and dependencies.",
+        why: "uv replaces pip, venv and pip-tools with one tool that is fast enough \
+              to use per project. Django, FastAPI and Flask all install through it.",
+        kind: Kind::System(&["python", "uv"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "rust",
+        title: "Rust",
+        summary: "rustup, which installs rustc, cargo and clippy.",
+        why: "Never the distribution's rust package: rustup is how toolchains are \
+              pinned per project, and a repo with a rust-toolchain.toml expects it.",
+        kind: Kind::System(&["rustup"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "go",
+        title: "Go",
+        summary: "The Go toolchain.",
+        why: "One binary with the build, test, format and module tooling in it — \
+              there is nothing else to install.",
+        kind: Kind::System(&["go"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "java",
+        title: "Java and Kotlin",
+        summary: "A JDK, with Gradle and Maven.",
+        why: "Most repos ship a `gradlew` wrapper and need only the JDK; the system \
+              Gradle and Maven are for the ones that do not, and for running builds \
+              outside a project.",
+        kind: Kind::System(&["jdk", "gradle", "maven"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "dotnet",
+        title: ".NET",
+        summary: "The .NET SDK.",
+        why: "The SDK carries the runtime, the compiler and `dotnet` itself, which is \
+              how a C# project is restored, built and run.",
+        kind: Kind::System(&["dotnet"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "php",
+        title: "PHP",
+        summary: "The PHP interpreter and Composer.",
+        why: "Laravel is a Composer project first and a PHP one second: without \
+              Composer there is no vendor/ and nothing runs.",
+        kind: Kind::System(&["php", "composer"]),
+        optional: false,
+        note: None,
+    },
+    Step {
+        id: "ruby",
+        title: "Ruby",
+        summary: "Ruby and Bundler.",
+        why: "Rails is a Bundler project the same way Laravel is a Composer one. \
+              Modern Ruby ships Bundler, so this is usually one package.",
+        kind: Kind::System(&["ruby", "bundler"]),
+        optional: false,
+        note: None,
+    },
     Step {
         id: "terminal",
         title: "Terminal tools",
@@ -388,6 +602,18 @@ fn steps() -> &'static [Step] {
 
 fn find_step(id: &str) -> Option<&'static Step> {
     steps().iter().find(|s| s.id == id)
+}
+
+/// Whether a step id exists on either platform.
+///
+/// For cross-table checks — `ecosystems.rs` names step ids and a typo there would
+/// silently drop a step from a stack's setup, which looks exactly like the filter
+/// working. Either platform, not both: `nvm` is Unix-only on purpose (Windows
+/// installs Node through winget, `setup.rs:230`), and requiring both would make
+/// that legitimate asymmetry unnameable.
+#[allow(dead_code)]
+pub fn step_exists(id: &str) -> bool {
+    STEPS.iter().chain(STEPS_WINDOWS).any(|s| s.id == id)
 }
 
 /// The `blocked` reason for one step, or None when it can run.
@@ -897,9 +1123,10 @@ mod tests {
 
     #[test]
     fn the_required_windows_steps_are_the_ones_a_web_project_cannot_start_without() {
+        let web = crate::ecosystems::chosen(&["web".to_string()]);
         let required: Vec<&str> = STEPS_WINDOWS
             .iter()
-            .filter(|s| !s.optional)
+            .filter(|s| !s.optional && crate::ecosystems::step_allowed(s.id, &web))
             .map(|s| s.id)
             .collect();
         assert_eq!(
@@ -910,7 +1137,17 @@ mod tests {
 
     #[test]
     fn the_required_steps_are_the_ones_a_web_project_cannot_start_without() {
-        let required: Vec<&str> = STEPS.iter().filter(|s| !s.optional).map(|s| s.id).collect();
+        // Only the steps no stack claims, plus Web's own — which is what someone
+        // with no stack chosen and a package.json in front of them actually sees.
+        // The per-stack steps below are `optional: false` too, deliberately: a
+        // Flutter machine's Flutter step is not an extra. They are filtered by
+        // choice, not by optionality, so this asserts the *web* shape of the list.
+        let web = crate::ecosystems::chosen(&["web".to_string()]);
+        let required: Vec<&str> = STEPS
+            .iter()
+            .filter(|s| !s.optional && crate::ecosystems::step_allowed(s.id, &web))
+            .map(|s| s.id)
+            .collect();
         assert_eq!(
             required,
             [
@@ -925,6 +1162,20 @@ mod tests {
                 // does not say what to fix.
                 "credentials",
             ]
+        );
+    }
+
+    #[test]
+    fn a_flutter_machine_is_asked_for_flutter_and_not_for_node() {
+        let flutter = crate::ecosystems::chosen(&["flutter".to_string()]);
+        let required: Vec<&str> = STEPS
+            .iter()
+            .filter(|s| !s.optional && crate::ecosystems::step_allowed(s.id, &flutter))
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(
+            required,
+            ["essentials", "git-identity", "github", "credentials", "flutter", "android"]
         );
     }
 

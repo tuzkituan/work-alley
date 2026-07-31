@@ -1,15 +1,19 @@
+import { useEffect, useRef } from 'react'
 import { useQueries } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
+import { toast } from 'sonner'
 import { SectionLabel, StatusDot } from '@/components/wa/primitives'
-import { repoId, type RepoRef, type WorkflowRun } from '@/domain/types'
+import { repoId, type RepoRef, type WorkflowRun, type WorkflowRunState } from '@/domain/types'
 import { api } from '@/ipc/commands'
 import { cn } from '@/lib/utils'
 import { keys } from '@/queries/keys'
 import { useCiStore } from '@/stores/ci-store'
 import { useUiStore } from '@/stores/ui-store'
 
+import { finishedMessage, isActiveRun, justFinished, nextSeen } from './ci-notify'
+
 /** Matches the Actions panel: the two states worth watching for. */
-const isActive = (r: WorkflowRun) => r.state === 'queued' || r.state === 'running'
+const isActive = (r: WorkflowRun) => isActiveRun(r)
 
 const POLL_MS = 10_000
 
@@ -54,6 +58,46 @@ export function CiSection() {
     if (data?.kind !== 'ok') return []
     return data.runs.filter(isActive).map((run) => ({ ref, run }))
   })
+
+  // Every run this section has seen, and what it was doing. A ref, not state: it
+  // exists to compare polls, and re-rendering the rail because a run's state was
+  // recorded would be a render per tick per repo for something invisible.
+  const seen = useRef(new Map<number, WorkflowRunState>())
+  // Deliberately not in the deps array — see below.
+  const allRuns = watched.map((ref, i) => {
+    const data = results[i]?.data
+    return { ref, runs: data?.kind === 'ok' ? data.runs : [] }
+  })
+  // The key changes only when some run's state does, which is what keeps this
+  // effect from firing on every poll that returns the same answer.
+  const stateKey = allRuns
+    .flatMap(({ runs }) => runs.map((r) => `${r.id}:${r.state}`))
+    .join(',')
+
+  useEffect(() => {
+    for (const { ref, runs } of allRuns) {
+      for (const run of justFinished(seen.current, runs)) {
+        const { tone, text, detail } = finishedMessage(run, ref.name)
+        toast[tone](text, {
+          description: detail,
+          // Long enough to still be there when you look back at the window: the
+          // whole point is that you were doing something else while it ran.
+          duration: tone === 'error' ? 20_000 : 8_000,
+          action: {
+            label: 'Open',
+            onClick: () => {
+              openDetail(repoId(ref))
+              setDetailTab('actions')
+            },
+          },
+        })
+      }
+      seen.current = nextSeen(seen.current, runs)
+    }
+    // `allRuns` is rebuilt every render; `stateKey` is the same information as a
+    // primitive, and the only thing that can make this effect worth running.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stateKey])
 
   if (watched.length === 0) return null
 

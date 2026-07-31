@@ -103,7 +103,14 @@ pub fn run_tasks(repo: &Path) -> Vec<RunTask> {
     }
 
     out.extend(flutter_task(repo));
+    out.extend(mobile_js_tasks(repo));
     out.extend(python_tasks(repo));
+    out.extend(jvm_tasks(repo));
+    out.extend(dotnet_task(repo));
+    out.extend(php_task(repo));
+    out.extend(ruby_task(repo));
+    out.extend(elixir_task(repo));
+    out.extend(swift_task(repo));
 
     // A Tauri app's crate lives in src-tauri/, and `cargo run` there builds the
     // shell without the frontend the tauri task already starts for it.
@@ -123,6 +130,52 @@ pub fn run_tasks(repo: &Path) -> Vec<RunTask> {
     }
 
     out
+}
+
+/// Whether this repo's dependencies are declared but not fetched.
+///
+/// What drives the Install button on the row. It was node-only by construction — a
+/// missing `node_modules` — which meant a freshly cloned Flutter app offered Run,
+/// failed on the first missing package, and said nothing about `pub get`.
+///
+/// One rule per ecosystem, and each is the directory that ecosystem's install
+/// command creates. Deliberately conservative: only when there is something to run
+/// *and* a manifest declaring dependencies, because "no vendor/ directory" in a
+/// repo with an empty `composer.json` is not a problem anyone needs told about.
+///
+/// Python is absent on purpose. A virtualenv has no fixed location — `.venv`,
+/// `venv`, `~/.cache/pypoetry`, or the system interpreter with nothing local at all
+/// — so its absence proves nothing, and a permanent "install me" on every Python
+/// repo would be noise.
+pub fn needs_install(repo: &Path, runnable: &[RunTask]) -> bool {
+    if runnable.is_empty() {
+        return false;
+    }
+    let file = |f: &str| repo.join(f).is_file();
+    let dir = |d: &str| repo.join(d).is_dir();
+
+    // Node, and only for a declared script: a repo whose Run is `cargo run` does
+    // not stop working because node_modules is missing.
+    if matches!(runnable.first().map(|t| &t.via), Some(RunVia::Script(_)))
+        && file("package.json")
+        && !dir("node_modules")
+    {
+        return true;
+    }
+    // `pub get` writes .dart_tool/package_config.json; the directory alone is
+    // created by other flutter commands too, so the file is the honest test.
+    if file("pubspec.yaml") && !repo.join(".dart_tool/package_config.json").is_file() {
+        return true;
+    }
+    if file("composer.json") && !dir("vendor") {
+        return true;
+    }
+    // Bundler installs into the system gem path by default, so vendor/bundle proves
+    // nothing — the lock file is what `bundle install` writes in every case.
+    if file("Gemfile") && !file("Gemfile.lock") {
+        return true;
+    }
+    false
 }
 
 pub fn find(repo: &Path, id: &str) -> Option<RunTask> {
@@ -317,6 +370,168 @@ fn flutter_task(repo: &Path) -> Option<RunTask> {
         // startup, so there is no port to predict here.
         port: None,
     })
+}
+
+/// Expo and bare React Native.
+///
+/// Through the package manager, not a global CLI: both ship as dependencies, and a
+/// globally installed `expo` is the wrong version as often as not. Metro binds 8081
+/// by convention, which is worth stating — it is the port you open a device
+/// against, and the one that is already taken when a second app fails to start.
+fn mobile_js_tasks(repo: &Path) -> Vec<RunTask> {
+    let Some(manifest) = crate::pkg::read_manifest(repo) else {
+        return Vec::new();
+    };
+    let has = |d: &str| manifest.deps.iter().any(|x| x == d);
+    let metro = Some((8081, PortSource::TaskDefault));
+    let mut out = Vec::new();
+
+    if has("expo") {
+        out.push(RunTask {
+            id: "expo".to_string(),
+            label: "expo start".to_string(),
+            via: RunVia::PmExec(vec!["expo".to_string(), "start".to_string()]),
+            port: metro,
+        });
+    }
+    // Only when Expo is absent: `expo start` runs Metro itself, and offering both
+    // would be two buttons for one server that cannot both hold 8081.
+    if has("react-native") && !has("expo") {
+        out.push(RunTask {
+            id: "react-native".to_string(),
+            label: "Metro bundler".to_string(),
+            via: RunVia::PmExec(vec!["react-native".to_string(), "start".to_string()]),
+            port: metro,
+        });
+    }
+    out
+}
+
+/// Spring Boot, through whichever build tool the repo uses.
+///
+/// The wrapper first — `./gradlew` and `./mvnw` pin the build tool's version, which
+/// is why repos ship them — falling back to a system `gradle`/`mvn`. Only for Spring:
+/// a plain Gradle library has no long-running task worth a Run button, and `gradle
+/// run` on one fails with "task not found".
+fn jvm_tasks(repo: &Path) -> Vec<RunTask> {
+    let file = |f: &str| repo.join(f).exists();
+    let spring = ["build.gradle", "build.gradle.kts", "pom.xml"].iter().any(|f| {
+        std::fs::read_to_string(repo.join(f))
+            .map(|t| t.contains("springframework") || t.contains("spring-boot"))
+            .unwrap_or(false)
+    });
+    if !spring {
+        return Vec::new();
+    }
+    // Spring Boot's own default, and the one every tutorial assumes.
+    let port = Some((8080, PortSource::TaskDefault));
+
+    if file("build.gradle") || file("build.gradle.kts") {
+        let via = if file("gradlew") {
+            RunVia::Local("./gradlew".to_string(), vec!["bootRun".to_string()])
+        } else {
+            RunVia::Program(&["gradle"], vec!["bootRun".to_string()])
+        };
+        return vec![RunTask { id: "spring".to_string(), label: "bootRun".to_string(), via, port }];
+    }
+    if file("pom.xml") {
+        let via = if file("mvnw") {
+            RunVia::Local("./mvnw".to_string(), vec!["spring-boot:run".to_string()])
+        } else {
+            RunVia::Program(&["mvn"], vec!["spring-boot:run".to_string()])
+        };
+        return vec![RunTask {
+            id: "spring".to_string(),
+            label: "spring-boot:run".to_string(),
+            via,
+            port,
+        }];
+    }
+    Vec::new()
+}
+
+fn dotnet_task(repo: &Path) -> Option<RunTask> {
+    if !has_ext(repo, "csproj") && !has_ext(repo, "sln") {
+        return None;
+    }
+    Some(RunTask {
+        id: "dotnet".to_string(),
+        label: "dotnet run".to_string(),
+        via: RunVia::Program(&["dotnet"], vec!["run".to_string()]),
+        // ASP.NET's default kestrel port. A console app binds nothing and the port
+        // is simply never reached, which is the same situation as `cargo run`.
+        port: Some((5000, PortSource::TaskDefault)),
+    })
+}
+
+/// `php artisan serve`. Laravel only — `artisan` is what makes it one.
+fn php_task(repo: &Path) -> Option<RunTask> {
+    if !repo.join("artisan").exists() {
+        return None;
+    }
+    Some(RunTask {
+        id: "laravel".to_string(),
+        label: "artisan serve".to_string(),
+        via: RunVia::Program(&["php"], vec!["artisan".to_string(), "serve".to_string()]),
+        port: Some((8000, PortSource::TaskDefault)),
+    })
+}
+
+fn ruby_task(repo: &Path) -> Option<RunTask> {
+    if !repo.join("bin/rails").exists() {
+        return None;
+    }
+    Some(RunTask {
+        id: "rails".to_string(),
+        label: "rails server".to_string(),
+        // The binstub, not a system `rails`: it is what loads the bundle, and the
+        // version outside it is usually a different Rails entirely.
+        via: RunVia::Local("bin/rails".to_string(), vec!["server".to_string()]),
+        port: Some((3000, PortSource::TaskDefault)),
+    })
+}
+
+fn elixir_task(repo: &Path) -> Option<RunTask> {
+    // Phoenix, not plain Mix: `mix phx.server` on a library fails, and a library has
+    // nothing long-running to offer anyway.
+    let phoenix = std::fs::read_to_string(repo.join("mix.exs"))
+        .map(|t| t.contains(":phoenix"))
+        .unwrap_or(false);
+    if !phoenix {
+        return None;
+    }
+    Some(RunTask {
+        id: "phoenix".to_string(),
+        label: "mix phx.server".to_string(),
+        via: RunVia::Program(&["mix"], vec!["phx.server".to_string()]),
+        port: Some((4000, PortSource::TaskDefault)),
+    })
+}
+
+fn swift_task(repo: &Path) -> Option<RunTask> {
+    let manifest = std::fs::read_to_string(repo.join("Package.swift")).ok()?;
+    // An executable target is the equivalent of Cargo's `[[bin]]`; a library
+    // package has nothing to run.
+    if !manifest.contains("executableTarget") && !manifest.contains(".executable") {
+        return None;
+    }
+    Some(RunTask {
+        id: "swift".to_string(),
+        label: "swift run".to_string(),
+        via: RunVia::Program(&["swift"], vec!["run".to_string()]),
+        port: None,
+    })
+}
+
+/// Whether any file directly in `repo` has this extension.
+fn has_ext(repo: &Path, ext: &str) -> bool {
+    std::fs::read_dir(repo)
+        .map(|entries| {
+            entries
+                .flatten()
+                .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some(ext))
+        })
+        .unwrap_or(false)
 }
 
 fn cargo_task(repo: &Path) -> Option<RunTask> {
@@ -874,4 +1089,141 @@ mod tests {
         write(&d, "docker-compose.yml", "services: {}\n");
         assert_eq!(ids(&d), vec!["dev", "serve", "go", "compose"]);
     }
+    #[test]
+    fn expo_wins_over_metro_when_both_are_declared() {
+        // `expo start` runs Metro itself. Two buttons for one server, both binding
+        // 8081, is a choice between something and the same thing broken.
+        let d = scratch("expo");
+        write(&d, "package.json", r#"{"dependencies":{"expo":"51","react-native":"0.74"}}"#);
+        let list = ids(&d);
+        assert!(list.contains(&"expo".to_string()));
+        assert!(!list.contains(&"react-native".to_string()));
+
+        let bare = scratch("rn");
+        write(&bare, "package.json", r#"{"dependencies":{"react-native":"0.74"}}"#);
+        assert!(ids(&bare).contains(&"react-native".to_string()));
+    }
+
+    #[test]
+    fn metro_states_the_port_a_device_connects_to() {
+        let d = scratch("rn-port");
+        write(&d, "package.json", r#"{"dependencies":{"react-native":"0.74"}}"#);
+        let t = find(&d, "react-native").unwrap();
+        assert_eq!(t.port.map(|(p, _)| p), Some(8081));
+    }
+
+    #[test]
+    fn spring_uses_the_wrapper_when_the_repo_ships_one() {
+        // The wrapper pins the build tool's version — that is why repos carry it.
+        let g = scratch("spring-gradle");
+        write(&g, "build.gradle.kts", "id(\"org.springframework.boot\")");
+        write(&g, "gradlew", "#!/bin/sh");
+        let t = find(&g, "spring").unwrap();
+        assert!(matches!(&t.via, RunVia::Local(bin, _) if bin == "./gradlew"), "{:?}", t.via);
+        assert_eq!(t.port.map(|(p, _)| p), Some(8080));
+
+        let m = scratch("spring-maven");
+        write(&m, "pom.xml", "<artifactId>spring-boot-starter-parent</artifactId>");
+        let t = find(&m, "spring").unwrap();
+        assert!(matches!(&t.via, RunVia::Program(prog, _) if prog[0] == "mvn"), "{:?}", t.via);
+    }
+
+    #[test]
+    fn a_plain_gradle_library_offers_no_run() {
+        // `gradle bootRun` on a repo without the plugin fails with "task not found",
+        // which is a worse answer than an empty Run button.
+        let d = scratch("gradle-lib");
+        write(&d, "build.gradle", "plugins { id 'java-library' }");
+        assert!(ids(&d).is_empty());
+    }
+
+    #[test]
+    fn the_other_backends_each_have_one_way_to_start() {
+        let laravel = scratch("laravel");
+        write(&laravel, "artisan", "");
+        let t = find(&laravel, "laravel").unwrap();
+        assert_eq!(t.port.map(|(p, _)| p), Some(8000));
+
+        let rails = scratch("rails");
+        write(&rails, "bin/rails", "");
+        let t = find(&rails, "rails").unwrap();
+        // The binstub, which loads the bundle — not whichever rails is on PATH.
+        assert!(matches!(&t.via, RunVia::Local(bin, _) if bin == "bin/rails"), "{:?}", t.via);
+        assert_eq!(t.port.map(|(p, _)| p), Some(3000));
+
+        let phoenix = scratch("phoenix");
+        write(&phoenix, "mix.exs", "defp deps do [{:phoenix, \"~> 1.7\"}] end");
+        assert_eq!(find(&phoenix, "phoenix").unwrap().port.map(|(p, _)| p), Some(4000));
+
+        let dotnet = scratch("dotnet");
+        write(&dotnet, "app.csproj", "<Project/>");
+        assert_eq!(find(&dotnet, "dotnet").unwrap().port.map(|(p, _)| p), Some(5000));
+    }
+
+    #[test]
+    fn a_mix_library_without_phoenix_offers_nothing() {
+        let d = scratch("mix-lib");
+        write(&d, "mix.exs", "defp deps do [{:jason, \"~> 1.4\"}] end");
+        assert!(ids(&d).is_empty());
+    }
+
+    #[test]
+    fn a_swift_library_offers_nothing_but_an_executable_does() {
+        let lib = scratch("swift-lib");
+        write(&lib, "Package.swift", ".library(name: \"X\", targets: [\"X\"])");
+        assert!(ids(&lib).is_empty());
+
+        let exe = scratch("swift-exe");
+        write(&exe, "Package.swift", ".executableTarget(name: \"X\")");
+        assert!(ids(&exe).contains(&"swift".to_string()));
+    }
+
+    #[test]
+    fn a_fresh_flutter_clone_needs_pub_get() {
+        let d = scratch("flutter-fresh");
+        write(&d, "pubspec.yaml", "name: app");
+        write(&d, "lib/main.dart", "void main() {}");
+        let tasks = run_tasks(&d);
+        assert!(needs_install(&d, &tasks));
+
+        // What `pub get` actually writes. The bare directory is created by other
+        // flutter commands, so it is not the test.
+        write(&d, ".dart_tool/package_config.json", "{}");
+        assert!(!needs_install(&d, &tasks));
+    }
+
+    #[test]
+    fn install_state_is_per_ecosystem_not_per_node_modules() {
+        let php = scratch("php-fresh");
+        write(&php, "artisan", "");
+        write(&php, "composer.json", "{}");
+        assert!(needs_install(&php, &run_tasks(&php)));
+
+        let ruby = scratch("ruby-fresh");
+        write(&ruby, "bin/rails", "");
+        write(&ruby, "Gemfile", "");
+        assert!(needs_install(&ruby, &run_tasks(&ruby)));
+        write(&ruby, "Gemfile.lock", "");
+        assert!(!needs_install(&ruby, &run_tasks(&ruby)));
+    }
+
+    #[test]
+    fn a_rust_repo_is_not_uninstalled_for_want_of_node_modules() {
+        // The old rule keyed on package.json alone. A Tauri app has one, a Cargo
+        // run target, and no reason to show an Install button.
+        let d = scratch("cargo-run");
+        write(&d, "Cargo.toml", "[package]\nname='x'");
+        write(&d, "src/main.rs", "fn main() {}");
+        assert!(!needs_install(&d, &run_tasks(&d)));
+    }
+
+    #[test]
+    fn a_repo_with_nothing_to_run_is_never_uninstalled() {
+        // No Run button means no failed run to pre-empt, and an Install button on a
+        // docs repo is a question nobody asked.
+        let d = scratch("nothing");
+        write(&d, "package.json", r#"{"name":"x"}"#);
+        assert!(!needs_install(&d, &run_tasks(&d)));
+    }
+
 }

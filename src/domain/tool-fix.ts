@@ -30,6 +30,26 @@ const STEP_FOR: Record<string, string> = {
   delta: 'github',
   docker: 'containers',
   podman: 'containers',
+  // The per-stack steps. Each of these tools has exactly one step that installs
+  // it, so a missing-tool toast can offer to jump there — which is the whole point
+  // of this table. Tools that several steps could claim (a JDK is Android's and
+  // Java's) point at the more specific one.
+  flutter: 'flutter',
+  dart: 'flutter',
+  adb: 'android',
+  javac: 'android',
+  gradle: 'java',
+  mvn: 'java',
+  python3: 'python',
+  uv: 'python',
+  cargo: 'rust',
+  rustc: 'rust',
+  go: 'go',
+  dotnet: 'dotnet',
+  php: 'php',
+  composer: 'php',
+  ruby: 'ruby',
+  bundle: 'ruby',
 }
 
 export interface ToolFix {

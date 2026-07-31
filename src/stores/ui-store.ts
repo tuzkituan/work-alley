@@ -50,13 +50,13 @@ export type Page = 'repos' | 'toolbox' | 'setup' | 'settings' | 'accounts'
  * drops it renders as Times the moment a glyph is missing.
  */
 export const UI_FONTS = [
+  { id: 'geist', label: 'Geist', stack: "'Geist Variable', ui-sans-serif, system-ui, sans-serif" },
   {
     id: 'archivo',
     label: 'Archivo',
     stack: "'Archivo Variable', ui-sans-serif, system-ui, sans-serif",
   },
   { id: 'inter', label: 'Inter', stack: "'Inter Variable', ui-sans-serif, system-ui, sans-serif" },
-  { id: 'geist', label: 'Geist', stack: "'Geist Variable', ui-sans-serif, system-ui, sans-serif" },
   { id: 'system', label: 'System', stack: 'ui-sans-serif, system-ui, sans-serif' },
 ] as const
 export type UiFont = (typeof UI_FONTS)[number]['id']
@@ -389,7 +389,17 @@ export function migrateUiState(persisted: unknown) {
     // Validated against the tables, exactly like `skin`: an id from a build that
     // shipped a family this one does not lands on the default rather than on a
     // stack the CSS never declared.
-    uiFont: UI_FONTS.some((f) => f.id === p.uiFont) ? (p.uiFont as UiFont) : 'archivo',
+    // Geist is the default now, and 'archivo' was the old one — so a stored
+    // 'archivo' is almost always a value nobody chose. Moved rather than kept: the
+    // alternative is that every existing install keeps a font it never picked and
+    // the new default only ever reaches fresh machines. Deliberately reversible in
+    // one click, which is why this is a fair trade for the handful of people who
+    // did choose it.
+    uiFont: p.uiFont === 'archivo'
+      ? 'geist'
+      : UI_FONTS.some((f) => f.id === p.uiFont)
+        ? (p.uiFont as UiFont)
+        : 'geist',
     monoFont: MONO_FONTS.some((f) => f.id === p.monoFont) ? (p.monoFont as MonoFont) : 'jetbrains',
     // No stamp means the selection predates this key. Kept rather than discarded:
     // the App-level check also verifies the folder still exists, so the worst case
@@ -433,7 +443,7 @@ export const useUiStore = create<UiState>()(
       zoom: 1,
       paneTheme: 'app',
       columns: DEFAULT_COLUMNS,
-      uiFont: 'archivo',
+      uiFont: 'geist',
       monoFont: 'jetbrains',
       expandedCategoryRoot: null,
       workspaceRoot: '',
@@ -556,7 +566,7 @@ export const useUiStore = create<UiState>()(
       // an older build is still merged over the defaults on load, keys and all. So
       // the version is bumped whenever the shape changes, and `migrate` rebuilds the
       // state from scratch rather than trusting whatever was stored.
-      version: 14,
+      version: 15,
       migrate: migrateUiState,
     }
   )

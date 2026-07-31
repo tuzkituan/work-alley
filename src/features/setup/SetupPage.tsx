@@ -24,6 +24,7 @@ import { useActionStore, useRunAction } from '@/hooks/use-action'
 import { SEVERITY_CLASS } from '@/features/output/severity-class'
 import type { ActionSpec, SetupPlan, SetupStepStatus } from '@/domain/types'
 import { usePlatform } from '@/hooks/use-platform'
+import { StackPicker } from '@/features/stacks/StackPicker'
 
 /** Whether the action that last started belongs to this step. */
 function isRunning(lastRan: ActionSpec | null, step: SetupStepStatus): boolean {
@@ -175,6 +176,10 @@ export function SetupPage({
               Done
             </Button>
           )}
+          {/* The steps below are filtered by this, so it leads them. On a machine
+              that only does web, a Flutter step is not an optional extra — it is
+              noise in a list whose whole job is "what is left to do". */}
+          <StackPicker />
           <Button
             variant="waOutline"
             size="waXs"

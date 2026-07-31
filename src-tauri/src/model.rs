@@ -884,6 +884,11 @@ pub struct RepoDep {
 #[serde(rename_all = "camelCase")]
 pub struct RepoPackages {
     pub has_manifest: bool,
+    /// Which file the table was read from — `package.json`, `pubspec.yaml`. Drives
+    /// the panel's copy, which used to name package.json unconditionally and so
+    /// told a Flutter developer their repo had no dependencies file.
+    #[serde(default)]
+    pub manifest: Option<String>,
     /// `pkg::package_manager` for this repo. None when there is no manifest.
     pub manager: Option<String>,
     /// Whether `node_modules` exists at all — the difference between "nothing is
@@ -1472,4 +1477,25 @@ pub struct SshConfigPreview {
     /// generating a second block saying the same thing — is not managing an ssh
     /// config, it is competing with one.
     pub entries: Vec<crate::accounts::SshHostEntry>,
+}
+
+/// One row of the stack picker. See `ecosystems.rs`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StackInfo {
+    pub id: String,
+    pub label: String,
+    pub hint: String,
+    /// "web" | "mobile" | "backend" | "systems" | "infra" — the picker's headings.
+    pub family: String,
+    pub family_label: String,
+    /// The user has explicitly chosen it. False for every stack when nothing has
+    /// been chosen, which is *not* the same as none being on — see `chosen`.
+    pub chosen: bool,
+    /// Repos in the open workspace that look like this. The fact that makes the
+    /// question answerable: "Flutter — 6 repos here" beats "Flutter".
+    pub repos: usize,
+    /// How many of its tools are installed, out of how many it names.
+    pub tools_installed: usize,
+    pub tools_total: usize,
 }

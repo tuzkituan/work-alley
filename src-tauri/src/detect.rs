@@ -68,8 +68,79 @@ pub fn detect(repo: &Path) -> RepoShape {
     if has("fastify") {
         stack.push("fastify".into());
     }
+    if has("nuxt") {
+        stack.push("nuxt".into());
+    }
+    if has("astro") {
+        stack.push("astro".into());
+    }
+    if has("@remix-run/react") || has("@react-router/dev") {
+        stack.push("remix".into());
+    }
+    if has("solid-js") {
+        stack.push("solid".into());
+    }
+    if has("@builder.io/qwik") {
+        stack.push("qwik".into());
+    }
+    if has("gatsby") {
+        stack.push("gatsby".into());
+    }
+    if has("electron") {
+        stack.push("electron".into());
+    }
     if has("@storybook/react") || has("storybook") || repo.join(".storybook").is_dir() {
         stack.push("storybook".into());
+    }
+    // Expo on its own line rather than folded into react-native above: they need
+    // different commands (`expo start` against Metro), and an Expo app that has not
+    // been prebuilt has no android/ or ios/ directory to tell them apart by.
+    if has("expo") {
+        stack.push("expo".into());
+    }
+    // Runtimes, not frameworks — but they decide which commands work, which is the
+    // same question the stack answers everywhere else.
+    if file("deno.json") || file("deno.jsonc") {
+        stack.push("deno".into());
+    }
+
+    // --- backend frameworks -------------------------------------------------
+    //
+    // A language is not enough to run anything: `python` says which interpreter,
+    // `django` says `manage.py runserver` on port 8000. Each of these is one file
+    // or one substring of a manifest already being read.
+    if file("manage.py") {
+        stack.push("django".into());
+    }
+    if py_dep(repo, "fastapi") {
+        stack.push("fastapi".into());
+    }
+    if py_dep(repo, "flask") {
+        stack.push("flask".into());
+    }
+    if file("artisan") {
+        stack.push("laravel".into());
+    }
+    if file("bin/rails") || file("config/application.rb") {
+        stack.push("rails".into());
+    }
+    // Two spellings, because the two build tools use different ones: Gradle's
+    // plugin is `org.springframework.boot`, Maven's parent is
+    // `spring-boot-starter-parent`. Matching only the hyphenated form found Maven
+    // projects and missed every Gradle one.
+    if manifest_mentions(
+        repo,
+        &["build.gradle", "build.gradle.kts", "pom.xml"],
+        "springframework",
+    ) || manifest_mentions(
+        repo,
+        &["build.gradle", "build.gradle.kts", "pom.xml"],
+        "spring-boot",
+    ) {
+        stack.push("spring".into());
+    }
+    if manifest_mentions(repo, &["mix.exs"], ":phoenix") {
+        stack.push("phoenix".into());
     }
 
     // --- ecosystems with no JS manifest -------------------------------------
@@ -160,6 +231,12 @@ fn classify(
     // run a dev server for.
     if !app_shell {
         if in_stack("go") || in_stack("java") || in_stack("php") {
+            return RepoKind::Backend;
+        }
+        // Framework-level, and each is conclusive on its own: a Rails or Laravel
+        // repo is a backend even when its language census comes out as JavaScript,
+        // which happens the moment it has a bundled admin UI.
+        if in_stack("rails") || in_stack("laravel") || in_stack("phoenix") || in_stack("spring") {
             return RepoKind::Backend;
         }
         if in_stack("rust") && !in_stack("vite") {
@@ -493,6 +570,30 @@ fn has_ext(repo: &Path, ext: &str) -> bool {
         .any(|e| e.path().extension().and_then(|x| x.to_str()) == Some(ext))
 }
 
+/// Whether a Python project declares `name` anywhere it could.
+///
+/// A substring scan of the three manifests, which is what `chores.rs` already does
+/// for the same question (`python_deps`) — parsing pyproject's several dependency
+/// spellings, requirements' version syntax and Pipfile's TOML to answer "is flask
+/// in here" would be a lot of code for a yes/no.
+fn py_dep(repo: &Path, name: &str) -> bool {
+    manifest_mentions(repo, &["requirements.txt", "pyproject.toml", "Pipfile"], name)
+}
+
+/// Whether any of `files` contains `needle`, case-insensitively.
+///
+/// Capped at 64 KiB per file: these run for every repo in a scan, and a lock file
+/// or a generated manifest can be megabytes. Every marker this looks for is
+/// declared near the top of a hand-written file.
+fn manifest_mentions(repo: &Path, files: &[&str], needle: &str) -> bool {
+    let needle = needle.to_lowercase();
+    files.iter().any(|f| {
+        std::fs::read_to_string(repo.join(f))
+            .map(|t| t.chars().take(64 * 1024).collect::<String>().to_lowercase().contains(&needle))
+            .unwrap_or(false)
+    })
+}
+
 fn read_package_json(repo: &Path) -> Option<serde_json::Value> {
     let text = std::fs::read_to_string(repo.join("package.json")).ok()?;
     serde_json::from_str(&text).ok()
@@ -770,4 +871,98 @@ mod tests {
         write(&d, "backup.sh", "#!/bin/sh");
         assert_eq!(detect(&d).language.as_deref(), Some("Shell"));
     }
+    #[test]
+    fn js_frameworks_are_named_individually() {
+        // "node" told you nothing: a Next app, an Astro site and an Electron shell
+        // are three different sets of commands.
+        for (dep, want) in [
+            ("nuxt", "nuxt"),
+            ("astro", "astro"),
+            ("@remix-run/react", "remix"),
+            ("solid-js", "solid"),
+            ("@builder.io/qwik", "qwik"),
+            ("gatsby", "gatsby"),
+            ("electron", "electron"),
+        ] {
+            let d = scratch(&format!("js-{want}"));
+            write(&d, "package.json", &format!(r#"{{"dependencies":{{"{dep}":"1"}}}}"#));
+            assert!(
+                detect(&d).stack.iter().any(|s| s == want),
+                "{dep} should detect as {want}"
+            );
+        }
+    }
+
+    #[test]
+    fn expo_is_its_own_stack_as_well_as_react_native() {
+        // Both, deliberately: `expo start` is not `react-native start`, and an Expo
+        // app that has never been prebuilt has no android/ or ios/ to tell them
+        // apart by.
+        let d = scratch("expo");
+        write(&d, "package.json", r#"{"dependencies":{"expo":"51","react-native":"0.74"}}"#);
+        let shape = detect(&d);
+        assert!(shape.stack.iter().any(|s| s == "expo"));
+        assert!(shape.stack.iter().any(|s| s == "react-native"));
+        assert_eq!(shape.kind, RepoKind::Mobile);
+    }
+
+    #[test]
+    fn backend_frameworks_are_detected_from_one_file_each() {
+        let django = scratch("django");
+        write(&django, "manage.py", "");
+        write(&django, "requirements.txt", "django==5.0\n");
+        assert!(detect(&django).stack.iter().any(|s| s == "django"));
+
+        let laravel = scratch("laravel");
+        write(&laravel, "artisan", "");
+        write(&laravel, "composer.json", "{}");
+        let shape = detect(&laravel);
+        assert!(shape.stack.iter().any(|s| s == "laravel"));
+        assert_eq!(shape.kind, RepoKind::Backend);
+
+        let rails = scratch("rails");
+        write(&rails, "bin/rails", "");
+        write(&rails, "Gemfile", "");
+        assert!(detect(&rails).stack.iter().any(|s| s == "rails"));
+    }
+
+    #[test]
+    fn spring_is_read_out_of_the_build_file() {
+        let d = scratch("spring");
+        write(
+            &d,
+            "build.gradle.kts",
+            "plugins { id(\"org.springframework.boot\") version \"3.2.0\" }",
+        );
+        let shape = detect(&d);
+        assert!(shape.stack.iter().any(|s| s == "spring"), "{:?}", shape.stack);
+        assert!(shape.stack.iter().any(|s| s == "java"));
+        assert_eq!(shape.kind, RepoKind::Backend);
+    }
+
+    #[test]
+    fn python_frameworks_come_from_the_manifest_that_declares_them() {
+        let fastapi = scratch("fastapi");
+        write(&fastapi, "pyproject.toml", "[project]\ndependencies = [\"fastapi>=0.110\"]\n");
+        assert!(detect(&fastapi).stack.iter().any(|s| s == "fastapi"));
+
+        let flask = scratch("flask");
+        write(&flask, "requirements.txt", "Flask==3.0.0\n");
+        // Case-insensitive: requirements files capitalise the way PyPI does.
+        assert!(detect(&flask).stack.iter().any(|s| s == "flask"));
+    }
+
+    #[test]
+    fn a_backend_framework_outranks_a_javascript_language_census() {
+        // A Rails app with a bundled admin UI has more .js than .rb, so the language
+        // census says JavaScript. It is still a backend.
+        let d = scratch("rails-with-js");
+        write(&d, "bin/rails", "");
+        write(&d, "Gemfile", "");
+        for i in 0..12 {
+            write(&d, &format!("app/assets/a{i}.js"), "//");
+        }
+        assert_eq!(detect(&d).kind, RepoKind::Backend);
+    }
+
 }

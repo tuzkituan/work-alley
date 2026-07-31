@@ -28,6 +28,7 @@ import type {
   RunSummary,
   ScanOptions,
   SetupPlan,
+  StackInfo,
   SshConfigPreview,
   ToolInfo,
   StashEntry,
@@ -100,6 +101,8 @@ export const api = {
   refreshToolchain: () => call<ToolInfo[]>('refresh_toolchain'),
   /** Records first-run onboarding as over. Skipping counts, deliberately. */
   completeOnboarding: () => call<Bootstrap>('complete_onboarding'),
+  /** Every language/framework the app knows, with this workspace's counts. */
+  listStacks: () => call<StackInfo[]>('list_stacks'),
   /** Stored git identities, plus what the machine's config and gh actually say. */
   listGitAccounts: () => call<AccountsView>('list_git_accounts'),
   /** Adds or updates one. Writes config.json only — applying it is an action. */

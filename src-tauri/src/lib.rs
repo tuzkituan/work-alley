@@ -8,6 +8,7 @@ mod config;
 mod creds;
 mod deps;
 mod detect;
+mod ecosystems;
 mod devwatch;
 mod docker;
 mod error;
@@ -21,6 +22,7 @@ mod pkg;
 mod platform;
 mod procs;
 mod pty;
+mod pubdeps;
 mod readiness;
 mod runner;
 mod scripts;
@@ -278,6 +280,7 @@ pub fn run() {
             commands::refresh_toolchain,
             commands::complete_onboarding,
             commands::forget_recent_root,
+            commands::list_stacks,
             commands::list_git_accounts,
             commands::save_git_account,
             commands::delete_git_account,

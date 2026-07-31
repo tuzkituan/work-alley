@@ -27,6 +27,12 @@ const OUTDATED_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// The repo's dependency table. Manifest plus `node_modules`; no network.
 pub async fn list(repo: &Path, tc: &Toolchain) -> RepoPackages {
+    // Ecosystems are checked in the order a repo that has both would want: a Flutter
+    // app with a package.json for its tooling is a Flutter app, and its dependency
+    // table is pubspec.yaml. npm is the fallback, not the assumption.
+    if crate::pubdeps::is_pub_repo(repo) {
+        return crate::pubdeps::list(repo);
+    }
     if !repo.join("package.json").exists() {
         return RepoPackages::default();
     }
@@ -51,6 +57,7 @@ pub async fn list(repo: &Path, tc: &Toolchain) -> RepoPackages {
 
     RepoPackages {
         has_manifest: true,
+        manifest: Some("package.json".into()),
         manager: pkg::package_manager(repo, tc.preferred_package_manager().unwrap_or("npm")),
         installed_tree,
         deps,
@@ -219,6 +226,9 @@ pub fn parse_yarn_lock_major(text: &str) -> u32 {
 
 /// What this repo's manager says is out of date.
 pub async fn check_updates(repo: &Path, tc: &Toolchain) -> DepUpdateReport {
+    if crate::pubdeps::is_pub_repo(repo) {
+        return crate::pubdeps::check_updates(repo, tc).await;
+    }
     if !repo.join("package.json").exists() {
         return DepUpdateReport {
             reason: Some("This repo has no package.json.".into()),
@@ -528,7 +538,7 @@ pub fn parse_yarn_versions(text: &str) -> Vec<PackageVersion> {
 ///
 /// Every command here is about one directory, and `npm outdated` in the wrong cwd
 /// answers a different question rather than failing.
-async fn capture_status_in(
+pub(crate) async fn capture_status_in(
     program: &Path,
     args: &[&str],
     cwd: &Path,

@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { toast } from 'sonner'
 import {
@@ -144,8 +144,14 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
   // The folder name alone is enough here; the full path is on hover and in the menu.
   const name = baseName(current) ?? 'no workspace'
 
+  // Controlled, because the Recent rows are no longer menu *items*: they hold two
+  // actions, and a DropdownMenuItem would fire whichever one you pressed. Opening a
+  // folder has to close the menu; forgetting one has to leave it open, so that
+  // decision belongs to each button rather than to the container.
+  const [open, setOpen] = useState(false)
+
   return (
-    <DropdownMenu>
+    <DropdownMenu open={open} onOpenChange={setOpen}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -183,7 +189,10 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
               >
                 <button
                   type="button"
-                  onClick={() => set.mutate(r)}
+                  onClick={() => {
+                    setOpen(false)
+                    set.mutate(r)
+                  }}
                   className="min-w-0 flex-1 truncate text-left font-mono text-xs"
                   title={r}
                 >

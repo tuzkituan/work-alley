@@ -129,6 +129,43 @@ const FLUTTER: &[&str] = &["flutter"];
 /// A polyglot repo gets several groups, which is the point: a React Native app has
 /// node scripts, a Gradle module and a CocoaPods project, and all three are things
 /// you run from here.
+/// Every group name this module can produce.
+///
+/// Only read by tests today — `ecosystems.rs` links against these names and both
+/// sides are checked against this list — which is exactly what it is for. Kept out
+/// of `cfg(test)` so the list sits beside the code that produces it rather than
+/// beside the code that checks it.
+#[allow(dead_code)]
+///
+/// Written out rather than derived, because it is a *contract*: `ecosystems.rs`
+/// names these groups to say which stack owns which commands, and a rename here
+/// would silently unlink them. The test below asserts the list is neither short nor
+/// stale against what a polyglot repo actually offers.
+pub const GROUPS: &[&str] = &[
+    "Packages",
+    "React Native",
+    "Expo",
+    "Dart",
+    "Flutter",
+    "Cargo",
+    "Go",
+    "Gradle",
+    "Swift",
+    "Xcode",
+    "CocoaPods",
+    "Python",
+    "Django",
+    "CMake",
+    "Composer",
+    "Artisan",
+    "Bundler",
+    "Rails",
+    "Mix",
+    "Maven",
+    "dotnet",
+    "Compose",
+];
+
 pub fn chores(repo: &Path) -> Vec<Chore> {
     let mut out = Vec::new();
     let file = |f: &str| repo.join(f).exists();
@@ -188,6 +225,14 @@ pub fn find(repo: &Path, id: &str) -> Option<Chore> {
 /// the scan already has the answer in hand.
 pub fn pick_build(list: &[Chore]) -> Option<&Chore> {
     const ORDER: &[&str] = &[
+        // Flutter first: a Flutter app has an android/ directory, so `gradle.build`
+        // is present and would otherwise win — building the Android shell rather
+        // than the app, which is not what Build means in a Flutter repo.
+        "flutter.build-apk",
+        "flutter.build-appbundle",
+        "flutter.build-ios",
+        "flutter.build-web",
+        "flutter.build-linux",
         "cargo.build",
         "go.build",
         "gradle.build",
@@ -197,11 +242,6 @@ pub fn pick_build(list: &[Chore]) -> Option<&Chore> {
         "xcode.build",
         "cmake.build",
         "mix.compile",
-        "flutter.build-apk",
-        "flutter.build-appbundle",
-        "flutter.build-ios",
-        "flutter.build-web",
-        "flutter.build-linux",
         // Last on purpose: images, not this repo's artifact.
         "compose.build",
     ];
@@ -930,6 +970,34 @@ mod tests {
     }
 
     #[test]
+    fn every_group_a_chore_emits_is_declared() {
+        // `GROUPS` is what `ecosystems.rs` links against, so an undeclared group
+        // means a stack quietly owns nothing.
+        let d = scratch("groups");
+        write(&d, "package.json", r#"{"dependencies":{"react-native":"0.74","expo":"51"}}"#);
+        write(&d, "pubspec.yaml", "name: x\ndependencies:\n  flutter:\n    sdk: flutter\n");
+        write(&d, "Cargo.toml", "[package]\nname='x'");
+        write(&d, "go.mod", "module x");
+        write(&d, "CMakeLists.txt", "project(x)");
+        write(&d, "compose.yml", "services: {}");
+        write(&d, "requirements.txt", "ruff\n");
+        write(&d, "manage.py", "");
+        write(&d, "composer.json", "{}");
+        write(&d, "artisan", "");
+        write(&d, "Gemfile", "");
+        write(&d, "bin/rails", "");
+        write(&d, "mix.exs", "");
+        write(&d, "pom.xml", "");
+        write(&d, "x.csproj", "");
+        write(&d, "Package.swift", "");
+        write(&d, "ios/Podfile", "");
+
+        for c in chores(&d) {
+            assert!(GROUPS.contains(&c.group.as_str()), "undeclared group '{}'", c.group);
+        }
+    }
+
+    #[test]
     fn every_id_is_unique_in_a_polyglot_repo() {
         // Ids key the lookup, so a collision would run the wrong command.
         let d = scratch("poly");
@@ -947,4 +1015,16 @@ mod tests {
         assert_eq!(unique.len(), list.len(), "duplicate ids in {list:?}");
         assert!(list.len() > 30, "expected a broad menu, got {}", list.len());
     }
+    #[test]
+    fn a_flutter_app_builds_flutter_not_its_android_shell() {
+        // A Flutter app has an android/ directory, so `gradle.build` is on offer.
+        // Building that produces the host shell, not the app — which is what Build
+        // means here, and why Flutter leads the table.
+        let d = scratch("flutter-build");
+        write(&d, "pubspec.yaml", "name: app\ndependencies:\n  flutter:\n    sdk: flutter\n");
+        write(&d, "android/gradlew", "#!/bin/sh");
+        let list = chores(&d);
+        assert_eq!(pick_build(&list).map(|c| c.id.as_str()), Some("flutter.build-apk"));
+    }
+
 }

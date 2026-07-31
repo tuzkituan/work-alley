@@ -62,6 +62,11 @@ export function LauncherPage({
     enabled: boot?.toolsReady ?? false,
     staleTime: 30_000,
   })
+  const { data: stacks } = useQuery({
+    queryKey: keys.stacks,
+    queryFn: () => api.listStacks(),
+    staleTime: 30_000,
+  })
   const { data: accounts } = useQuery({
     queryKey: keys.gitAccounts,
     queryFn: () => api.listGitAccounts(),
@@ -73,6 +78,16 @@ export function LauncherPage({
   const ready = boot?.readiness.ready ?? false
   // `path` is the whole test: the probe records one only for a tool it resolved.
   const installed = (boot?.tools ?? []).filter((t) => t.path).length
+
+  // Two at most: the tile has one line, and "web, flutter +2" says as much as
+  // naming all four in six-point type.
+  const picked = (stacks ?? []).filter((s) => s.chosen)
+  const chosenStacks =
+    picked.length === 0
+      ? ''
+      : picked.length <= 2
+        ? picked.map((s) => s.label.toLowerCase()).join(', ')
+        : `${picked.length} stacks`
 
   const folder = boot?.hasWorkspace ? workspaceName(boot.workspaceRoot) : null
   const activeAccount = accounts?.accounts.find((a) => a.id === accounts.activeId)
@@ -99,12 +114,15 @@ export function LauncherPage({
             icon={<ListChecks className="size-4" />}
             label="Guided setup"
             hint="Install what this machine is missing, in the order it needs it."
+            // The stacks are part of the status because they are what the count is
+            // *of*: "3/7 required" means something different once the list is
+            // filtered to the two languages this machine actually does.
             status={
               !boot?.toolsReady
                 ? 'checking…'
                 : required.length === 0
                   ? 'nothing to do'
-                  : `${done}/${required.length} required`
+                  : `${done}/${required.length} required${chosenStacks ? ` · ${chosenStacks}` : ''}`
             }
             tone={ready ? 'ok' : 'warn'}
             onClick={() => setPage('setup')}

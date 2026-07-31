@@ -10,6 +10,7 @@ import { TooltipProvider } from '@/components/ui/tooltip'
 import { Button } from '@/components/ui/button'
 import { TopBar } from '@/features/topbar/TopBar'
 import { ChromeBar } from '@/features/topbar/ChromeBar'
+import { WindowControls } from '@/features/topbar/WindowControls'
 import { LeftRail } from '@/features/rail/LeftRail'
 import { NeedsYouStrip } from '@/features/needs-you/NeedsYouStrip'
 import { RepoGrid } from '@/features/repos/RepoGrid'
@@ -500,9 +501,8 @@ const SPLASH_MIN_MS = 900
  * up this whole screen lives for a few hundred milliseconds, and a message that
  * flashes in and straight back out is worse than no message.
  *
- * ChromeBar, not TopBar: there is no workspace to switch and no counts to show, but
- * the window still needs its buttons — a screen with no way to close it is the
- * FatalError lesson.
+ * No header at all while the wait is brief — see the note on the window buttons
+ * inside.
  */
 function Splash({ exiting }: { exiting: boolean }) {
   const { name, version } = useAppIdentity()
@@ -514,6 +514,10 @@ function Splash({ exiting }: { exiting: boolean }) {
 
   return (
     <div
+      // The whole surface is the drag region: with no title bar there is nothing
+      // else to grab, and a window you cannot move for the first second is a window
+      // that feels stuck.
+      data-tauri-drag-region
       className={cn(
         // Over the app, not beside it: the two overlap for the length of the exit,
         // which is what makes it read as opening rather than as a swap.
@@ -521,7 +525,21 @@ function Splash({ exiting }: { exiting: boolean }) {
         exiting && 'wa-splash-out'
       )}
     >
-      <ChromeBar />
+      {/* No ChromeBar. This screen is a mark and a name; a full app header above it
+          is chrome for an app that has not opened yet.
+
+          The window buttons come back the moment the wait stops being brief — the
+          same 400ms that reveals the message. A launch that hangs on a toolchain
+          probe must not be a window with no way out, which is the FatalError
+          lesson; a launch that takes 300ms does not need a close button. */}
+      {/* Absolute, not a flex row: appearing at 400ms it would otherwise add a
+          header to the column and shove the centred mark down — a jolt at exactly
+          the moment the screen is meant to be still. */}
+      {slow && (
+        <div className="absolute top-0 right-0 p-1.5">
+          <WindowControls />
+        </div>
+      )}
       <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3">
         <div className="wa-splash-mark flex flex-col items-center gap-2.5">
           {/* The same mark as the top bar's, at three times the size. A launch

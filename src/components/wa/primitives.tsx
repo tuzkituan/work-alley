@@ -279,12 +279,29 @@ function langLabel(language: string): string {
  * identity) and `cmake` (a build system — the language says more).
  */
 const FRAMEWORK_LABEL: [string, string][] = [
+  // Mobile first: a React Native repo also has `react`, and the platform is the
+  // more useful answer than the view library.
+  ['expo', 'EXPO'],
+  ['react-native', 'RN'],
+  ['flutter', 'FLUTTER'],
+  // Backend frameworks before their languages, same reason `next` beats `react`:
+  // "DJANGO" says what runs, "PY" says what it is written in.
+  ['django', 'DJANGO'],
+  ['laravel', 'LARAVEL'],
+  ['rails', 'RAILS'],
+  ['spring', 'SPRING'],
+  ['phoenix', 'PHOENIX'],
+  ['fastapi', 'FASTAPI'],
+  ['flask', 'FLASK'],
   ['next', 'NEXT'],
   ['nuxt', 'NUXT'],
+  ['remix', 'REMIX'],
+  ['astro', 'ASTRO'],
+  ['gatsby', 'GATSBY'],
+  ['qwik', 'QWIK'],
+  ['solid', 'SOLID'],
   ['angular', 'NG'],
-  ['react-native', 'RN'],
-  ['expo', 'EXPO'],
-  ['flutter', 'FLUTTER'],
+  ['electron', 'ELECTRON'],
   ['svelte', 'SVELTE'],
   ['vue', 'VUE'],
   ['nestjs', 'NEST'],
@@ -292,6 +309,7 @@ const FRAMEWORK_LABEL: [string, string][] = [
   ['express', 'EXPRESS'],
   ['react', 'REACT'],
   ['vite', 'VITE'],
+  ['deno', 'DENO'],
   ['qt', 'QT'],
   ['dotnet', '.NET'],
 ]

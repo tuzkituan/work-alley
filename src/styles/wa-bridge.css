@@ -9,7 +9,7 @@
  *      default base colour uses — so nothing here is a bespoke brand colour.
  *   2. `--sev-*`: severity roles, so a dot, a pill and a stat value describing
  *      the same repo state can never disagree (see src/domain/severity.ts).
- *   3. Archivo for the UI and JetBrains Mono for the output pane and every numeric
+ *   3. Geist for the UI and JetBrains Mono for the output pane and every numeric
  *      column. Both are variable and self-hosted — see the CSP note in theme.css.
  */
 
@@ -78,7 +78,7 @@
   --primary-900: var(--primary);
   --primary-950: var(--primary);
 
-  --font-sans: 'Archivo Variable', ui-sans-serif, system-ui, sans-serif;
+  --font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono Variable', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
     monospace;
 

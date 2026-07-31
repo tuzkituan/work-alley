@@ -85,14 +85,23 @@ describe('ui store — skin', () => {
 })
 
 describe('ui store — fonts', () => {
-  it('defaults to the two families the app has always used', () => {
-    expect(useUiStore.getState().uiFont).toBe('archivo')
+  it('defaults to Geist and JetBrains Mono', () => {
+    expect(useUiStore.getState().uiFont).toBe('geist')
     expect(useUiStore.getState().monoFont).toBe('jetbrains')
   })
 
   it('keeps every id the tables offer, so a new family is covered for free', () => {
-    for (const f of UI_FONTS) expect(migrate({ uiFont: f.id }).uiFont).toBe(f.id)
+    // Archivo excepted: it was the old default, so a stored 'archivo' is a value
+    // nobody chose and the migration moves it to the new one. See `migrateUiState`.
+    for (const f of UI_FONTS) {
+      if (f.id === 'archivo') continue
+      expect(migrate({ uiFont: f.id }).uiFont).toBe(f.id)
+    }
     for (const f of MONO_FONTS) expect(migrate({ monoFont: f.id }).monoFont).toBe(f.id)
+  })
+
+  it('moves the old default to the new one', () => {
+    expect(migrate({ uiFont: 'archivo' }).uiFont).toBe('geist')
   })
 
   it('falls back rather than storing an id with no stack behind it', () => {
@@ -100,7 +109,7 @@ describe('ui store — fonts', () => {
     // the wrong type. Any of these stored verbatim writes a --font-sans that
     // resolves to nothing, i.e. Times.
     for (const bad of ['Inter', 'comic-sans', 42, null, {}]) {
-      expect(migrate({ uiFont: bad }).uiFont).toBe('archivo')
+      expect(migrate({ uiFont: bad }).uiFont).toBe('geist')
       expect(migrate({ monoFont: bad }).monoFont).toBe('jetbrains')
     }
   })
@@ -122,7 +131,7 @@ describe('ui store — fonts', () => {
     const out = migrate(v9)
     expect(out).toMatchObject(v9)
     // And the new keys arrive at their defaults rather than undefined.
-    expect(out.uiFont).toBe('archivo')
+    expect(out.uiFont).toBe('geist')
     expect(out.monoFont).toBe('jetbrains')
     expect(out.expandedCategoryRoot).toBeNull()
   })

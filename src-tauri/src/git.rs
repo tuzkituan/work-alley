@@ -412,13 +412,9 @@ pub async fn scan_one(
     // it, and the UI already knows the default from bootstrap.
     status.package_manager = crate::pkg::declared_manager(&path);
 
-    // Two `is_dir` calls, and they answer the question a failed `bun run dev`
-    // answers thirty seconds later: there is nothing to run yet.
-    status.needs_install = matches!(
-        runnable.first().map(|t| &t.via),
-        Some(crate::runner::RunVia::Script(_))
-    ) && path.join("package.json").is_file()
-        && !path.join("node_modules").is_dir();
+    // A handful of `is_dir` calls, and they answer the question a failed run answers
+    // thirty seconds later: the dependencies are not fetched yet.
+    status.needs_install = crate::runner::needs_install(&path, &runnable);
     let chore_list = crate::chores::chores(&path);
     status.chores = chore_list.iter().map(|c| c.info()).collect();
     // The declared script wins: a repo that ships a `build` script has already said

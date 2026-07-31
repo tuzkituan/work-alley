@@ -146,9 +146,12 @@ export function PackagesPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
       ) : error ? (
         <PanelError what="this repo's dependencies" message={error.message} />
       ) : !data?.hasManifest ? (
-        <PanelEmpty>This repo has no package.json.</PanelEmpty>
+        // Named by what was looked for, not by what npm calls it: this panel reads
+        // pubspec.yaml too, and "no package.json" in a Flutter repo is both wrong
+        // and unfixable-sounding.
+        <PanelEmpty>This repo has no package.json or pubspec.yaml.</PanelEmpty>
       ) : all.length === 0 ? (
-        <PanelEmpty>This package.json declares no dependencies.</PanelEmpty>
+        <PanelEmpty>This {data.manifest ?? 'manifest'} declares no dependencies.</PanelEmpty>
       ) : (
         <>
           {/* Two different kinds of "we do not know", stated separately: nothing is
@@ -183,6 +186,7 @@ export function PackagesPanel({ repo, id }: { repo: RepoRef; id: RepoId }) {
                     update={outdated.get(dep.name)}
                     checked={checked}
                     pending={checking}
+                    manifest={data.manifest ?? 'the manifest'}
                   />
                 ))}
               </div>
@@ -223,6 +227,7 @@ function DepRow({
   update,
   checked,
   pending,
+  manifest,
 }: {
   dep: RepoDep
   repo: RepoRef
@@ -230,6 +235,8 @@ function DepRow({
   update?: DepUpdate
   checked: boolean
   pending: boolean
+  /** The file to edit by hand — package.json, pubspec.yaml. */
+  manifest: string
 }) {
   const latest = update?.latest ?? null
   const upToDate = checked && !update
@@ -274,7 +281,7 @@ function DepRow({
           // Not an upgrade the app can perform: the range names a location, and
           // installing over it would swap a local link for a published copy. Rust
           // refuses these too — this stops you finding that out via a dialog.
-          <span title={`Declared as ${dep.range} — edit package.json to change it`}>
+          <span title={`Declared as ${dep.range} — edit ${manifest} to change it`}>
             <MonoChip className="text-[10px]">linked</MonoChip>
           </span>
         ) : (

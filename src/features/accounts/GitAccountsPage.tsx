@@ -341,10 +341,10 @@ function SshConfigCard({ onImport }: { onImport: (account: GitAccount) => void }
 /**
  * The account an existing `Host` block implies.
  *
- * Mirrors `accounts::account_from_entry` in Rust, which is the one that matters —
- * this is here so the form can be prefilled without a round trip. Name and email
- * are deliberately blank: ssh knows which key to offer, and nothing at all about
- * who is committing.
+ * Here rather than in Rust: prefilling a form is a frontend job, and a round trip
+ * to compute it would be one. Name and email are deliberately blank — ssh knows
+ * which key to offer and nothing at all about who is committing, so those two are
+ * the part only the user can supply.
  */
 function accountFromEntry(e: SshHostEntry): GitAccount {
   const fromAlias = e.hostname && e.host.startsWith(e.hostname)

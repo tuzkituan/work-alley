@@ -443,39 +443,6 @@ fn split_directive(line: &str) -> Option<(&str, &str)> {
     (!key.is_empty() && !value.is_empty()).then_some((key, value))
 }
 
-/// The account an existing `Host` block implies.
-///
-/// Everything git needs that ssh does not know — the name and the email — is left
-/// blank for the user to fill in. The label is the block's own comment, then the
-/// part of the alias after the host, then the alias: `# Work GitHub` beats
-/// `github.com-work` beats nothing.
-pub fn account_from_entry(entry: &SshHostEntry) -> GitAccount {
-    let label = entry
-        .comment
-        .clone()
-        .or_else(|| {
-            let hostname = entry.hostname.as_deref()?;
-            entry
-                .host
-                .strip_prefix(hostname)
-                .map(|s| s.trim_start_matches(['-', '_', '.']).to_string())
-                .filter(|s| !s.is_empty())
-        })
-        .unwrap_or_else(|| entry.host.clone());
-
-    GitAccount {
-        id: String::new(),
-        label,
-        name: String::new(),
-        email: String::new(),
-        ssh_key: entry.identity_file.clone(),
-        signing_key: None,
-        gh_user: None,
-        ssh_host: Some(entry.host.clone()),
-        ssh_hostname: entry.hostname.clone(),
-    }
-}
-
 /// Puts `block` into `existing`, inside the markers, leaving everything else alone.
 ///
 /// Three cases, and the third is why this returns a Result. No markers: append,
@@ -914,26 +881,6 @@ Host github.com-work
         let got = parse_ssh_config("ServerAliveInterval 60\nUser someone\nHost x\n    User git\n");
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].user.as_deref(), Some("git"));
-    }
-
-    #[test]
-    fn an_imported_entry_prefills_what_ssh_knows() {
-        let entry = &parse_ssh_config(
-            "# Work GitHub\nHost github.com-work\n    HostName github.com\n    IdentityFile ~/.ssh/id_work\n",
-        )[0];
-        let a = account_from_entry(entry);
-        assert_eq!(a.label, "Work GitHub");
-        assert_eq!(a.ssh_host.as_deref(), Some("github.com-work"));
-        assert_eq!(a.ssh_key.as_deref(), Some("~/.ssh/id_work"));
-        // ssh knows nothing about who commits, so these stay for the user to fill.
-        assert_eq!(a.name, "");
-        assert_eq!(a.email, "");
-    }
-
-    #[test]
-    fn a_label_falls_back_to_the_part_of_the_alias_that_is_not_the_host() {
-        let entry = &parse_ssh_config("Host github.com-personal\n    HostName github.com\n")[0];
-        assert_eq!(account_from_entry(entry).label, "personal");
     }
 
     #[test]

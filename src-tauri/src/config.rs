@@ -52,6 +52,13 @@ pub struct Config {
     /// Most recently opened workspaces, newest first.
     #[serde(default)]
     pub recent_roots: Vec<PathBuf>,
+    /// Languages and frameworks this machine is set up for. See `ecosystems.rs`.
+    ///
+    /// Empty means "no opinion" and shows everything — a fresh config must not hide
+    /// half the Toolbox on the strength of never having been asked. Only an
+    /// explicit choice narrows anything.
+    #[serde(default)]
+    pub stacks: Vec<String>,
     /// Git identities this machine switches between. See `accounts.rs`.
     ///
     /// Here rather than in the frontend store, unlike pins and recents: applying an
@@ -106,6 +113,7 @@ impl Config {
             preferred_package_manager: None,
             reopen_last_workspace: default_reopen_last_workspace(),
             recent_roots: Vec::new(),
+            stacks: Vec::new(),
             git_accounts: Vec::new(),
             onboarding_done_unix: None,
             root_forced: false,
@@ -191,6 +199,10 @@ pub struct ConfigPatch {
     pub preferred_package_manager: Option<Option<String>>,
     pub dev_command_overrides: Option<BTreeMap<String, Vec<String>>>,
     pub port_overrides: Option<BTreeMap<String, u16>>,
+    /// Replaces the list wholesale; an empty vec is a real value meaning "show me
+    /// everything again", which is why this is not `Option<Option<_>>` like the
+    /// package manager.
+    pub stacks: Option<Vec<String>>,
 }
 
 /// Which workspace this launch opens; an empty path means the picker.
@@ -233,6 +245,16 @@ impl ConfigPatch {
         // sets one number would otherwise silently turn this off.
         if let Some(v) = self.reopen_last_workspace {
             c.reopen_last_workspace = v;
+        }
+        if let Some(v) = self.stacks {
+            // Only ids the registry knows, deduplicated in its own order rather than
+            // the caller's — the picker is a set, and an unknown id would otherwise
+            // sit in the config forever hiding nothing.
+            c.stacks = crate::ecosystems::STACKS
+                .iter()
+                .filter(|s| v.iter().any(|id| id == s.id))
+                .map(|s| s.id.to_string())
+                .collect();
         }
         if let Some(v) = self.preferred_package_manager {
             // Only the four this app knows how to drive. Anything else would reach

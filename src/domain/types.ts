@@ -356,6 +356,8 @@ export interface Config {
   autoFetchMinutes: number
   /** Open the folder that was open when the app last quit, instead of the picker. */
   reopenLastWorkspace: boolean
+  /** Chosen languages/frameworks. Empty means no opinion — everything is shown. */
+  stacks: string[]
   /**
    * Which package manager to use when a repo does not say. Null = whichever is
    * installed. A repo with a lockfile or a `packageManager` field is unaffected.
@@ -384,6 +386,8 @@ export interface ConfigPatch {
   preferredPackageManager?: string | null
   devCommandOverrides?: Record<string, string[]>
   portOverrides?: Record<string, number>
+  /** Replaces the list. `[]` is a real value: show everything again. */
+  stacks?: string[]
 }
 
 /**
@@ -692,7 +696,14 @@ export interface RepoDep {
 
 export interface RepoPackages {
   hasManifest: boolean
-  /** npm / pnpm / yarn / bun. Null when the repo has no manifest. */
+  /**
+   * Which file the table came from — `package.json`, `pubspec.yaml`.
+   *
+   * The copy on this panel used to name package.json unconditionally, which told a
+   * Flutter developer with 30 dependencies that their repo had none.
+   */
+  manifest: string | null
+  /** npm / pnpm / yarn / bun / flutter pub. Null when the repo has no manifest. */
   manager: string | null
   /** Whether node_modules exists — "nothing installed" vs "this one is missing". */
   installedTree: boolean
@@ -1019,6 +1030,22 @@ export type NeedsYouKind =
   | 'error'
   | 'packageDrift'
   | 'detached'
+
+/** One row of the stack picker — a language or framework the app knows. */
+export interface StackInfo {
+  id: string
+  label: string
+  hint: string
+  /** 'web' | 'mobile' | 'backend' | 'systems' | 'infra' — the picker's headings. */
+  family: string
+  familyLabel: string
+  /** Explicitly chosen. All false means "no opinion", which shows everything. */
+  chosen: boolean
+  /** Repos in this workspace that look like it. 0 before the first scan. */
+  repos: number
+  toolsInstalled: number
+  toolsTotal: number
+}
 
 /**
  * One git identity this machine can switch to.

@@ -16,6 +16,7 @@ import {
 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { StackPicker } from '@/features/stacks/StackPicker'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -152,6 +153,9 @@ export function Toolbox({ toolsReady }: { toolsReady: boolean }) {
           {updates.isFetching && (
             <span className="text-[11px] text-adaptive-400">checking for updates…</span>
           )}
+          {/* Before the search field: it decides what the list *is*, where the
+              field only narrows what is already there. */}
+          <StackPicker />
           {/* In the header row at a fixed width, not full-bleed on its own line: a
               field the width of a 2000px window reads as the page's subject rather
               than as a filter, and the query is never more than a word. */}
