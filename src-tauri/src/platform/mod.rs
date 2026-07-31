@@ -159,12 +159,6 @@ pub fn which(bin: &str) -> Option<PathBuf> {
     which_in(&dirs, bin)
 }
 
-/// `which_in` over an explicit PATH-shaped string, e.g. `Toolchain::path_env`.
-pub fn which_in_path_env(path_env: &str, bin: &str) -> Option<PathBuf> {
-    let dirs: Vec<PathBuf> = std::env::split_paths(path_env).collect();
-    which_in(&dirs, bin)
-}
-
 /// Removes a `\\?\` prefix, so nothing downstream ever sees a verbatim path.
 ///
 /// `Path::canonicalize` on Windows returns the extended-length form. It is a fine
@@ -720,14 +714,6 @@ pub fn hide_console(cmd: &mut tokio::process::Command) {
     let _ = cmd;
 }
 
-/// `hide_console` for a blocking command.
-pub fn hide_console_std(cmd: &mut std::process::Command) {
-    #[cfg(windows)]
-    imp::hide_console_std(cmd);
-    #[cfg(not(windows))]
-    let _ = cmd;
-}
-
 /// Prepares a child to be torn down as a whole tree.
 ///
 /// Unix: its own session, so `killpg` reaches every descendant. vite spawns esbuild;
@@ -866,6 +852,9 @@ pub fn kill_verb_note() -> &'static str {
 }
 
 /// Parses the `users:(("node",pid=12345,fd=20))` tail of an `ss -p` line.
+///
+/// `ss` exists only on unix; kept under `test` too so the parser stays covered.
+#[cfg(any(unix, test))]
 pub fn parse_ss_holders(stdout: &str) -> Vec<(u32, String)> {
     let mut out: Vec<(u32, String)> = Vec::new();
 

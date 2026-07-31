@@ -138,8 +138,6 @@ pub fn detach(cmd: &mut std::process::Command) {
     }
 }
 
-pub fn hide_console_std(_cmd: &mut std::process::Command) {}
-
 /// A process group. The child was made a session leader by `new_group`, so its pid
 /// is also its pgid.
 pub struct GroupInner {

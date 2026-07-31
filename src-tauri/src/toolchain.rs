@@ -336,6 +336,8 @@ async fn collect_from_shell(tc: &mut Toolchain, shell: &std::path::Path, script:
 }
 
 /// Numeric comparison, so v9 does not sort above v24.
+/// Only the unix nvm-directory scan needs this; `cfg(test)` keeps it covered.
+#[cfg(any(unix, test))]
 pub(crate) fn parse_version(name: &str) -> Vec<u32> {
     name.split('.').map(|x| x.parse().unwrap_or(0)).collect()
 }

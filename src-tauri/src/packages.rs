@@ -745,6 +745,35 @@ async fn system_versions(tc: &Toolchain, sys: SystemPm, e: &Entry) -> Vec<Packag
             let out = capture(&bin, &["madison", name], &tc.path_env, timeout).await;
             parse_apt_madison(&out)
         }
+        SystemPm::Winget => {
+            let Some(bin) = which_in(&dirs, "winget") else {
+                return Vec::new();
+            };
+            let out = capture(
+                &bin,
+                &[
+                    "show",
+                    "--exact",
+                    "--id",
+                    name,
+                    "--versions",
+                    "--disable-interactivity",
+                ],
+                &tc.path_env,
+                timeout,
+            )
+            .await;
+            // winget lists real versions, so unlike pacman and apk the picker keeps
+            // working on Windows.
+            parse_winget_versions(&out)
+                .into_iter()
+                .map(|v| PackageVersion {
+                    value: v.clone(),
+                    label: v,
+                    note: None,
+                })
+                .collect()
+        }
         // pacman and apk carry exactly one version of a package at a time, and
         // brew's versioned formulae are separate packages rather than a list.
         _ => Vec::new(),
