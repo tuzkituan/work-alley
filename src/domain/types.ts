@@ -918,6 +918,14 @@ export type ActionSpec =
   /** One step of the first-run setup. The id is resolved against the step table. */
   | { kind: 'setupStep'; id: string }
   | { kind: 'gitIdentity'; name: string; email: string }
+  /**
+   * Switch to a stored git account. `ref` omitted = globally, which is also the
+   * only scope that moves `gh` — it has one active account per machine.
+   *
+   * The id is resolved against the stored list in Rust, so nothing on the command
+   * line comes from here.
+   */
+  | { kind: 'useGitAccount'; id: string; ref?: RepoRef }
   | { kind: 'dockerPs' }
   | { kind: 'cloneUrls'; root: string; urls: string[] }
   | { kind: 'killPort'; port: number; ref: RepoRef | null }
@@ -1011,3 +1019,79 @@ export type NeedsYouKind =
   | 'error'
   | 'packageDrift'
   | 'detached'
+
+/**
+ * One git identity this machine can switch to.
+ *
+ * Holds no secrets — a *path* to a key and the *name* of a gh login. The key stays
+ * in ~/.ssh and the token stays in gh's keyring; see `accounts.rs`.
+ */
+export interface GitAccount {
+  /** Stable across renames. Generated from the label when a new one is saved. */
+  id: string
+  label: string
+  name: string
+  email: string
+  /** Written as `core.sshCommand`, with IdentitiesOnly so the agent cannot win. */
+  sshKey: string | null
+  /** `user.signingkey`. Does not turn on `commit.gpgsign`. */
+  signingKey: string | null
+  /** A gh login to make active. Global scope only. */
+  ghUser: string | null
+  /**
+   * An ssh host alias — `github.com-work` — written into ~/.ssh/config.
+   *
+   * The per-*remote* half of the same idea as `sshKey`: a URL written as
+   * `git@github.com-work:owner/repo.git` picks the key, which survives a fresh
+   * clone and a submodule in a way `core.sshCommand` does not.
+   */
+  sshHost: string | null
+  /** What the alias points at. Defaults to github.com. */
+  sshHostname: string | null
+}
+
+/** One `Host` block already in ~/.ssh/config. */
+export interface SshHostEntry {
+  host: string
+  /** Any further patterns on the same `Host` line. */
+  aliases: string[]
+  hostname: string | null
+  user: string | null
+  identityFile: string | null
+  identitiesOnly: boolean
+  /** The `# comment` directly above it — usually the human name for it. */
+  comment: string | null
+  /** Inside the app's markers, so it is already ours. */
+  managed: boolean
+}
+
+/** What the app would write into ~/.ssh/config, and whether it differs. */
+export interface SshConfigPreview {
+  path: string
+  exists: boolean
+  /** Empty means applying *removes* the managed block. */
+  managed: string
+  changed: boolean
+  /** A managed block that cannot be replaced safely. Blocks the write. */
+  error: string | null
+  /** Every Host block in the file. Unmanaged ones can be imported as accounts. */
+  entries: SshHostEntry[]
+}
+
+/** A login `gh` is signed in as on this machine. */
+export interface GhAccount {
+  login: string
+  host: string
+  active: boolean
+}
+
+export interface AccountsView {
+  accounts: GitAccount[]
+  /** What ~/.gitconfig holds right now — read every time, never assumed. */
+  globalName: string | null
+  globalEmail: string | null
+  /** Which stored account the global identity matches. Matched on email. */
+  activeId: string | null
+  ghAccounts: GhAccount[]
+  ghPresent: boolean
+}

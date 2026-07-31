@@ -1,36 +1,21 @@
-import { Palette, Search, SquareTerminal } from 'lucide-react'
+import { Search, SquareTerminal } from 'lucide-react'
 import { WindowControls } from './WindowControls'
-import { WorkspaceSwitcher } from '@/features/workspace/WorkspacePicker'
+import { AppearanceMenu } from './AppearanceMenu'
+import { useOpenFolderKey, WorkspaceSwitcher } from '@/features/workspace/WorkspacePicker'
 import { Button } from '@/components/ui/button'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuRadioGroup,
-  DropdownMenuRadioItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger,
-} from '@/components/ui/dropdown-menu'
 import { Progress } from '@/components/ui/progress'
 import { KeyCap, Sep } from '@/components/wa/primitives'
-import { SKIN_OPTIONS, usePaneTheme, useSkin, useTheme, useZoom } from '@/hooks/use-theme'
 import { useAppIdentity } from '@/hooks/use-bootstrap'
 import { useRunAction } from '@/hooks/use-action'
 import { useUiStore } from '@/stores/ui-store'
 import { useScanStore } from '@/stores/scan-store'
 import type { Bootstrap } from '@/domain/types'
-import type { PaneTheme, Skin, ThemeMode } from '@/stores/ui-store'
+import { useTerminalStore } from '@/stores/terminal-store'
 
 export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
-  const { theme, setTheme, label: themeLabel } = useTheme()
-  const { skin, setSkin, label: skinLabel } = useSkin()
-  const { paneTheme, setPaneTheme } = usePaneTheme()
-  const { setZoom, nudgeZoom, label: zoomLabel, canGrow, canShrink } = useZoom()
   const { name } = useAppIdentity()
   const run = useRunAction()
   const setPaletteOpen = useUiStore((s) => s.setPaletteOpen)
-  const setPage = useUiStore((s) => s.setPage)
   const phase = useScanStore((s) => s.phase)
   const total = useScanStore((s) => s.total)
   const received = useScanStore((s) => s.received)
@@ -41,6 +26,8 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
   // all. Everything scoped to one is hidden rather than shown empty: "0 repos ·
   // 0 scripts" says nothing.
   const hasWorkspace = boot?.hasWorkspace ?? false
+  // Here rather than in the switcher below, which is not mounted without a folder.
+  useOpenFolderKey()
 
   return (
     <div className="relative flex-none">
@@ -59,7 +46,12 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
           </span>
         </div>
 
-        <WorkspaceSwitcher boot={boot} />
+        {/* Only with a folder open. On the machine pages — Toolbox, Guided setup,
+            Git accounts — reached before choosing one, this rendered as a button
+            reading "no workspace": a control whose entire content is the absence of
+            the thing it switches. Opening a folder from here is still one keystroke
+            (⌘O), and the launcher does it properly. */}
+        {hasWorkspace && <WorkspaceSwitcher boot={boot} />}
 
         {hasWorkspace && (
           <div
@@ -89,139 +81,28 @@ export function TopBar({ boot }: { boot: Bootstrap | undefined }) {
           </button>
         )}
 
-        <Button
-          variant="waOutline"
-          size="waIconLg"
-          className="border-adaptive-300"
-          title="Open a terminal in the workspace folder"
-          onClick={() => run({ kind: 'openShell', ref: null })}
-        >
-          <SquareTerminal className="size-3.5" />
-        </Button>
+        {/* No workspace, no folder to open a shell *in* — the action's cwd is the
+            workspace root, so on the setup and picker screens this button either
+            fails or opens somewhere arbitrary. Hidden like the counts and the
+            search field above, for the same reason. */}
+        {hasWorkspace && (
+          <Button
+            variant="waOutline"
+            size="waIconLg"
+            className="border-adaptive-300"
+            title="Open a terminal in the workspace folder"
+            onClick={() => {
+            useTerminalStore.getState().requestFocus()
+            run({ kind: 'openShell', ref: null })
+          }}
+          >
+            <SquareTerminal className="size-3.5" />
+          </Button>
+        )}
         {/* Toolbox and Guided setup live in the left rail now, above the toolchain
             card: both are about this machine rather than this workspace, which is
             exactly what that card already shows. */}
-        {/* A menu rather than the old toggle: appearance and skin are independent,
-            so there are four states, and a control with four states has to *show*
-            which one it is in. The palette keeps a one-keystroke path to both. */}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              variant="waOutline"
-              size="waIconLg"
-              // Stronger edge than the page default: see the note on the search field.
-              className="border-adaptive-300"
-              title={`Appearance: ${themeLabel} · Skin: ${skinLabel} · Zoom: ${zoomLabel}`}
-            >
-              {/* A palette, not a sun/moon: the menu behind this button is no longer
-                  a light/dark toggle — it holds the skin, the zoom and the console's
-                  own lighting, and an icon that shows only one of four axes is an
-                  icon that lies about three of them. */}
-              <Palette className="size-3.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="end" className="w-44">
-            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
-              Appearance
-            </DropdownMenuLabel>
-            <DropdownMenuRadioGroup
-              value={theme}
-              onValueChange={(v) => setTheme(v as ThemeMode)}
-            >
-              <DropdownMenuRadioItem value="light">Light</DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="dark">Dark</DropdownMenuRadioItem>
-            </DropdownMenuRadioGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
-              Skin
-            </DropdownMenuLabel>
-            {/* Mapped over SKIN_OPTIONS, not written out: two hardcoded entries are
-                why the third skin was invisible here even though the store, the
-                stylesheet and the command palette all knew about it. */}
-            <DropdownMenuRadioGroup value={skin} onValueChange={(v) => setSkin(v as Skin)}>
-              {SKIN_OPTIONS.map((o) => (
-                <DropdownMenuRadioItem key={o.id} value={o.id}>
-                  {o.label}
-                  <span className="ml-auto text-[10px] text-adaptive-400">{o.hint}</span>
-                </DropdownMenuRadioItem>
-              ))}
-            </DropdownMenuRadioGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
-              Console
-            </DropdownMenuLabel>
-            {/* The output pane and terminals. Here as well as in Settings because a
-                dark console under a light app is a thing people flip while looking
-                at the log, not while reading a settings page. */}
-            <DropdownMenuRadioGroup
-              value={paneTheme}
-              onValueChange={(v) => setPaneTheme(v as PaneTheme)}
-            >
-              <DropdownMenuRadioItem value="app">Follow app</DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="light">Light</DropdownMenuRadioItem>
-              <DropdownMenuRadioItem value="dark">Dark</DropdownMenuRadioItem>
-            </DropdownMenuRadioGroup>
-            <DropdownMenuSeparator />
-            <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
-              Zoom
-            </DropdownMenuLabel>
-            {/* Plain buttons in a plain div, not DropdownMenuItems: an item closes
-                the menu on select, and a stepper you must reopen the menu to press
-                twice is not a stepper. */}
-            <div
-              className="flex items-center gap-1 px-2 py-1"
-              onKeyDown={(e) => e.stopPropagation()}
-            >
-              <Button
-                variant="waOutline"
-                size="waIcon"
-                aria-label="Zoom out"
-                disabled={!canShrink}
-                onClick={(e) => {
-                  e.preventDefault()
-                  nudgeZoom(-1)
-                }}
-              >
-                −
-              </Button>
-              <button
-                type="button"
-                // The readout doubles as reset, which is where every browser puts
-                // it and saves a third button in a 176px menu.
-                className="wa-num flex-1 rounded-md py-1 text-center font-mono text-xs text-adaptive-700 hover:bg-adaptive-200"
-                title="Reset to 100%"
-                onClick={(e) => {
-                  e.preventDefault()
-                  setZoom(1)
-                }}
-              >
-                {zoomLabel}
-              </button>
-              <Button
-                variant="waOutline"
-                size="waIcon"
-                aria-label="Zoom in"
-                disabled={!canGrow}
-                onClick={(e) => {
-                  e.preventDefault()
-                  nudgeZoom(1)
-                }}
-              >
-                +
-              </Button>
-            </div>
-            <DropdownMenuSeparator />
-            {/* This menu stays the one-click path for the two things people flip
-                hourly; fonts, scanning and background fetch are a page away. */}
-            <DropdownMenuItem onClick={() => setPage('settings')}>
-              More settings…
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-        {/* Fetch / Pull / Checkout used to sit here. They are scoped to the open
-            folder, so they now live in that folder's own header in RepoGrid, beside
-            the name they act on. */}
-
+        <AppearanceMenu />
         <span className="mx-1 h-5 w-px bg-adaptive-200" />
         <WindowControls />
       </div>

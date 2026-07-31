@@ -52,6 +52,14 @@ pub struct Config {
     /// Most recently opened workspaces, newest first.
     #[serde(default)]
     pub recent_roots: Vec<PathBuf>,
+    /// Git identities this machine switches between. See `accounts.rs`.
+    ///
+    /// Here rather than in the frontend store, unlike pins and recents: applying an
+    /// account is a Rust-side action, and the id it takes has to be validated
+    /// against a list the backend owns — the same closed-set rule every other action
+    /// follows. Holds no secrets, only a key *path* and a gh login.
+    #[serde(default)]
+    pub git_accounts: Vec<crate::accounts::GitAccount>,
     /// When first-run onboarding was finished or skipped. `None` means never.
     ///
     /// Here rather than in webview storage: clearing site data must not bring a
@@ -98,6 +106,7 @@ impl Config {
             preferred_package_manager: None,
             reopen_last_workspace: default_reopen_last_workspace(),
             recent_roots: Vec::new(),
+            git_accounts: Vec::new(),
             onboarding_done_unix: None,
             root_forced: false,
         }
@@ -148,6 +157,16 @@ impl Config {
         self.recent_roots.retain(|r| r != &root);
         self.recent_roots.insert(0, root);
         self.recent_roots.truncate(8);
+    }
+
+    /// Drops one from the list. The folder on disk is untouched.
+    ///
+    /// Returns whether anything changed, so a caller does not write the file for a
+    /// path that was not in the list to begin with.
+    pub fn forget_root(&mut self, root: &Path) -> bool {
+        let before = self.recent_roots.len();
+        self.recent_roots.retain(|r| r != root);
+        self.recent_roots.len() != before
     }
 
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
@@ -385,6 +404,18 @@ mod tests {
         }
         .apply(&mut c);
         assert_eq!(c.preferred_package_manager, None, "back to auto");
+    }
+
+    #[test]
+    fn forgetting_a_root_removes_only_that_one() {
+        let mut c = Config::defaults(PathBuf::from("/tmp/ws"));
+        c.recent_roots = vec![PathBuf::from("/tmp/ws"), PathBuf::from("/tmp/other")];
+
+        assert!(c.forget_root(Path::new("/tmp/ws")));
+        assert_eq!(c.recent_roots, vec![PathBuf::from("/tmp/other")]);
+        // Nothing to do is reported, so the caller does not rewrite the file for a
+        // path that was never in the list.
+        assert!(!c.forget_root(Path::new("/tmp/ws")));
     }
 
     #[test]

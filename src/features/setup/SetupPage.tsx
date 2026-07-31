@@ -58,7 +58,7 @@ export function SetupPage({
   /**
    * This is a brand-new machine and the page is a takeover, not a place the user
    * navigated to. Changes the headline, drops the back arrow — there is nothing
-   * behind it yet — and offers Skip instead.
+   * behind it yet — and offers Done as the way out instead.
    */
   firstRun?: boolean
 }) {
@@ -106,6 +106,10 @@ export function SetupPage({
    *
    * Records onboarding as over on the way out, so a machine that is now set up does not
    * get asked again on the next launch — the routing predicate reads that flag.
+   *
+   * One function for both exits. There were two identical copies, one named `skip`,
+   * from when leaving early was meant to be a different thing from finishing. It
+   * never was: the takeover is asked once either way, so both mark it done.
    */
   const finish = async () => {
     try {
@@ -117,16 +121,6 @@ export function SetupPage({
     setPage('repos')
   }
 
-  const skip = async () => {
-    try {
-      const b = await api.completeOnboarding()
-      qc.setQueryData(keys.bootstrap, b)
-    } catch {
-      // Nothing to recover: the worst case is being asked again next launch.
-    }
-    setPage('repos')
-  }
-
   // Which step's output to show, derived from the action that actually started
   // rather than from a click: pressing Install only opens the confirmation dialog,
   // and cancelling it must leave no trace. Also keeps one step from claiming
@@ -134,9 +128,16 @@ export function SetupPage({
   const lastRan = useActionStore((s) => s.lastRan)
 
   return (
-    <div className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
-      <div className="mx-auto flex w-full max-w-[64rem] flex-col gap-3.5">
-        <div className="flex items-center gap-2">
+    // A pinned header above a scrolling body, rather than a `sticky` row inside the
+    // scroller. Sticky was tried first and left a gap down either side: the row lived
+    // inside the `max-w-[64rem]` column, so the page's own horizontal padding — and,
+    // on a wide window, everything outside that column — was not covered by its
+    // background, and the step cards scrolled visibly through the strip. Out here its
+    // background is the full width of the page, with the same column applied to its
+    // contents.
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex-none border-b border-adaptive-200 bg-background px-4 py-3">
+        <div className="mx-auto flex w-full max-w-[64rem] items-center gap-2">
           {/* No back arrow on a first run: there is nothing behind this screen, and a
               dead control is worse than none. */}
           {!firstRun && (
@@ -158,17 +159,20 @@ export function SetupPage({
             </span>
           )}
           <div className="flex-1" />
-          {/* Skipping counts as done: a takeover that returns tomorrow is one you
-              learn to dismiss rather than read. The warning bar on the dashboard is
-              the ongoing signal instead. */}
+          {/* "Done", not "Skip for now": leaving this screen *is* completing
+              onboarding, run or not. A takeover that returns tomorrow is one you
+              learn to dismiss rather than read, so it is asked once — and the warning
+              bar on the dashboard is the ongoing signal for anything still missing.
+              Primary, because on a takeover screen the way out should not be the
+              quietest control on the row. */}
           {firstRun && (
             <Button
-              variant="waGhost"
+              variant="waPrimary"
               size="waXs"
               title="Go to the app. Anything still missing shows in a bar at the bottom."
-              onClick={() => void skip()}
+              onClick={() => void finish()}
             >
-              Skip for now
+              Done
             </Button>
           )}
           <Button
@@ -193,30 +197,34 @@ export function SetupPage({
             Re-check
           </Button>
         </div>
+      </div>
 
-        <Intro plan={data} />
+      <div className="wa-scroll min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
+        <div className="mx-auto flex w-full max-w-[64rem] flex-col gap-3.5">
+          <Intro plan={data} />
 
-        {!toolsReady ? (
-          <div className="rounded-lg border border-adaptive-200 bg-card p-4 text-xs text-adaptive-500">
-            Resolving your toolchain…
-          </div>
-        ) : isPending ? (
-          <div className="flex flex-col gap-2">
-            {[0, 1, 2, 3, 4].map((i) => (
-              <Skeleton key={i} className="h-28 w-full" />
-            ))}
-          </div>
-        ) : (
-          <>
-            <StepList
-              steps={data?.steps ?? []}
-              currentId={currentId}
-              plan={data}
-              lastRan={lastRan}
-            />
-            {allRequiredDone && <Finished onOpen={() => void finish()} />}
-          </>
-        )}
+          {!toolsReady ? (
+            <div className="rounded-lg border border-adaptive-200 bg-card p-4 text-xs text-adaptive-500">
+              Resolving your toolchain…
+            </div>
+          ) : isPending ? (
+            <div className="flex flex-col gap-2">
+              {[0, 1, 2, 3, 4].map((i) => (
+                <Skeleton key={i} className="h-28 w-full" />
+              ))}
+            </div>
+          ) : (
+            <>
+              <StepList
+                steps={data?.steps ?? []}
+                currentId={currentId}
+                plan={data}
+                lastRan={lastRan}
+              />
+              {allRequiredDone && <Finished onOpen={() => void finish()} />}
+            </>
+          )}
+        </div>
       </div>
     </div>
   )
@@ -678,7 +686,11 @@ function GitIdentityForm({
       </label>
       <Button
         variant={step.done && unchanged ? 'waOutline' : 'waPrimary'}
-        size="waXs"
+        // The inputs beside it are 30px, and a 26px button on the same baseline as
+        // two full-height fields reads as an afterthought rather than as the thing
+        // that commits them. `min-w` so it does not resize between Save and Saved.
+        size="wa"
+        className="min-w-[5.5rem]"
         disabled={!valid || step.blocked !== null || (step.done && unchanged)}
         onClick={() => run({ kind: 'gitIdentity', name: clean.name, email: clean.email })}
         title="Writes user.name and user.email to your global git config"

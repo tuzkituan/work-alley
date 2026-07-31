@@ -1,6 +1,7 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import {
+  Columns3,
   FolderOpen,
   GitBranch,
   LayoutGrid,
@@ -9,6 +10,8 @@ import {
   Search,
 } from "lucide-react";
 import { CARD_HEIGHT, RepoCard } from "./RepoCard";
+import { COLUMNS, fit, template } from './columns'
+import { ColumnsContext } from './use-columns'
 import { RepoListHeader, RepoListRow, ROW_HEIGHT } from "./RepoListRow";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -21,6 +24,16 @@ import { useReposInView } from "@/hooks/use-repos-in-view";
 import { RepoDetail } from "@/features/detail/RepoDetail";
 import { CheckoutAllDialog } from "@/features/actions/CheckoutAllDialog";
 import { useRunAction } from "@/hooks/use-action";
+import { shortPackageName, useTrackedPackage } from "@/hooks/use-tracked-package";
+import {
+  DropdownMenu,
+  DropdownMenuCheckboxItem,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { buildSections, flattenSections, type ListItem } from "@/domain/sections";
 import { cn } from "@/lib/utils";
 
@@ -102,11 +115,16 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
           container — two sticky layers in one scroller means hand-maintained top
           offsets, and the strip is chrome for the panel, not content in it. */}
       {inView.scope && (
-        <div className="flex flex-none items-center gap-2 border-b border-adaptive-200 px-4 py-2.5 text-xs text-adaptive-500">
+        // Wraps rather than overflows. The panel is user-resizable down to a few
+        // hundred pixels and this row holds a filter field plus seven controls, so
+        // at any narrow width something had to give — and what gave was whatever
+        // sat furthest right, silently cut off by the panel edge. A second line is
+        // 30px; a Checkout-all button you cannot reach is a missing feature.
+        <div className="flex flex-none flex-wrap items-center gap-2 border-b border-adaptive-200 px-4 py-2.5 text-xs text-adaptive-500">
               <span className="font-mono text-[11px] font-semibold text-primary-600">
                 {inView.label}
               </span>
-              <span className="wa-num">
+              <span className="wa-num whitespace-nowrap">
                 {filtered
                   ? `${visible.length} of ${inFolder.length}`
                   : `${inFolder.length}`}{" "}
@@ -125,7 +143,7 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
           {/* The list has had a `filterText` for as long as it has had a "Clear
               filters" button, and nothing to type it into — only the palette could
               set it, and only to clear it. */}
-          <div className="relative w-[15rem] flex-none">
+          <div className="relative w-[15rem] min-w-[8rem] flex-1">
             <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3 -translate-y-1/2 text-adaptive-400" />
             <Input
               value={filterText}
@@ -174,6 +192,7 @@ export function RepoGrid({ boot }: { boot: Bootstrap | undefined }) {
                   <LayoutGrid className="size-3.5" />
                 </Button>
               </div>
+              {view === "list" && <ColumnMenu />}
               {/* Icon + label, matching the Toolbox's Re-check: this was the only
                   action in the strip with no icon, sitting beside two icon-only
                   view toggles. */}
@@ -365,10 +384,112 @@ function VirtualBody({
 
   if (cardsView) return body;
 
+  return <RepoTable>{body}</RepoTable>;
+}
+
+/**
+ * Which columns the table shows.
+ *
+ * Only in list view: the cards do not have columns, and a control that greys out on
+ * half the screens it appears on is worse than one that is not there.
+ *
+ * The menu offers what the *user* wants, not what currently fits — a column the
+ * table has dropped for width is still ticked here, and reads as "yes, when there
+ * is room". Ticking one that does not fit and watching nothing happen would be the
+ * alternative, and it would look broken.
+ */
+function ColumnMenu() {
+  const chosen = useUiStore((s) => s.columns);
+  const setColumn = useUiStore((s) => s.setColumn);
+  const resetColumns = useUiStore((s) => s.resetColumns);
+  const trackedPackage = useTrackedPackage();
+  const count = COLUMNS.filter((c) => chosen[c.id]).length;
+
   return (
-    <div className="wa-table overflow-hidden rounded-lg border border-adaptive-200 bg-card">
-      <RepoListHeader />
-      {body}
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          variant="waOutline"
+          size="waXs"
+          title={`${count} of ${COLUMNS.length} optional columns shown`}
+        >
+          <Columns3 className="size-3" />
+          Columns
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="end" className="w-64">
+        <DropdownMenuLabel className="text-[10px] tracking-[0.05em] text-adaptive-400 uppercase">
+          Columns
+        </DropdownMenuLabel>
+        {COLUMNS.map((c) => (
+          <DropdownMenuCheckboxItem
+            key={c.id}
+            checked={chosen[c.id]}
+            onCheckedChange={(on) => setColumn(c.id, on)}
+            // Kept open: turning three columns off is one gesture, not three trips
+            // back to the trigger.
+            onSelect={(e) => e.preventDefault()}
+            title={c.hint}
+          >
+            {/* The tracked column is named after whatever this workspace tracks —
+                "blazeup-ui" says what it holds, "Tracked package" says what it is,
+                and which one is useful depends on whether there is one. */}
+            {c.id === "tracked" && trackedPackage
+              ? shortPackageName(trackedPackage)
+              : c.label}
+          </DropdownMenuCheckboxItem>
+        ))}
+        <DropdownMenuSeparator />
+        <DropdownMenuItem onClick={() => resetColumns()}>Reset to defaults</DropdownMenuItem>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+/**
+ * The list's frame, and the one place that decides how wide its columns are.
+ *
+ * Measured rather than queried in CSS. The columns are now the user's choice as
+ * well as a function of width, so the set of tracks is not knowable at stylesheet
+ * time — and the container queries that used to do this declared their breakpoints
+ * and their track widths in two different places, which is how the widest template
+ * came to apply at widths it could not fit in. `fit` derives one from the other.
+ *
+ * The template goes out as a CSS variable on this element, so all 113 rows follow
+ * one declaration instead of carrying an inline style each.
+ */
+function RepoTable({ children }: { children: React.ReactNode }) {
+  const chosen = useUiStore((s) => s.columns);
+  const [el, setEl] = useState<HTMLDivElement | null>(null);
+  const [width, setWidth] = useState(0);
+
+  useEffect(() => {
+    if (!el) return;
+    // The panel is resizable, so this fires on every drag frame — but `setWidth`
+    // with an unchanged number is a no-op in React, and `fit` only produces a new
+    // array when a column actually enters or leaves.
+    const ro = new ResizeObserver(([entry]) => {
+      if (entry) setWidth(entry.contentRect.width);
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [el]);
+
+  const on = useMemo(() => fit(chosen, width), [chosen, width]);
+  const set = useMemo(() => new Set(on), [on]);
+
+  return (
+    <div
+      ref={setEl}
+      // `wa-table` is a skin handle only now — the container-type it used to
+      // carry went with the container queries.
+      className="wa-table overflow-hidden rounded-lg border border-adaptive-200 bg-card"
+      style={{ ["--wa-cols" as string]: template(on) }}
+    >
+      <ColumnsContext value={set}>
+        <RepoListHeader />
+        {children}
+      </ColumnsContext>
     </div>
   );
 }

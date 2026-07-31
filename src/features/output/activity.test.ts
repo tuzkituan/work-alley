@@ -145,4 +145,16 @@ describe('scopesToOffer', () => {
     const a = { ...empty, scopes: ['fe/web'] }
     expect(scopesToOffer(a, 'fe/web')).toEqual([null, 'fe/web'])
   })
+
+  it('keeps an opened scope after its activity is gone', () => {
+    // The regression this exists for: the tab closed itself when the last run in it
+    // was dismissed, and if it was the one being read the pane fell back to the
+    // workspace. A tab now goes only when it is closed by hand.
+    expect(scopesToOffer(empty, null, ['fe/web'])).toEqual([null, 'fe/web'])
+  })
+
+  it('does not duplicate a scope that is both opened and busy', () => {
+    const a = { ...empty, scopes: ['fe/web'] }
+    expect(scopesToOffer(a, 'fe/web', ['fe/web'])).toEqual([null, 'fe/web'])
+  })
 })

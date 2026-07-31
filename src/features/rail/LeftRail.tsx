@@ -10,6 +10,7 @@ import {
   Play,
   Settings,
   Square,
+  UserRound,
   Wrench,
   X,
 } from 'lucide-react'
@@ -61,9 +62,13 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
       // `bg-adaptive-100` utility below — which is also the row-hover and
       // table-header grey, so the two could not be changed independently.
       data-slot="rail"
-      className="flex h-full flex-col gap-4 border-r border-adaptive-200 bg-adaptive-100 px-2.5 py-3"
+      // No horizontal padding here: it moves onto the children, so the scrolling
+      // column below can span the rail's full width and put its bar on the actual
+      // right edge. With the padding out here the scroller stopped 10px short and
+      // the bar floated in the middle of the surface.
+      className="flex h-full flex-col gap-4 border-r border-adaptive-200 bg-adaptive-100 py-3"
     >
-      <div className="wa-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+      <div className="wa-scroll-soft flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pl-2.5">
         {/* Above Folders, because the rail's own organisation is by folder — the
             right shape for finding a repo you have not thought about, and the
             wrong one for the four you are in every day. */}
@@ -112,7 +117,7 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
       {/* Pinned under the scroll, directly above the card that reports the same
           machine these two pages manage. Outside the scroll container on purpose:
           they are how you fix a missing tool, so they must not be scrolled away. */}
-      <div className="flex flex-none flex-col gap-1">
+      <div className="flex flex-none flex-col gap-1 px-2.5">
         <MachineButton
           page="toolbox"
           icon={<Wrench className="size-3 flex-none" />}
@@ -125,6 +130,12 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
           label="Guided setup"
           title="The ordered path for a machine with nothing on it"
         />
+        <MachineButton
+          page="accounts"
+          icon={<UserRound className="size-3 flex-none" />}
+          label="Git accounts"
+          title="Switch which identity, ssh key and GitHub login this machine commits with"
+        />
         {/* A rule, because the two above describe this *machine* and this one
             describes the app. Same control, different subject. */}
         <span className="mx-1 my-0.5 h-px bg-adaptive-200" />
@@ -136,7 +147,11 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
         />
       </div>
 
-      <ToolchainCard boot={boot} />
+      {/* Its own padding, for the same reason as the block above: the rail no
+          longer carries any. */}
+      <div className="px-2.5">
+        <ToolchainCard boot={boot} />
+      </div>
     </div>
   )
 }

@@ -6,6 +6,8 @@ export const keys = {
   packages: ['packages'] as const,
   packageUpdates: ['packageUpdates'] as const,
   setupPlan: ['setupPlan'] as const,
+  gitAccounts: ['gitAccounts'] as const,
+  sshConfig: ['sshConfig'] as const,
   checkoutPreview: (scope: string, branch: string) =>
     ['checkoutPreview', scope, branch] as const,
   packageVersions: (id: string) => ['packageVersions', id] as const,

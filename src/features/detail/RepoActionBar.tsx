@@ -27,6 +27,7 @@ import { installTarget } from '@/domain/severity'
 import { MANAGERS } from '@/domain/types'
 import { useManagerStore } from '@/stores/manager-store'
 import type { useDetailRepo } from './use-detail-repo'
+import { useTerminalStore } from '@/stores/terminal-store'
 
 /**
  * Drops the leading binary name from a command label.
@@ -86,7 +87,10 @@ export function RepoActionBar({ ctx }: { ctx: ReturnType<typeof useDetailRepo> }
           variant="waOutline"
           size="waSm"
           title="Open a shell in this repo"
-          onClick={() => run({ kind: 'openShell', ref: repo })}
+          onClick={() => {
+            useTerminalStore.getState().requestFocus()
+            run({ kind: 'openShell', ref: repo })
+          }}
         >
           <SquareTerminal className="size-3" />
           Terminal

@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core'
 import { normalizeError } from './errors'
 import type {
+  AccountsView,
   ActionIntent,
   ActionSpec,
   Bootstrap,
@@ -17,6 +18,7 @@ import type {
   DevServer,
   DockerStatus,
   FolderPick,
+  GitAccount,
   ParsedUrls,
   RepoPackages,
   RepoRef,
@@ -26,6 +28,7 @@ import type {
   RunSummary,
   ScanOptions,
   SetupPlan,
+  SshConfigPreview,
   ToolInfo,
   StashEntry,
   TermInfo,
@@ -97,6 +100,18 @@ export const api = {
   refreshToolchain: () => call<ToolInfo[]>('refresh_toolchain'),
   /** Records first-run onboarding as over. Skipping counts, deliberately. */
   completeOnboarding: () => call<Bootstrap>('complete_onboarding'),
+  /** Stored git identities, plus what the machine's config and gh actually say. */
+  listGitAccounts: () => call<AccountsView>('list_git_accounts'),
+  /** Adds or updates one. Writes config.json only — applying it is an action. */
+  saveGitAccount: (account: GitAccount) => call<AccountsView>('save_git_account', { account }),
+  /** Forgets one. Leaves whatever it wrote to git config in place. */
+  deleteGitAccount: (id: string) => call<AccountsView>('delete_git_account', { id }),
+  /** Drops one folder from the recents list. Deletes nothing on disk. */
+  forgetRecentRoot: (path: string) => call<Bootstrap>('forget_recent_root', { path }),
+  /** What the app would write into ~/.ssh/config. Reads only. */
+  previewSshConfig: () => call<SshConfigPreview>('preview_ssh_config'),
+  /** Writes the managed block, keeping everything outside the markers. */
+  applySshConfig: () => call<string>('apply_ssh_config'),
   /** The first-run setup path: every step, in order, with what is already done. */
   listSetupPlan: () => call<SetupPlan>('list_setup_plan'),
   /** Read-only: what a checkout would do, per repo. `branch` null = each default. */

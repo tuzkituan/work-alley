@@ -16,6 +16,7 @@ import { Button } from '@/components/ui/button'
 import { revealItemInDir } from '@tauri-apps/plugin-opener'
 import { openUrl } from '@/lib/open-url'
 import { keys } from '@/queries/keys'
+import type { AccountsView } from '@/domain/types'
 import { useRunAction } from '@/hooks/use-action'
 import { useRescanRepo } from '@/hooks/use-rescan-repo'
 import { buildTarget, choresByGroup, runTarget, taskOf } from '@/domain/severity'
@@ -24,6 +25,7 @@ import { useRepoLists } from '@/stores/repo-lists'
 import { useUiStore } from '@/stores/ui-store'
 import { CheckoutRepoDialog } from '@/features/actions/CheckoutRepoDialog'
 import { RunCommandDialog } from '@/features/detail/RunCommandDialog'
+import { useTerminalStore } from '@/stores/terminal-store'
 
 /**
  * Secondary actions, so the visible row stays scannable.
@@ -40,6 +42,11 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
   const { data: boot } = useQuery({ queryKey: keys.bootstrap, enabled: false })
   const editors = (boot as { editors?: { id: string; label: string }[] } | undefined)?.editors ?? []
   const agents = (boot as { agents?: { id: string; label: string }[] } | undefined)?.agents ?? []
+  // Same trick as the editors above: whatever the accounts page has already
+  // fetched, and nothing when it has not been opened — 113 rows must not each
+  // spawn a `git config` read to decide whether to draw a submenu.
+  const { data: accountsView } = useQuery({ queryKey: keys.gitAccounts, enabled: false })
+  const accounts = (accountsView as AccountsView | undefined)?.accounts ?? []
 
   const target = runTarget(status)
   const dev = target.server
@@ -131,7 +138,12 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
 
         <DropdownMenuSeparator />
         {/* A real shell in the repo, as opposed to the run log below. */}
-        <DropdownMenuItem onClick={() => run({ kind: 'openShell', ref: repo })}>
+        <DropdownMenuItem
+          onClick={() => {
+            useTerminalStore.getState().requestFocus()
+            run({ kind: 'openShell', ref: repo })
+          }}
+        >
           Open terminal here
         </DropdownMenuItem>
         {/* The escape hatch, for when a 372px pane is not enough room. */}
@@ -248,6 +260,34 @@ export function RepoMenu({ repo, status }: { repo: RepoRef; status: RepoStatus |
                     onClick={() => run({ kind: 'runScript', ref: repo, script: s })}
                   >
                     <span className="font-mono text-[11.5px]">{s}</span>
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          </>
+        )}
+
+        {/* The repo scope for a git account: `.git/config` here, overriding the
+            machine default. This is the whole point of having more than one — a work
+            laptop with three personal repos on it — and the accounts page cannot
+            offer it, because it does not know which repo you mean. Hidden until at
+            least one account exists rather than shown empty. */}
+        {accounts.length > 0 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>Commit as…</DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="w-60">
+                {accounts.map((a) => (
+                  <DropdownMenuItem
+                    key={a.id}
+                    onClick={() => run({ kind: 'useGitAccount', id: a.id, ref: repo })}
+                    title={`Writes user.name and user.email into ${repo.name}'s own config`}
+                  >
+                    {a.label}
+                    <span className="ml-auto font-mono text-[10px] text-adaptive-400">
+                      {a.email}
+                    </span>
                   </DropdownMenuItem>
                 ))}
               </DropdownMenuSubContent>

@@ -338,10 +338,68 @@ html[data-skin] [data-slot][data-split='right'] {
   animation: wa-view-in 140ms ease-out both;
 }
 
-/* Movement is the first thing to go when it has been asked to. */
+/* The launch screen, and the app arriving behind it.
+ *
+ * Two halves of one move: the splash fades and lifts *away* while the window it was
+ * covering fades and settles *in*, which is what makes it read as opening rather
+ * than as two screens swapped. Slower than `wa-view-in` (240ms against 140ms)
+ * because this one is the first thing you see and has further to travel.
+ *
+ * The splash keeps `pointer-events: none` for its whole exit: it is still painted
+ * over the app for a fifth of a second, and a click landing on a mark rather than
+ * on the rail underneath it is exactly the kind of thing that is only noticed once
+ * and never diagnosed. */
+@keyframes wa-splash-out {
+  to {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+}
+.wa-splash-out {
+  animation: wa-splash-out 240ms ease-in both;
+  pointer-events: none;
+}
+
+@keyframes wa-app-in {
+  from {
+    opacity: 0;
+    transform: scale(0.99);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.wa-app-in {
+  animation: wa-app-in 240ms ease-out both;
+}
+
+/* The mark itself, on the way in — it should not simply appear at full size the
+   instant the webview paints. */
+@keyframes wa-splash-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.wa-splash-mark {
+  animation: wa-splash-in 260ms ease-out both;
+}
+
+/* Movement is the first thing to go when it has been asked to. The splash still
+   *exists* — it is a real loading state, not decoration — it just cuts. */
 @media (prefers-reduced-motion: reduce) {
-  .wa-view-enter {
+  .wa-view-enter,
+  .wa-splash-mark,
+  .wa-app-in {
     animation: none;
+  }
+  .wa-splash-out {
+    animation-duration: 1ms;
   }
 }
 
@@ -392,6 +450,27 @@ html[data-skin] [data-slot][data-split='right'] {
   font-weight: 500;
 }
 
+/* A pointer on anything you can click.
+ *
+ * Tailwind's preflight sets `cursor: default` on every `button`, which is the CSS
+ * spec's answer and not this app's: nearly every control here is a button, so the
+ * whole UI read as unclickable — tiles, chips, rows, tabs and menu items included.
+ *
+ * By role as well as by tag, because Radix renders menu items and options as divs
+ * with a role. Disabled controls keep the default arrow: `not-allowed` says "never"
+ * where the truth is usually "not yet". */
+button:not(:disabled),
+summary,
+[role='button']:not([aria-disabled='true']),
+[role='menuitem']:not([aria-disabled='true']),
+[role='menuitemradio']:not([aria-disabled='true']),
+[role='menuitemcheckbox']:not([aria-disabled='true']),
+[role='option']:not([aria-disabled='true']),
+[role='tab']:not([aria-disabled='true']),
+[role='switch']:not([aria-disabled='true']) {
+  cursor: pointer;
+}
+
 /* Live-updating numbers must not jitter their columns across dozens of rows. */
 .wa-num {
   font-variant-numeric: tabular-nums;
@@ -434,6 +513,48 @@ html[data-skin] [data-slot][data-split='right'] {
   background-clip: content-box;
 }
 
+/* The quiet variant, for narrow chrome.
+ *
+ * The rail is 214px of names with a count right-aligned against the edge, so a
+ * 10px track drawn *over* it clipped "backend" and sat on every number. Here the
+ * gutter is reserved rather than overlaid — nothing shifts when the list grows past
+ * the fold — and the thumb only appears while the pointer is in the column, because
+ * a permanent bar down the side of a sidebar is furniture reporting a fact you can
+ * already see from the list itself.
+ *
+ * Firefox gets `thin` with a transparent thumb until hover; the same rule, said in
+ * the standard property, since it has no ::-webkit-scrollbar. */
+.wa-scroll-soft {
+  scrollbar-gutter: stable;
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+.wa-scroll-soft:hover,
+.wa-scroll-soft:focus-within {
+  scrollbar-color: var(--wa-scroll-thumb) transparent;
+}
+.wa-scroll-soft::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.wa-scroll-soft::-webkit-scrollbar-track {
+  background: transparent;
+}
+.wa-scroll-soft::-webkit-scrollbar-thumb {
+  background: transparent;
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background-clip: content-box;
+  transition: background-color 120ms linear;
+}
+.wa-scroll-soft:hover::-webkit-scrollbar-thumb,
+.wa-scroll-soft:focus-within::-webkit-scrollbar-thumb {
+  background: var(--wa-scroll-thumb);
+}
+.wa-scroll-soft::-webkit-scrollbar-thumb:hover {
+  background: var(--wa-scroll-thumb-hover);
+}
+
 /* The output pane's tab strip: three rows of 22px chips, their 4px gaps, and the
  * row's own 6px padding.
  *
@@ -460,109 +581,32 @@ body,
 
 /* Repo table columns.
  *
- * The panel is user-resizable, so the template has to survive any width. Fixed
- * pixel tracks starve the flexible ones as the panel narrows — a 190px branch
- * column left the repo name 22px and the header collapsed. Below the breakpoint
- * the two lowest-value columns are dropped instead of squeezing everything.
+ * One declaration, fed by `--wa-cols` from `RepoTable`. The template itself is
+ * built in TypeScript — see `features/repos/columns.ts` — because the columns are
+ * now the user's choice narrowed by the measured width of the table, and neither
+ * half of that is knowable in a stylesheet.
  *
- * The name column is the widest by a distance because names are shown in full:
- * a shared prefix plus a distinctive tail runs to 40 characters, and truncating
- * the tail hides the only part that identifies the repo.
- */
-.wa-table {
-  container-type: inline-size;
-}
-
+ * What was here before: five container-query breakpoints, each declaring both when
+ * a template applied and what it cost. The two drifted. The widest needed 926px of
+ * minimums and claimed to apply from 901px up, so in that band the grid was wider
+ * than the table — which clips, for its rounded corners — and the column that fell
+ * off the end was Actions, the only way to act on a repo from the list.
+ *
+ * The fallback keeps a bare `.wa-cols` legible if it is ever rendered outside the
+ * table that sets the variable. */
 .wa-cols {
   display: grid;
   align-items: center;
   gap: 8px;
-  grid-template-columns:
-    18px
-    minmax(200px, 2.6fr)
-    minmax(80px, 1fr)
-    96px
-    76px
-    64px
-    84px
-    96px
-    124px;
+  grid-template-columns: var(--wa-cols, 18px minmax(200px, 2.6fr) 124px);
 }
 
-/* Not every workspace has a shared package to track, so that column is dropped
-   rather than left as an empty track. Only the wide template needs a variant —
-   the narrow one already hides the optional columns. */
-.wa-cols.wa-no-tracked {
-  grid-template-columns:
-    18px
-    minmax(200px, 2.6fr)
-    minmax(80px, 1fr)
-    96px
-    76px
-    64px
-    96px
-    124px;
-}
-
-/* Both selectors, and `.wa-no-tracked` explicitly: `.wa-cols.wa-no-tracked` is
-   two classes to `.wa-cols`' one, and a container query adds no specificity of its
-   own — so the wide 7-track template kept winning here. The row renders only six
-   cells at this width, which left Actions in the second-to-last track and the
-   116px one empty, i.e. the actions group floating ~120px short of the right edge.
-   The templates are identical because the columns this variant drops are the same
-   ones the query already hides. */
-@container (max-width: 900px) {
-  .wa-cols,
-  .wa-cols.wa-no-tracked {
-    grid-template-columns:
-      18px
-      minmax(160px, 2.6fr)
-      minmax(70px, 1fr)
-      92px
-      88px
-      124px;
-  }
-  .wa-col-optional {
-    display: none;
-  }
-}
-
-/* Narrower still — a half-width window or a side-by-side layout. Dev goes next:
-   its state is also on the row's own dot and in the detail pane, whereas the
-   actions group is the only way to act on a repo from here, so that track is
-   never dropped. 124px is three 26px icon buttons, Build's chevron and their gaps
-   — the same at every width, because the row actions are icons at every width.
-
-   It was five buttons until Pull and Open-in moved to the ⋯ menu: on 113 rows a
-   column of identical download arrows said nothing, and the ones left are the two
-   you press *because* of what the row told you. */
-@container (max-width: 640px) {
-  .wa-cols,
-  .wa-cols.wa-no-tracked {
-    grid-template-columns:
-      18px
-      minmax(120px, 2.6fr)
-      minmax(60px, 1fr)
-      84px
-      124px;
-  }
-  .wa-col-dev {
-    display: none;
-  }
-}
-
-/* Last resort: name and actions only. Below this the branch and change counts
-   are unreadable anyway, and a name you cannot read makes the list useless. */
-@container (max-width: 460px) {
-  .wa-cols {
-    grid-template-columns:
-      18px
-      minmax(90px, 1fr)
-      124px;
-  }
-  .wa-col-narrow {
-    display: none;
-  }
+/* A grid item's default `min-width: auto` is its *content's* minimum, so any cell
+   holding something unbreakable — a long branch name, `↑245 ↓805`, a repo name and
+   its framework badge — would otherwise widen its own track and push the whole grid
+   past the table. The cells that must not shrink say so themselves with `shrink-0`. */
+.wa-cols > * {
+  min-width: 0;
 }
 
 /* --- repo detail page ------------------------------------------------------

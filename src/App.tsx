@@ -16,10 +16,11 @@ import { RepoGrid } from '@/features/repos/RepoGrid'
 import { OutputPane } from '@/features/output/OutputPane'
 import { ConfirmActionDialog } from '@/features/actions/ConfirmActionDialog'
 import { CommandPalette } from '@/features/command/CommandPalette'
-import { WorkspaceWelcome } from '@/features/workspace/WorkspacePicker'
 import { Toolbox } from '@/features/toolbox/Toolbox'
 import { SetupPage } from '@/features/setup/SetupPage'
+import { LauncherPage } from '@/features/launcher/LauncherPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
+import { GitAccountsPage } from '@/features/accounts/GitAccountsPage'
 import { MachinePage } from '@/features/setup/MachinePage'
 import { shouldOnboard } from '@/features/setup/should-onboard'
 import { useUiStore } from '@/stores/ui-store'
@@ -35,6 +36,8 @@ import { useCategoryScan } from '@/hooks/use-category-scan'
 import { IpcError } from '@/ipc/errors'
 import { keys } from '@/queries/keys'
 import { useApplyTheme, useTheme, useZoomKeys } from '@/hooks/use-theme'
+import { useAppIdentity } from '@/hooks/use-bootstrap'
+import { cn } from '@/lib/utils'
 
 export function App() {
   useApplyTheme()
@@ -77,16 +80,17 @@ function Dashboard() {
   const setPage = useUiStore((s) => s.setPage)
   const { theme } = useTheme()
   const [setupMode, setSetupMode] = useState(false)
+  // Past the tiles for this run. See the launcher branch for why it is not a page.
+  const [launcherDone, setLauncherDone] = useState(false)
   // Toolbox and setup installs run in a terminal session; the dock below only
   // exists once one has been opened.
 
   // get_bootstrap paints the entire chrome — real counts, every folder, the
   // real scripts list — before a single git process has run.
-  const {
-    data: boot,
-    error,
-    isPending,
-  } = useQuery({
+  // No `isPending` here any more: no screen is rendered at all until boot has
+  // landed — the splash covers that window — so the strip that used to say
+  // "Starting up…" along the bottom had nothing left to appear over.
+  const { data: boot, error } = useQuery({
     queryKey: keys.bootstrap,
     queryFn: () => api.getBootstrap(),
     // State is managed after an async toolchain probe, so an early call can arrive
@@ -94,6 +98,18 @@ function Dashboard() {
     retry: (count, err) =>
       err instanceof IpcError && err.code === 'NOT_READY' ? count < 25 : count < 1,
     retryDelay: 200,
+  })
+
+  // Fetched once per launch, here rather than where it is used. The repo row menu
+  // offers "Commit as…" from this cache and must not spawn a `git config` read per
+  // row to decide whether to draw the submenu; the accounts page and the launcher
+  // both read the same key. Cheap — two config reads and one `gh auth status` — and
+  // anything that changes it invalidates the key.
+  useQuery({
+    queryKey: keys.gitAccounts,
+    queryFn: () => api.listGitAccounts(),
+    enabled: boot?.toolsReady ?? false,
+    staleTime: 5 * 60_000,
   })
 
   // Repo names are abbreviated for display by stripping whatever prefix this
@@ -109,6 +125,17 @@ function Dashboard() {
     if (!boot?.workspaceRoot) return
     prune(boot.workspaceRoot, new Set(boot.repos.map(repoId)))
   }, [boot, prune])
+
+  // Closing the folder puts you back on the tiles.
+  //
+  // Without this, "past the tiles" outlived the workspace that justified it: closing
+  // a folder left the dashboard mounted with nothing to show — a rail of no folders
+  // over a table of repos that are no longer open — and no way back to the picker
+  // short of relaunching.
+  const hasWorkspace = boot?.hasWorkspace ?? false
+  useEffect(() => {
+    if (!hasWorkspace) setLauncherDone(false)
+  }, [hasWorkspace])
 
   // The open workspace, mirrored into the store so a folder selection can be
   // stamped with the workspace it was made in. Not persisted — see the field.
@@ -147,178 +174,243 @@ function Dashboard() {
     void connectBridge(qc)
   }, [boot, qc])
 
-  if (error && !boot) return <FatalError message={error.message} />
+  // Is there a screen to show yet? Bootstrap, and — only when onboarding has never
+  // been completed — the toolchain probe that decides between the dashboard and the
+  // setup takeover.
+  const booting = !boot || (!boot.onboardingCompleted && !boot.toolsReady)
 
-  // The Toolbox and the setup page describe this machine, not the open folder, so
-  // they take the whole window and work with no workspace at all — which is exactly
-  // when someone needs to install their tools.
-  //
-  // Checked before `hasWorkspace` on purpose: that is what makes Guided setup
-  // reachable from the workspace picker on a machine that cannot clone yet.
-  if (page === 'toolbox' || page === 'setup' || page === 'settings') {
+  // The splash outlives `booting` by one animation, which is the whole point: it
+  // fades and lifts away while the app fades in behind it. `SPLASH_EXIT_MS` matches
+  // `wa-splash-out` in wa-bridge.css — a timer rather than `animationend`, because
+  // reduced motion collapses the animation and the event would land at a different
+  // time or, with `animation: none`, never.
+  const [splashGone, setSplashGone] = useState(false)
+
+  // A floor on how long the mark is up. Bootstrap on a warm machine answers in a
+  // few tens of milliseconds, so without this the splash was a flicker — the mark's
+  // own entrance had not finished before it was already leaving, which reads as a
+  // glitch rather than as a launch. Long enough to land and be seen, short enough
+  // that nobody waits on it.
+  const [held, setHeld] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setHeld(true), SPLASH_MIN_MS)
+    return () => clearTimeout(t)
+  }, [])
+
+  const leaving = !booting && held
+  useEffect(() => {
+    if (!leaving || splashGone) return
+    const t = setTimeout(() => setSplashGone(true), SPLASH_EXIT_MS)
+    return () => clearTimeout(t)
+  }, [leaving, splashGone])
+
+  // Which screen, as a value rather than a series of early returns — the splash
+  // below has to render *over* whichever one it is, and an early return cannot be
+  // wrapped.
+  const screen = ((): React.ReactNode => {
+    if (error && !boot) return <FatalError message={error.message} />
+
+    // The Toolbox and the setup page describe this machine, not the open folder, so
+    // they take the whole window and work with no workspace at all — which is exactly
+    // when someone needs to install their tools.
+    //
+    // Checked before `hasWorkspace` on purpose: that is what makes Guided setup
+    // reachable from the workspace picker on a machine that cannot clone yet.
+    if (page === 'toolbox' || page === 'setup' || page === 'settings' || page === 'accounts') {
+      return (
+        <TooltipProvider delayDuration={400}>
+          <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
+            <TopBar boot={boot} />
+            <MachinePage>
+              {/* Keyed by page so switching Toolbox -> Settings replays the entry,
+                  rather than only animating the first full-window page opened. */}
+              <div key={page} className="wa-view-enter flex min-h-0 flex-1 flex-col">
+                {page === 'setup' ? (
+                  <SetupPage toolsReady={boot?.toolsReady ?? false} />
+                ) : page === 'settings' ? (
+                  <SettingsPage />
+                ) : page === 'accounts' ? (
+                  <GitAccountsPage />
+                ) : (
+                  <Toolbox toolsReady={boot?.toolsReady ?? false} />
+                )}
+              </div>
+            </MachinePage>
+          </div>
+          <ConfirmActionDialog />
+          <Toaster theme={theme} position="bottom-left" />
+        </TooltipProvider>
+      )
+    }
+
+    // Nothing decided yet, so render nothing: the splash is over the top of this
+    // and it is what the user is looking at.
+    //
+    // Two windows used to flash the dashboard here. The first is bootstrap itself
+    // being in flight — the app rendered its full chrome with `boot` undefined, on
+    // the theory that painting early beats a spinner. The second is longer and
+    // worse: bootstrap returns before the toolchain probe does, so `toolsReady` is
+    // false for about a second, `shouldOnboard` answers "no" on a machine that needs
+    // setup, and the dashboard rendered in full before the takeover replaced it. The
+    // app appeared to start and then change its mind.
+    //
+    // The toolchain half is gated on `onboardingCompleted`, so it costs nothing once
+    // setup has been finished: that machine goes to the dashboard on an unresolved
+    // toolchain exactly as before.
+    if (booting) return null
+
+    // The tiles.
+    //
+    // Shown whenever a launch has nowhere to land: no workspace to reopen, or a
+    // machine that has never been through setup. It replaces two takeovers that
+    // used to compete for this moment — the setup page and the folder picker — each
+    // of which decided *for* the user what the most urgent thing was, and neither of
+    // which could be left without finishing it.
+    //
+    // `launcherDone` rather than a page: this is a launch state, not somewhere you
+    // navigate to, and persisting it would mean a relaunch could restore "past the
+    // tiles" on a machine with nothing open. Every tile that leads to a page sets
+    // `page`, which the branch above catches — so Back from those pages lands here
+    // again, which is what makes the tiles read as a home screen.
+    if (boot && !launcherDone && (shouldOnboard(boot) || !boot.hasWorkspace)) {
+      return (
+        <TooltipProvider delayDuration={400}>
+          {/* ChromeBar, not TopBar: there is no workspace to switch and no bulk
+              action to take, but the window still needs its buttons — a screen with
+              no way to close it is the FatalError lesson. */}
+          <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
+            <ChromeBar />
+            <MachinePage>
+              <div className="wa-view-enter flex min-h-0 flex-1 flex-col">
+                {setupMode ? (
+                  // Owns the window while it runs: it is a form with a clone
+                  // behind it, and half of it behind a tile would be worse.
+                  <InitWorkspace
+                    boot={boot}
+                    onCancel={() => setSetupMode(false)}
+                    onDone={(path) => {
+                      setSetupMode(false)
+                      // The folder only becomes a workspace once something is
+                      // cloned into it, so switching is the last step, not the
+                      // first.
+                      void api.setWorkspace(path).then((b) => {
+                        qc.setQueryData(keys.bootstrap, b)
+                        // Select the first folder, so the app lands mid-scan
+                        // rather than on "Pick a folder". Cloning into a workspace
+                        // and then being asked to pick something inside it was one
+                        // hop too many, and nothing said that clicking a rail
+                        // folder is what starts a scan.
+                        const first = b.categories.find((c) => c.repoCount > 0)
+                        if (first) useUiStore.getState().setCategory(first.category)
+                        setLauncherDone(true)
+                      })
+                    }}
+                  />
+                ) : (
+                  <LauncherPage
+                    boot={boot}
+                    onSetUpFromUrls={() => setSetupMode(true)}
+                    onOpenApp={() => {
+                      setLauncherDone(true)
+                      // Going in counts as having been asked, so the next launch with a
+                      // workspace open goes straight to the dashboard.
+                      if (!boot.onboardingCompleted) {
+                        void api
+                          .completeOnboarding()
+                          .then((b) => qc.setQueryData(keys.bootstrap, b))
+                          .catch(() => {})
+                      }
+                    }}
+                  />
+                )}
+              </div>
+            </MachinePage>
+          </div>
+          <ConfirmActionDialog />
+          <Toaster theme={theme} position="bottom-left" />
+        </TooltipProvider>
+      )
+    }
+
     return (
       <TooltipProvider delayDuration={400}>
+        {/* The design's root is a bordered, 10px-radius panel. We render it as an
+            inner frame in a decorated window: transparency plus rounded corners on
+            Wayland/WebKitGTK is unreliable. */}
         <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
           <TopBar boot={boot} />
-          <MachinePage>
-            {/* Keyed by page so switching Toolbox -> Settings replays the entry,
-                rather than only animating the first full-window page opened. */}
-            <div key={page} className="wa-view-enter flex min-h-0 flex-1 flex-col">
-              {page === 'setup' ? (
-                <SetupPage toolsReady={boot?.toolsReady ?? false} />
-              ) : page === 'settings' ? (
-                <SettingsPage />
-              ) : (
-                <Toolbox toolsReady={boot?.toolsReady ?? false} />
-              )}
-            </div>
-          </MachinePage>
-        </div>
-        <ConfirmActionDialog />
-        <Toaster theme={theme} position="bottom-left" />
-      </TooltipProvider>
-    )
-  }
 
-  // A machine that cannot do what the dashboard offers gets setup instead of a
-  // dashboard whose every button fails. See `shouldOnboard` for why each term of that
-  // predicate is there.
-  //
-  // After the explicit `page` branch above, so arriving from the banner still wins,
-  // and before `hasWorkspace`, so a bare machine is not first asked to choose a folder
-  // it has no git to scan.
-  if (boot && shouldOnboard(boot)) {
-    return (
-      <TooltipProvider delayDuration={400}>
-        <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
-          {/* ChromeBar, not TopBar: the workspace switcher and the bulk actions are
-              meaningless before the machine works, and a window with no way to close
-              it is the FatalError lesson. */}
-          <ChromeBar />
-          <MachinePage>
-            <SetupPage toolsReady={boot.toolsReady} firstRun />
-          </MachinePage>
-        </div>
-        <ConfirmActionDialog />
-        <Toaster theme={theme} position="bottom-left" />
-      </TooltipProvider>
-    )
-  }
-
-  // No folder chosen yet, or the saved one has gone. Nothing else is meaningful
-  // until this is answered, so it replaces the whole window rather than nagging.
-  if (boot && !boot.hasWorkspace) {
-    return (
-      <TooltipProvider>
-        {/* Same frame as every other screen, and a title bar: with the OS
-            decorations off, a screen without one cannot be moved or closed. */}
-        <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
-          <ChromeBar />
-          <div className="min-h-0 flex-1">
-            {setupMode ? (
-              <InitWorkspace
-                boot={boot}
-                onCancel={() => setSetupMode(false)}
-                onDone={(path) => {
-                  setSetupMode(false)
-                  // The folder only becomes a workspace once something is cloned
-                  // into it, so switching is the last step, not the first.
-                  void api.setWorkspace(path).then((b) => {
-                    qc.setQueryData(keys.bootstrap, b)
-                    // Select the first folder, so the dashboard lands mid-scan rather
-                    // than on "Pick a folder". Cloning into a workspace and then being
-                    // asked to pick something inside it was one hop too many, and
-                    // nothing said that clicking a rail folder is what starts a scan.
-                    const first = b.categories.find((c) => c.repoCount > 0)
-                    if (first) useUiStore.getState().setCategory(first.category)
-                  })
-                }}
-              />
-            ) : (
-              <WorkspaceWelcome boot={boot} onSetUp={() => setSetupMode(true)} />
-            )}
-          </div>
-        </div>
-        {/* The clone goes through the same confirmation gate as everything else,
-            so the dialog has to be mounted on this screen too. */}
-        <ConfirmActionDialog />
-        <Toaster theme={theme} position="bottom-left" />
-      </TooltipProvider>
-    )
-  }
-
-  return (
-    <TooltipProvider delayDuration={400}>
-      {/* The design's root is a bordered, 10px-radius panel. We render it as an
-          inner frame in a decorated window: transparency plus rounded corners on
-          Wayland/WebKitGTK is unreliable. */}
-      <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
-        <TopBar boot={boot} />
-
-        {/* Defaults are the design's exact pixel widths. react-resizable-panels
-            v3 has no autoSaveId, so the layout is persisted by hand. */}
-        <ResizablePanelGroup
-          orientation="horizontal"
-          className="min-h-0 flex-1"
-          defaultLayout={savedLayout ?? undefined}
-          onLayoutChanged={(layout, meta) => {
-            // Only user drags are worth saving; mount and imperative changes are not.
-            if (meta.isUserInteraction) saveLayout(layout)
-          }}
-        >
-          <ResizablePanel id="rail" defaultSize="214px" minSize="160px" maxSize="420px">
-            <LeftRail boot={boot} />
-          </ResizablePanel>
-
-          <ResizableHandle className="hover:bg-primary data-[dragging]:bg-primary" />
-
-          <ResizablePanel id="main" minSize="420px">
-            <div className="flex h-full min-w-0 flex-col overflow-hidden">
-              {/* No tab strip: this panel has exactly one view. It used to carry a
-                  Repos/Activity pair, but Activity's two panels were both redundant —
-                  per-repo commits live on the detail page, and container state is a
-                  `docker ps` away in the output pane. Removing it gave the list back
-                  the strip's height. */}
-              <NeedsYouStrip boot={boot} />
-              <RepoGrid boot={boot} />
-            </div>
-          </ResizablePanel>
-
-          <ResizableHandle className="hover:bg-primary data-[dragging]:bg-primary" />
-
-          <ResizablePanel
-            id="output"
-            defaultSize="372px"
-            minSize="260px"
-            maxSize="900px"
+          {/* Defaults are the design's exact pixel widths. react-resizable-panels
+              v3 has no autoSaveId, so the layout is persisted by hand. */}
+          <ResizablePanelGroup
+            orientation="horizontal"
+            className="min-h-0 flex-1"
+            defaultLayout={savedLayout ?? undefined}
+            onLayoutChanged={(layout, meta) => {
+              // Only user drags are worth saving; mount and imperative changes are not.
+              if (meta.isUserInteraction) saveLayout(layout)
+            }}
           >
-            <OutputPane />
-          </ResizablePanel>
-        </ResizablePanelGroup>
+            <ResizablePanel id="rail" defaultSize="214px" minSize="160px" maxSize="420px">
+              <LeftRail boot={boot} />
+            </ResizablePanel>
 
-        {boot && (boot.warnings.length > 0 || boot.readiness.missingRequired.length > 0) && (
-          <WarningBar
-            warnings={boot.warnings}
-            missing={boot.readiness.missingRequired}
-            onFix={() => setPage('setup')}
-          />
-        )}
-        {isPending && !boot && (
-          <div className="flex-none border-t border-adaptive-200 px-4 py-1.5 text-[11px] text-adaptive-500">
-            Starting up — resolving the toolchain…
-          </div>
-        )}
-      </div>
+            <ResizableHandle className="hover:bg-primary data-[dragging]:bg-primary" />
 
-      <ConfirmActionDialog />
-      <CommandPalette boot={boot} />
-      {/* Sonner sniffs the theme itself, so it must be told explicitly. */}
-      {/* No per-mount styling: the surface, border and radius live in
-          `components/ui/sonner.tsx` and wa-bridge.css, so the toast over the
-          dashboard is the same object as the toast over setup. This one used to
-          paint itself from `--card` while the other three used `--popover`. */}
-      <Toaster theme={theme} position="bottom-left" />
-    </TooltipProvider>
+            <ResizablePanel id="main" minSize="420px">
+              <div className="flex h-full min-w-0 flex-col overflow-hidden">
+                {/* No tab strip: this panel has exactly one view. It used to carry a
+                    Repos/Activity pair, but Activity's two panels were both redundant —
+                    per-repo commits live on the detail page, and container state is a
+                    `docker ps` away in the output pane. Removing it gave the list back
+                    the strip's height. */}
+                <NeedsYouStrip boot={boot} />
+                <RepoGrid boot={boot} />
+              </div>
+            </ResizablePanel>
+
+            <ResizableHandle className="hover:bg-primary data-[dragging]:bg-primary" />
+
+            <ResizablePanel
+              id="output"
+              defaultSize="372px"
+              minSize="260px"
+              maxSize="900px"
+            >
+              <OutputPane />
+            </ResizablePanel>
+          </ResizablePanelGroup>
+
+          {boot && (boot.warnings.length > 0 || boot.readiness.missingRequired.length > 0) && (
+            <WarningBar
+              warnings={boot.warnings}
+              missing={boot.readiness.missingRequired}
+              onFix={() => setPage('setup')}
+            />
+          )}
+        </div>
+
+        <ConfirmActionDialog />
+        <CommandPalette boot={boot} />
+        {/* Sonner sniffs the theme itself, so it must be told explicitly. */}
+        {/* No per-mount styling: the surface, border and radius live in
+            `components/ui/sonner.tsx` and wa-bridge.css, so the toast over the
+            dashboard is the same object as the toast over setup. This one used to
+            paint itself from `--card` while the other three used `--popover`. */}
+        <Toaster theme={theme} position="bottom-left" />
+      </TooltipProvider>
+    )
+  })()
+
+  // The launch sequence: the mark holds the window until there is something real
+  // to show, then lifts away while the app settles in behind it. Kept mounted for
+  // one animation past `booting` — unmounting it the instant boot lands is what
+  // made this a cut rather than an opening.
+  return (
+    <>
+      <div className={cn('h-full', !splashGone && 'wa-app-in')}>{screen}</div>
+      {!splashGone && <Splash exiting={leaving} />}
+    </>
   )
 }
 
@@ -380,6 +472,72 @@ function WarningBar({
           ))}
         </ul>
       )}
+    </div>
+  )
+}
+
+/** Matches `wa-splash-out`'s duration in wa-bridge.css. */
+const SPLASH_EXIT_MS = 240
+
+/**
+ * The shortest the launch screen is up for, exit not included.
+ *
+ * Comfortably past `wa-splash-in`'s 260ms, so the mark always finishes arriving
+ * before it starts leaving.
+ */
+const SPLASH_MIN_MS = 900
+
+/**
+ * The launch screen: the mark, the app's name, and nothing else.
+ *
+ * It exists because the first frame is not free — bootstrap has to answer, and on a
+ * machine that has never been set up the toolchain probe has to answer too, which
+ * means two login shells. What used to happen in that window was worse than a wait:
+ * the dashboard painted, then the setup takeover replaced it, so the app appeared
+ * to start and change its mind.
+ *
+ * The "Checking your toolchain…" line waits 400ms. On a machine that is already set
+ * up this whole screen lives for a few hundred milliseconds, and a message that
+ * flashes in and straight back out is worse than no message.
+ *
+ * ChromeBar, not TopBar: there is no workspace to switch and no counts to show, but
+ * the window still needs its buttons — a screen with no way to close it is the
+ * FatalError lesson.
+ */
+function Splash({ exiting }: { exiting: boolean }) {
+  const { name, version } = useAppIdentity()
+  const [slow, setSlow] = useState(false)
+  useEffect(() => {
+    const t = setTimeout(() => setSlow(true), 400)
+    return () => clearTimeout(t)
+  }, [])
+
+  return (
+    <div
+      className={cn(
+        // Over the app, not beside it: the two overlap for the length of the exit,
+        // which is what makes it read as opening rather than as a swap.
+        'fixed inset-0 z-50 flex flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900',
+        exiting && 'wa-splash-out'
+      )}
+    >
+      <ChromeBar />
+      <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3">
+        <div className="wa-splash-mark flex flex-col items-center gap-2.5">
+          {/* The same mark as the top bar's, at three times the size. A launch
+              screen that shows something the app never shows again is a launch
+              screen for a different app. */}
+          <div className="flex size-14 items-center justify-center rounded-xl bg-primary text-2xl font-bold text-primary-foreground">
+            {name.charAt(0)}
+          </div>
+          <span className="text-sm font-semibold tracking-[-0.01em]">{name}</span>
+          <span className="wa-num font-mono text-[10.5px] text-adaptive-400">{version}</span>
+        </div>
+        {/* Reserved height, so the line appearing does not shift the mark. */}
+        <span className="h-4 text-xs text-adaptive-500">
+          {slow ? 'Checking your toolchain…' : ''}
+        </span>
+      </div>
     </div>
   )
 }

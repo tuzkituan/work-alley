@@ -68,6 +68,13 @@ export function staleKeysFor(kind: string, id: RepoId): readonly unknown[][] {
     case 'prList':
       return [prs, ...always]
 
+    // Which identity is active moved, and it is read from `git config` rather than
+    // remembered — so the page has to ask again. Also `bootstrap`, whose readiness
+    // block reports the git identity, and `setupPlan`, which has a step for it.
+    // Nothing about the repos themselves changed: no commit, no ref, no file.
+    case 'useGitAccount':
+      return [[...keys.gitAccounts], [...keys.bootstrap], [...keys.setupPlan], ...always]
+
     // A re-run or a cancel changes what GitHub reports and nothing on disk, so
     // none of the git views move. The prefix covers every workflow filter.
     case 'ghRunRerun':

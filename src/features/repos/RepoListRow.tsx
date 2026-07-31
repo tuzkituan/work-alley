@@ -20,6 +20,7 @@ import { useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
 import { busyLabel, useBusy } from '@/hooks/use-busy'
 import { shortPackageName, useTrackedPackage } from '@/hooks/use-tracked-package'
+import { useColumns } from './use-columns'
 import { BuildMenu } from './BuildMenu'
 import { RepoMenu } from './RepoMenu'
 import { CheckoutRepoDialog } from '@/features/actions/CheckoutRepoDialog'
@@ -28,32 +29,34 @@ import { CheckoutRepoDialog } from '@/features/actions/CheckoutRepoDialog'
 export const ROW_HEIGHT = 40
 
 /**
- * Columns live in CSS (`.wa-cols` in wa-bridge.css) rather than an inline style,
- * because a container query has to be able to change them — an inline template
- * cannot be overridden responsively.
+ * The header, built from the same column list the rows are.
+ *
+ * The template itself is a CSS variable set once on the table — see `useColumns`
+ * and `RepoGrid` — so every row here is one grid with one source of truth about
+ * how many tracks it has. Rendering a cell the template has no track for is what
+ * used to strand the actions column off the right edge.
  */
 export function RepoListHeader() {
   const trackedPackage = useTrackedPackage()
+  const on = useColumns()
+
   return (
     <div
-      className={cn(
-        'wa-cols sticky top-0 z-10 border-b border-adaptive-200 bg-adaptive-100 px-3 text-[10px] font-semibold tracking-[0.05em] text-adaptive-500 uppercase',
-        !trackedPackage && 'wa-no-tracked'
-      )}
+      className="wa-cols sticky top-0 z-10 border-b border-adaptive-200 bg-adaptive-100 px-3 text-[10px] font-semibold tracking-[0.05em] text-adaptive-500 uppercase"
       style={{ height: 30 }}
     >
       <span />
       <span>Repo</span>
-      <span className="wa-col-narrow">Branch</span>
-      <span className="wa-col-narrow">Changes</span>
-      <span className="wa-col-optional">Sync</span>
-      <span className="wa-col-optional">Fetched</span>
-      {trackedPackage && (
-        <span className="wa-col-optional truncate" title={trackedPackage}>
-          {shortPackageName(trackedPackage)}
+      {on.has('branch') && <span>Branch</span>}
+      {on.has('changes') && <span>Changes</span>}
+      {on.has('sync') && <span>Sync</span>}
+      {on.has('fetched') && <span>Fetched</span>}
+      {on.has('tracked') && (
+        <span className="truncate" title={trackedPackage ?? undefined}>
+          {trackedPackage ? shortPackageName(trackedPackage) : 'Tracked'}
         </span>
       )}
-      <span className="wa-col-dev wa-col-narrow">Dev</span>
+      {on.has('dev') && <span>Dev</span>}
       <span className="text-right">Actions</span>
     </div>
   )
@@ -68,6 +71,7 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
   const setActiveRepo = useUiStore((s) => s.setActiveRepo)
   const openDetail = useUiStore((s) => s.openDetail)
   const busy = useBusy(id)
+  const on = useColumns()
   const run = useRunAction()
   const selectRun = useRunStore((s) => s.setActive)
   const d = status ? derive(status, trackedLatest) : null
@@ -88,7 +92,6 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
       onClick={() => setActiveRepo(id)}
       className={cn(
         'wa-cols border-b border-adaptive-200 px-3',
-        !trackedPackage && 'wa-no-tracked',
         // Run state colours the whole row. On 43 rows the Dev column is not where
         // you look to find the one server that died, and a crash is exactly the
         // thing that should be findable without reading a column.
@@ -145,83 +148,84 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
       {/* The branch name is the switch control. It was inert text next to a menu
           three clicks deep, which is a long way to go to change the one thing the
           cell is about. */}
-      {status ? (
-        <button
-          type="button"
-          className="wa-col-narrow truncate text-left font-mono text-[11.5px] text-adaptive-700 hover:text-primary-600 hover:underline"
-          title={`${status.branch ?? 'HEAD'} — switch branch`}
-          onClick={(e) => {
-            e.stopPropagation()
-            setCheckoutOpen(true)
-          }}
-        >
-          {status.detached ? '(detached)' : (status.branch ?? '—')}
-        </button>
-      ) : (
-        <Skeleton className="wa-col-narrow h-3 w-28" />
-      )}
+      {on.has('branch') &&
+        (status ? (
+          <button
+            type="button"
+            className="truncate text-left font-mono text-[11.5px] text-adaptive-700 hover:text-primary-600 hover:underline"
+            title={`${status.branch ?? 'HEAD'} — switch branch`}
+            onClick={(e) => {
+              e.stopPropagation()
+              setCheckoutOpen(true)
+            }}
+          >
+            {status.detached ? '(detached)' : (status.branch ?? '—')}
+          </button>
+        ) : (
+          <Skeleton className="h-3 w-28" />
+        ))}
 
-      {d ? (
-        <span
-          className={cn('wa-col-narrow wa-num font-mono text-[11.5px]', TONE_TEXT[d.dirtyTone])}
-        >
-          {d.dirtyLabel}
-        </span>
-      ) : (
-        <Skeleton className="wa-col-narrow h-3 w-16" />
-      )}
+      {on.has('changes') &&
+        (d ? (
+          <span className={cn('wa-num font-mono text-[11.5px]', TONE_TEXT[d.dirtyTone])}>
+            {d.dirtyLabel}
+          </span>
+        ) : (
+          <Skeleton className="h-3 w-16" />
+        ))}
 
-      {d ? (
-        <span
-          className={cn('wa-col-optional wa-num font-mono text-[11.5px]', TONE_TEXT[d.syncTone])}
-        >
-          {d.syncLabel}
-        </span>
-      ) : (
-        <Skeleton className="wa-col-optional h-3 w-12" />
-      )}
+      {on.has('sync') &&
+        (d ? (
+          <span className={cn('wa-num font-mono text-[11.5px]', TONE_TEXT[d.syncTone])}>
+            {d.syncLabel}
+          </span>
+        ) : (
+          <Skeleton className="h-3 w-12" />
+        ))}
 
       {/* How old the sync numbers are. They are computed from local refs, so a
           repo that has not fetched in nine days is not reporting "in sync" — it is
           reporting what was true nine days ago. */}
-      {status ? (
-        <span
-          className={cn(
-            'wa-col-optional wa-num truncate font-mono text-[11.5px]',
-            fetched.stale ? 'text-sev-warn' : 'text-adaptive-500'
-          )}
-          title={fetched.title}
-        >
-          {fetched.age ?? '—'}
-        </span>
-      ) : (
-        <Skeleton className="wa-col-optional h-3 w-8" />
-      )}
-
-      {trackedPackage &&
+      {on.has('fetched') &&
         (status ? (
           <span
             className={cn(
-              'wa-col-optional wa-num truncate font-mono text-[11.5px]',
+              'wa-num truncate font-mono text-[11.5px]',
+              fetched.stale ? 'text-sev-warn' : 'text-adaptive-500'
+            )}
+            title={fetched.title}
+          >
+            {fetched.age ?? '—'}
+          </span>
+        ) : (
+          <Skeleton className="h-3 w-8" />
+        ))}
+
+      {on.has('tracked') &&
+        (status ? (
+          <span
+            className={cn(
+              'wa-num truncate font-mono text-[11.5px]',
               driftedFromLatest ? 'text-sev-warn' : 'text-adaptive-500'
             )}
-            title={`${trackedPackage} ${status.trackedDep.resolved ?? 'n/a'}`}
+            title={`${trackedPackage ?? 'tracked package'} ${status.trackedDep.resolved ?? 'n/a'}`}
           >
             {status.trackedDep.resolved ?? (status.trackedDep.declared ? 'n/a' : '—')}
           </span>
         ) : (
-          <Skeleton className="wa-col-optional h-3 w-12" />
+          <Skeleton className="h-3 w-12" />
         ))}
 
       {/* A button whenever there is something to look at, so a crashed server's
           output is one click from the row that is red because of it. Selecting the
           repo is what scopes the output pane; picking the run puts the failing one
           on screen rather than whichever happens to be newest. */}
+      {on.has('dev') && (
       <button
         type="button"
         disabled={running.length === 0}
         className={cn(
-          'wa-col-dev wa-col-narrow wa-num truncate text-left font-mono text-[11.5px]',
+          'wa-num truncate text-left font-mono text-[11.5px]',
           state === 'crashed'
             ? 'text-sev-err'
             : state
@@ -250,6 +254,7 @@ export const RepoListRow = memo(function RepoListRow({ repo }: { repo: RepoRef }
           ? 'stopped'
           : running.map((t) => (t.port ? `:${t.port}` : t.state)).join(' ')}
       </button>
+      )}
 
       {/* Icons, not labels: "Pull Status Dev" needed ~200px and the Actions track
           is 124px, so the group used to spill left over the Dev column. Every one

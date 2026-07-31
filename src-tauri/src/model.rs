@@ -1260,6 +1260,18 @@ pub enum ActionSpec {
         name: String,
         email: String,
     },
+    /// Switch to a stored git account, globally or in one repo.
+    ///
+    /// The id is matched against `config.git_accounts` before any argv exists — the
+    /// same closed-set rule `SetupStep` and `RunScript` follow — so the name, email,
+    /// key path and gh login all come from the stored record rather than from this
+    /// call. `repo` present means the repo scope: `.git/config` in that one repo,
+    /// and `gh` is left alone.
+    UseGitAccount {
+        id: String,
+        #[serde(default, rename = "ref")]
+        repo: Option<RepoRef>,
+    },
     /// Install one of a repo's *declared* dependencies at a chosen version.
     ///
     /// `package` is caller-supplied but looked up with `pkg::declared_dep` for that
@@ -1437,4 +1449,27 @@ pub struct ScanOptions {
     pub include_commits: Option<bool>,
     pub commit_limit: Option<u32>,
     pub force: Option<bool>,
+}
+
+/// What `preview_ssh_config` reports back. See `accounts::splice_ssh_config`.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SshConfigPreview {
+    pub path: String,
+    pub exists: bool,
+    /// The block the app would write. Empty when no account defines an alias — in
+    /// which case applying *removes* the managed region rather than writing one.
+    pub managed: String,
+    /// False when the file already says exactly this.
+    pub changed: bool,
+    /// A managed block that cannot be replaced safely — see `splice_ssh_config`.
+    /// The page shows this instead of offering the write.
+    pub error: Option<String>,
+    /// Every `Host` block the file already contains, the app's own included.
+    ///
+    /// The page offers the unmanaged ones for import: most people already wrote
+    /// these aliases by hand months ago, and asking for them a second time — then
+    /// generating a second block saying the same thing — is not managing an ssh
+    /// config, it is competing with one.
+    pub entries: Vec<crate::accounts::SshHostEntry>,
 }

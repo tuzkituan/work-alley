@@ -133,13 +133,17 @@ export function OutputPane() {
     })
   }, [allActivity, scope, openScopes, runs, tabs, scanRepos])
 
-  const openTerminal = (external = false) =>
-    run({
+  const openTerminal = (external = false) => {
+    // The pane's own + button: the shell is the request, so it gets shown. An
+    // external one opens a window elsewhere and has no tab to select.
+    if (!external) useTerminalStore.getState().requestFocus()
+    return run({
       kind: 'openShell',
       ref: scopeRef,
       external,
       size: estimateGeometry(bodyRef.current, termFontSize),
     })
+  }
 
   const select = (view: OutputView) => {
     if (view.kind === 'term') {

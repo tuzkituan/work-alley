@@ -298,6 +298,25 @@ html[data-skin='metro'] :is(
   background-color: var(--wa-chrome);
 }
 
+/* Launcher tiles. Metro is where this shape comes from, so it gets the real
+   thing: square, no border, a solid accent fill on hover with the text inverted —
+   a Start-screen tile, not a card that happens to be clickable. */
+html[data-skin='metro'] [data-slot='launcher-tile'] {
+  border: 1px solid var(--wa-line);
+  border-radius: 0;
+  background-color: var(--wa-surface);
+}
+html[data-skin='metro'] [data-slot='launcher-tile']:hover {
+  background-color: var(--primary);
+  border-color: var(--primary);
+}
+/* `*` rather than naming each span: the tile's text is three nested elements with
+   their own ramp colours, and every one of them has to invert together or the
+   hover state is unreadable. */
+html[data-skin='metro'] [data-slot='launcher-tile']:hover * {
+  color: var(--primary-foreground);
+}
+
 html[data-skin='metro'] [data-slot='terminal-dock'] {
   background-color: var(--wa-chrome);
   border-top-color: var(--wa-line);

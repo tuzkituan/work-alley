@@ -48,17 +48,43 @@ interface TerminalState {
   liveByScope: Record<string, number>
 
   open(info: TermInfo, opts?: { restored?: boolean }): void
+  /**
+   * The next terminal to open was asked for by name, so show it.
+   *
+   * A one-shot flag rather than a rule in the bridge, because "was this session
+   * opened deliberately" is knowledge only the caller has: a session restored on
+   * reload, or one a chore spawned in another repo, must not move the pane — that
+   * is the whole reason the pane stopped following runs around. Pressing the
+   * terminal button is the opposite: the shell *is* the request.
+   */
+  requestFocus(): void
+  /** Reads and clears the flag. Called once, by the `term:opened` handler. */
+  takeFocusRequest(): boolean
   exit(termId: string, code: number): void
   rename(termId: string, title: string): void
   close(termId: string): void
   setActive(termId: string | null): void
 }
 
+// Module scope, not store state: nothing renders from it, and a `set` here would
+// re-render every subscriber of the terminal store to carry a boolean that lives
+// for one round trip.
+let focusRequested = false
+
 export const useTerminalStore = create<TerminalState>()((set, get) => ({
   tabs: new Map(),
   order: [],
   activeTermId: null,
   liveByScope: {},
+
+  requestFocus: () => {
+    focusRequested = true
+  },
+  takeFocusRequest: () => {
+    const was = focusRequested
+    focusRequested = false
+    return was
+  },
 
   open: (info, opts) =>
     set((s) => {

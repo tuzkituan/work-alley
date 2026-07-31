@@ -187,7 +187,17 @@ async function wire(qc: QueryClient) {
     // which shows its count — the pane you are reading stays where you put it.
     const key = term.repo ? repoId(term.repo) : WORKSPACE_KEY
     rememberScopes([key])
-    if (inScope([key])) store.setActive(term.termId)
+
+    // Asked for by name — the terminal button, the pane's +, "Open terminal" in a
+    // repo menu — so show it, scope and all. A shell nobody asked for (one restored
+    // on reload, one a chore spawned elsewhere) still does not move the pane: that
+    // is the difference the flag exists to carry.
+    if (store.takeFocusRequest()) {
+      useUiStore.getState().setOutputScope(term.repo ? repoId(term.repo) : null)
+      store.setActive(term.termId)
+    } else if (inScope([key])) {
+      store.setActive(term.termId)
+    }
   })
   // Deliberately NOT through createFrameQueue, unlike run:output right above.
   // That helper exists to collapse store writes and React renders; terminal

@@ -114,16 +114,38 @@ async fn build_bootstrap(state: &Arc<AppState>) -> AppResult<Bootstrap> {
     })
 }
 
+/// Set by `complete_onboarding`, and only read while the force flag is on.
+///
+/// Without it, `WORK_ALLEY_ONBOARDING=force` made the screen it exists to show
+/// impossible to leave: Done wrote the config, the next bootstrap reported "never
+/// done" regardless, and the takeover came straight back. A reviewer cannot check
+/// the *exit* from a screen they cannot exit.
+///
+/// Process-wide rather than on `AppState`: it deliberately does not survive a
+/// relaunch, which is what makes the flag still mean "show me first-run again".
+static ONBOARDING_DISMISSED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 /// Whether first-run onboarding is over.
 ///
 /// `WORK_ALLEY_ONBOARDING=force` reports it as never done, which is the only practical
 /// way to review the first-run path on a machine that is already set up. Read on every
 /// call rather than cached, so it can be toggled without a rebuild.
 fn onboarding_completed(cfg: &crate::config::Config) -> bool {
-    if std::env::var("WORK_ALLEY_ONBOARDING").as_deref() == Ok("force") {
-        return false;
+    let forced = std::env::var("WORK_ALLEY_ONBOARDING").as_deref() == Ok("force");
+    onboarding_state(
+        forced,
+        ONBOARDING_DISMISSED.load(std::sync::atomic::Ordering::Relaxed),
+        cfg.onboarding_done_unix.is_some(),
+    )
+}
+
+/// The rule above, without the environment or the config — so it is testable.
+fn onboarding_state(forced: bool, dismissed_this_run: bool, saved: bool) -> bool {
+    if forced {
+        return dismissed_this_run;
     }
-    cfg.onboarding_done_unix.is_some()
+    saved
 }
 
 // The user's home directory, for abbreviating paths in the UI. Lives in
@@ -393,6 +415,27 @@ pub async fn close_workspace(
     // is still offered on the welcome screen.
     let _ = state.config().save(&state.app_dir());
     let _ = app.emit(events::WORKSPACE_CHANGED, ());
+    build_bootstrap(state.inner()).await
+}
+
+/// Drops one folder from the recents list.
+///
+/// The list only ever grew: a workspace opened once by mistake, or one that has
+/// since been deleted, stayed on the launcher forever with no way to remove it
+/// short of editing config.json. Nothing on disk is touched — this forgets a path,
+/// it does not delete a folder — and the open workspace is deliberately allowed:
+/// closing it is a separate action, and "stop offering this" is a fair thing to
+/// want about a folder you are in.
+#[tauri::command]
+pub async fn forget_recent_root(
+    path: String,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<Bootstrap> {
+    let mut cfg = state.config();
+    if cfg.forget_root(std::path::Path::new(&path)) {
+        let _ = cfg.save(&state.app_dir());
+        state.set_config(cfg);
+    }
     build_bootstrap(state.inner()).await
 }
 
@@ -1629,6 +1672,89 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                 warnings: vec![],
                 typed_confirm: None,
                 repo: None,
+                targets: vec![],
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::UseGitAccount { id, repo } => {
+            let git = tc.require("git")?;
+            // The closed set: the id names a record the backend stored, so nothing
+            // that reaches a command line here came from this call.
+            let cfg = state.config();
+            let account = cfg
+                .git_accounts
+                .iter()
+                .find(|a| a.id == id)
+                .cloned()
+                .ok_or_else(|| AppError::Invalid(format!("unknown account '{id}'")))?;
+
+            let (scope, cwd, target) = match &repo {
+                Some(r) => {
+                    let path = crate::paths::resolve_repo(&root, r)?;
+                    (
+                        crate::accounts::Scope::Repo(path.clone()),
+                        path,
+                        format!("in {}", r.name),
+                    )
+                }
+                None => (
+                    crate::accounts::Scope::Global,
+                    crate::paths::neutral_cwd(&root),
+                    "on this machine".to_string(),
+                ),
+            };
+
+            // Absent gh is not an error: the identity is still worth writing, and
+            // `apply_argv` drops the switch. Warned about below rather than
+            // silently, because "the account has a gh login" and "gh moved" are
+            // different facts and only one of them just happened.
+            let gh = tc.paths.get("gh").cloned();
+            let mut warnings = Vec::new();
+            if let Some(user) = &account.gh_user {
+                match (&scope, gh.is_some()) {
+                    (crate::accounts::Scope::Global, true) => warnings.push(format!(
+                        "Also switches the GitHub CLI to {user}, which affects every repo."
+                    )),
+                    (crate::accounts::Scope::Global, false) => warnings.push(format!(
+                        "gh is not installed, so the GitHub CLI stays as it is — {user} will not become active."
+                    )),
+                    (crate::accounts::Scope::Repo(_), _) => warnings.push(format!(
+                        "The GitHub CLI stays as it is: gh has one active account per machine, not per repo. Apply {} globally to switch it to {user}.",
+                        account.label
+                    )),
+                }
+            }
+
+            let pairs = crate::accounts::config_pairs(&account)
+                .into_iter()
+                .map(|(k, v)| format!("{k} = {v}"))
+                .collect::<Vec<_>>()
+                .join("\n");
+
+            Ok(Built {
+                kind: "useGitAccount".into(),
+                title: format!("Use {} {target}", account.label),
+                description: format!(
+                    "Commits will record {} <{}>.\n{pairs}",
+                    account.name, account.email
+                ),
+                argv: crate::accounts::apply_argv(
+                    require_shell()?,
+                    &git,
+                    gh.as_deref(),
+                    &account,
+                    &scope,
+                ),
+                preview: None,
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings,
+                typed_confirm: None,
+                repo,
                 targets: vec![],
                 task: None,
                 read_only: false,
@@ -3570,6 +3696,11 @@ pub async fn check_package_updates(state: State<'_, Arc<AppState>>) -> AppResult
 
 /// Sets the onboarding flag, once, and persists it. Never fails a caller.
 fn mark_onboarded(state: &Arc<AppState>) {
+    // Before the early return below: under `WORK_ALLEY_ONBOARDING=force` the config
+    // flag may already be set from a previous run, and this is the only thing that
+    // lets the screen be left in this one.
+    ONBOARDING_DISMISSED.store(true, std::sync::atomic::Ordering::Relaxed);
+
     let mut cfg = state.config();
     if cfg.onboarding_done_unix.is_some() {
         return;
@@ -3594,6 +3725,239 @@ pub async fn complete_onboarding(state: State<'_, Arc<AppState>>) -> AppResult<B
     // existing timestamp.
     mark_onboarded(state.inner());
     build_bootstrap(&state).await
+}
+
+/// The accounts page, in one call.
+///
+/// Reads rather than trusts: the stored list comes from config, but "which one is
+/// active" is whatever `~/.gitconfig` says right now — someone can always run
+/// `git config` themselves, and a page that reported its own last write instead of
+/// the machine's actual state would be lying in exactly the situation this feature
+/// exists for.
+#[tauri::command]
+pub async fn list_git_accounts(
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<crate::accounts::AccountsView> {
+    let cfg = state.config();
+    let tc = state.toolchain();
+    let accounts = cfg.git_accounts.clone();
+
+    let (global_name, global_email) = match tc.path("git") {
+        Some(git) => {
+            let home = crate::paths::neutral_cwd(&state.workspace_root());
+            (
+                global_config(git, &home, "user.name").await,
+                global_config(git, &home, "user.email").await,
+            )
+        }
+        None => (None, None),
+    };
+
+    let gh_present = tc.has("gh");
+    let gh_accounts = if gh_present {
+        gh_auth_accounts(&tc).await
+    } else {
+        Vec::new()
+    };
+
+    Ok(crate::accounts::AccountsView {
+        active_id: crate::accounts::match_account(&accounts, global_email.as_deref()),
+        accounts,
+        global_name,
+        global_email,
+        gh_accounts,
+        gh_present,
+    })
+}
+
+/// One `git config --global --get`. A missing key is `None`, not an error.
+async fn global_config(
+    git: &std::path::Path,
+    cwd: &std::path::Path,
+    key: &str,
+) -> Option<String> {
+    crate::git::git_output_public(git, cwd, &["config", "--global", "--get", key])
+        .await
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// `gh auth status`, parsed.
+///
+/// Not through `gh_json`: that one is repo-scoped — it resolves a slug and passes
+/// `--repo` — and this question is about the machine. Failure of any kind yields no
+/// accounts, which the page renders as "gh is not signed in".
+async fn gh_auth_accounts(tc: &crate::toolchain::Toolchain) -> Vec<crate::accounts::GhAccount> {
+    let Some(gh) = tc.path("gh").cloned() else {
+        return Vec::new();
+    };
+    let mut cmd = tokio::process::Command::new(&gh);
+    crate::platform::hide_console(&mut cmd);
+    cmd.args(["auth", "status"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    crate::git::harden(&mut cmd);
+    tc.apply_path(&mut cmd);
+
+    let out = match tokio::time::timeout(Duration::from_secs(10), cmd.output()).await {
+        Ok(Ok(o)) => o,
+        _ => return Vec::new(),
+    };
+    // gh writes this to stdout on success and stderr on some versions; read both
+    // rather than guessing, since the parser ignores anything it does not recognise.
+    let mut text = String::from_utf8_lossy(&out.stdout).into_owned();
+    text.push('\n');
+    text.push_str(&String::from_utf8_lossy(&out.stderr));
+    crate::accounts::parse_gh_accounts(&text)
+}
+
+/// What the app would write into `~/.ssh/config`, and what is there now.
+///
+/// A preview command rather than a silent write, because this is the one thing
+/// here that edits a file the user also edits by hand — and the file in question is
+/// what a machine's access to everything runs through. The page shows both halves
+/// and asks; `apply_ssh_config` is the only thing that touches the disk.
+#[tauri::command]
+pub async fn preview_ssh_config(
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<crate::model::SshConfigPreview> {
+    let cfg = state.config();
+    let path = ssh_config_path()?;
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let block = crate::accounts::ssh_config_block(&cfg.git_accounts);
+    let entries = crate::accounts::parse_ssh_config(&existing);
+
+    let proposed = if block.trim().is_empty() {
+        crate::accounts::strip_ssh_config(&existing)
+    } else {
+        crate::accounts::splice_ssh_config(&existing, &block)
+    };
+
+    Ok(match proposed {
+        Ok(next) => crate::model::SshConfigPreview {
+            path: path.display().to_string(),
+            exists: path.is_file(),
+            managed: block.trim().to_string(),
+            // Nothing to do is worth saying explicitly: the button is disabled and
+            // the page says why, rather than offering a write that changes nothing.
+            changed: next != existing,
+            error: None,
+            entries,
+        },
+        Err(e) => crate::model::SshConfigPreview {
+            path: path.display().to_string(),
+            exists: path.is_file(),
+            managed: block.trim().to_string(),
+            changed: false,
+            error: Some(e),
+            entries,
+        },
+    })
+}
+
+/// Writes the managed block. Everything outside the markers is copied through.
+///
+/// Backs the file up once per write and creates it 0600 if it is missing — ssh
+/// refuses to read a config anyone else can write, so getting the mode wrong here
+/// would break every connection on the machine rather than just this feature.
+#[tauri::command]
+pub async fn apply_ssh_config(state: State<'_, Arc<AppState>>) -> AppResult<String> {
+    let cfg = state.config();
+    let path = ssh_config_path()?;
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let block = crate::accounts::ssh_config_block(&cfg.git_accounts);
+
+    let next = if block.trim().is_empty() {
+        crate::accounts::strip_ssh_config(&existing)
+    } else {
+        crate::accounts::splice_ssh_config(&existing, &block)
+    }
+    .map_err(AppError::Invalid)?;
+
+    if next == existing {
+        return Ok(path.display().to_string());
+    }
+
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)
+            .map_err(|e| AppError::Invalid(format!("could not create {}: {e}", dir.display())))?;
+    }
+    // One backup per write, overwritten each time: the point is "undo the change I
+    // just made", not a history — and a directory filling with dated copies of an
+    // ssh config is its own problem.
+    if !existing.is_empty() {
+        let backup = path.with_extension("work-alley.bak");
+        let _ = std::fs::write(&backup, &existing);
+    }
+
+    std::fs::write(&path, &next)
+        .map_err(|e| AppError::Invalid(format!("could not write {}: {e}", path.display())))?;
+    restrict_permissions(&path);
+
+    Ok(path.display().to_string())
+}
+
+fn ssh_config_path() -> AppResult<std::path::PathBuf> {
+    let home = crate::platform::home_dir()
+        .ok_or_else(|| AppError::Invalid("no home directory".into()))?;
+    Ok(home.join(".ssh").join("config"))
+}
+
+/// 0600 on unix. ssh ignores — and complains about — a config that is group or
+/// world writable, so a file created with the default umask can be worse than none.
+#[cfg(unix)]
+fn restrict_permissions(path: &std::path::Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+}
+
+/// Windows inherits the parent directory's ACL, which for a per-user profile folder
+/// is already the right answer.
+#[cfg(not(unix))]
+fn restrict_permissions(_path: &std::path::Path) {}
+
+/// Adds or updates one account. Persisted immediately, like every other config write.
+///
+/// Not gated behind `prepare_action`: this writes the app's own JSON and runs no
+/// process. Applying an account — the part that touches `~/.gitconfig` and gh — is
+/// `ActionSpec::UseGitAccount`, and that does go through the gate.
+#[tauri::command]
+pub async fn save_git_account(
+    account: crate::accounts::GitAccount,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<crate::accounts::AccountsView> {
+    let mut cleaned = crate::accounts::clean(&account).map_err(AppError::Invalid)?;
+    let mut cfg = state.config();
+
+    match cfg.git_accounts.iter().position(|a| a.id == cleaned.id) {
+        Some(i) => cfg.git_accounts[i] = cleaned,
+        None => {
+            // A new account whose generated id collides with an existing one — two
+            // accounts both labelled "Work" — must not overwrite it.
+            let taken: Vec<String> = cfg.git_accounts.iter().map(|a| a.id.clone()).collect();
+            cleaned.id = crate::accounts::unique_id(&cleaned.label, &taken);
+            cfg.git_accounts.push(cleaned);
+        }
+    }
+
+    let _ = cfg.save(&state.app_dir());
+    state.set_config(cfg);
+    list_git_accounts(state).await
+}
+
+/// Forgets an account. Touches no git config: what is on the machine stays.
+#[tauri::command]
+pub async fn delete_git_account(
+    id: String,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<crate::accounts::AccountsView> {
+    let mut cfg = state.config();
+    cfg.git_accounts.retain(|a| a.id != id);
+    let _ = cfg.save(&state.app_dir());
+    state.set_config(cfg);
+    list_git_accounts(state).await
 }
 
 /// Re-runs the toolchain probe and republishes the result.
@@ -5707,5 +6071,24 @@ on:
         assert!(posix()
             .file_argv(std::path::Path::new("/w/scripts/deploy.sh"), &[])
             .is_some());
+    }
+
+    #[test]
+    fn onboarding_is_over_once_the_config_says_so() {
+        assert!(!onboarding_state(false, false, false));
+        assert!(onboarding_state(false, false, true));
+        // The flag is off, so the in-process bit is not consulted at all: the saved
+        // config is the whole answer.
+        assert!(!onboarding_state(false, true, false));
+    }
+
+    #[test]
+    fn forcing_first_run_still_lets_the_screen_be_left() {
+        // The bug this exists for: with the flag on, a saved config was ignored —
+        // correct, that is the point — but so was pressing Done, so the takeover
+        // returned immediately and its exit could not be reviewed at all.
+        assert!(!onboarding_state(true, false, true));
+        assert!(onboarding_state(true, true, true));
+        assert!(onboarding_state(true, true, false));
     }
 }

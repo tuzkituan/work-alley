@@ -1,3 +1,4 @@
+mod accounts;
 mod ansi;
 mod autofetch;
 mod chores;
@@ -276,6 +277,12 @@ pub fn run() {
             commands::list_setup_plan,
             commands::refresh_toolchain,
             commands::complete_onboarding,
+            commands::forget_recent_root,
+            commands::list_git_accounts,
+            commands::save_git_account,
+            commands::delete_git_account,
+            commands::preview_ssh_config,
+            commands::apply_ssh_config,
             commands::preview_checkout,
             commands::list_pull_requests,
             commands::list_workflows,

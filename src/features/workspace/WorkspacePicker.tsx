@@ -89,8 +89,22 @@ function useSwitchWorkspace() {
     onSuccess: apply,
     onError: report,
   })
+  const forget = useMutation({
+    mutationFn: (path: string) => api.forgetRecentRoot(path),
+    onSuccess: apply,
+    onError: (e: unknown) => {
+      const msg = e instanceof IpcError || e instanceof Error ? e.message : String(e)
+      toast.error('Could not forget that folder', { description: msg })
+    },
+  })
 
-  return { pick, set, close, busy: pick.isPending || set.isPending || close.isPending }
+  return {
+    pick,
+    set,
+    close,
+    forget,
+    busy: pick.isPending || set.isPending || close.isPending,
+  }
 }
 
 /**
@@ -100,16 +114,16 @@ function useSwitchWorkspace() {
  * a chevron, which did not read as something you could click — the most
  * important control in the header was effectively invisible.
  */
-export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
-  const { pick, set, close, busy } = useSwitchWorkspace()
-  const home = boot?.homeDir ?? null
-  const current = boot?.workspaceRoot ?? ''
-  const recents = (boot?.recentRoots ?? []).filter((r) => r !== current)
-  // The folder name alone is enough here; the full path is on hover and in the menu.
-  const name = baseName(current) ?? 'no workspace'
-
-  // ⌘O / Ctrl+O is the conventional "open" shortcut, and makes this reachable
-  // without hunting for the control at all.
+/**
+ * ⌘O / Ctrl+O — the conventional "open" shortcut.
+ *
+ * Mounted by the top bar rather than by the switcher, because the switcher is
+ * hidden when no workspace is open and that is exactly when opening one matters
+ * most. It used to live inside the switcher, so hiding that control silently took
+ * the shortcut with it.
+ */
+export function useOpenFolderKey() {
+  const { pick } = useSwitchWorkspace()
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'o' && (e.metaKey || e.ctrlKey)) {
@@ -120,6 +134,15 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [pick])
+}
+
+export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
+  const { pick, set, close, forget, busy } = useSwitchWorkspace()
+  const home = boot?.homeDir ?? null
+  const current = boot?.workspaceRoot ?? ''
+  const recents = (boot?.recentRoots ?? []).filter((r) => r !== current)
+  // The folder name alone is enough here; the full path is on hover and in the menu.
+  const name = baseName(current) ?? 'no workspace'
 
   return (
     <DropdownMenu>
@@ -150,9 +173,35 @@ export function WorkspaceSwitcher({ boot }: { boot: Bootstrap | undefined }) {
               Recent
             </DropdownMenuLabel>
             {recents.map((r) => (
-              <DropdownMenuItem key={r} onClick={() => set.mutate(r)} className="font-mono text-xs">
-                <span className="truncate">{shortenHome(r, home)}</span>
-              </DropdownMenuItem>
+              // Not a DropdownMenuItem: the row has two actions now, and an item
+              // swallows the click for whichever one you pressed. The × is
+              // hover-only — a column of them beside eight paths is more furniture
+              // than the paths.
+              <div
+                key={r}
+                className="group flex items-center gap-1 rounded-sm px-2 py-1.5 hover:bg-accent"
+              >
+                <button
+                  type="button"
+                  onClick={() => set.mutate(r)}
+                  className="min-w-0 flex-1 truncate text-left font-mono text-xs"
+                  title={r}
+                >
+                  {shortenHome(r, home)}
+                </button>
+                <button
+                  type="button"
+                  aria-label={`Forget ${r}`}
+                  title="Forget this folder. Nothing on disk is deleted."
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    forget.mutate(r)
+                  }}
+                  className="hidden flex-none text-adaptive-400 group-hover:block hover:text-adaptive-900"
+                >
+                  <X className="size-3" />
+                </button>
+              </div>
             ))}
           </>
         )}

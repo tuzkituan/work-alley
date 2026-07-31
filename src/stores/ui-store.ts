@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import { persist } from 'zustand/middleware'
 import type { Category, NeedsYouKind, RepoId } from '@/domain/types'
+import { COLUMNS, DEFAULT_COLUMNS, type ColumnId } from '@/features/repos/columns'
 
 /** Cards read well for a handful of repos; 43 of them need a table. */
 export type ViewMode = 'cards' | 'list'
@@ -36,7 +37,7 @@ export type Skin = (typeof SKINS)[number]
  * detail page already shows per repo, and a container list a `docker ps` already
  * answers, so the strip that switched between them was two clicks to nothing.
  */
-export type Page = 'repos' | 'toolbox' | 'setup' | 'settings'
+export type Page = 'repos' | 'toolbox' | 'setup' | 'settings' | 'accounts'
 
 /**
  * The UI font choices, and the stack each one resolves to.
@@ -264,6 +265,15 @@ interface UiState {
    * default, so nobody who does not want this has to know it exists.
    */
   paneTheme: PaneTheme
+  /**
+   * Which repo-table columns the user wants. See `features/repos/columns.ts`.
+   *
+   * A wish, not the truth: a narrow table drops columns from this set to make the
+   * row fit, and never adds one back. Stored as a full record rather than a list of
+   * enabled ids so a build that adds a column can give it a default without a
+   * migration — an unknown key is simply ignored, a missing one falls back.
+   */
+  columns: Record<ColumnId, boolean>
   /** UI typeface. Written to `--font-sans`; see `applyToDom`. */
   uiFont: UiFont
   /** Monospace typeface, for the output pane, the terminal and every numeric column. */
@@ -292,6 +302,8 @@ interface UiState {
   setTermFontSize(size: number): void
   /** Clamped to ZOOM_MIN..ZOOM_MAX and rounded to the step. */
   setPaneTheme(theme: PaneTheme): void
+  setColumn(id: ColumnId, on: boolean): void
+  resetColumns(): void
   setZoom(zoom: number): void
   /** One step out or in. `dir` is +1 or -1. */
   nudgeZoom(dir: 1 | -1): void
@@ -340,6 +352,7 @@ export function migrateUiState(persisted: unknown) {
     termFontSize?: unknown
     zoom?: unknown
     paneTheme?: unknown
+    columns?: unknown
     detailHeaderCollapsed?: unknown
     allRepos?: unknown
     uiFont?: unknown
@@ -368,6 +381,10 @@ export function migrateUiState(persisted: unknown) {
     // Validated against the list like `skin`. A blob with no key lands on 'app',
     // which is the behaviour every build before this one had.
     paneTheme: PANE_THEMES.includes(p.paneTheme as PaneTheme) ? (p.paneTheme as PaneTheme) : 'app',
+    // Merged over the defaults rather than trusted: a blob written before a column
+    // existed has no key for it, and one written after it was removed has a key
+    // nothing reads. Both are normal across an upgrade.
+    columns: { ...DEFAULT_COLUMNS, ...pickColumns(p.columns) },
     detailHeaderCollapsed: p.detailHeaderCollapsed === true,
     // Validated against the tables, exactly like `skin`: an id from a build that
     // shipped a family this one does not lands on the default rather than on a
@@ -380,6 +397,17 @@ export function migrateUiState(persisted: unknown) {
     expandedCategoryRoot:
       typeof p.expandedCategoryRoot === 'string' ? p.expandedCategoryRoot : null,
   }
+}
+
+/** Only known ids, only booleans. Everything else in the blob is dropped. */
+function pickColumns(raw: unknown): Partial<Record<ColumnId, boolean>> {
+  if (!raw || typeof raw !== 'object') return {}
+  const out: Partial<Record<ColumnId, boolean>> = {}
+  for (const c of COLUMNS) {
+    const v = (raw as Record<string, unknown>)[c.id]
+    if (typeof v === 'boolean') out[c.id] = v
+  }
+  return out
 }
 
 export const useUiStore = create<UiState>()(
@@ -404,6 +432,7 @@ export const useUiStore = create<UiState>()(
       termFontSize: 12,
       zoom: 1,
       paneTheme: 'app',
+      columns: DEFAULT_COLUMNS,
       uiFont: 'archivo',
       monoFont: 'jetbrains',
       expandedCategoryRoot: null,
@@ -419,6 +448,8 @@ export const useUiStore = create<UiState>()(
       setSkin: (skin) => set({ skin }),
       setTermFontSize: (size) => set({ termFontSize: Math.min(20, Math.max(8, size)) }),
       setPaneTheme: (paneTheme) => set({ paneTheme }),
+      setColumn: (id, on) => set((s) => ({ columns: { ...s.columns, [id]: on } })),
+      resetColumns: () => set({ columns: DEFAULT_COLUMNS }),
       setZoom: (zoom) => set({ zoom: clampZoom(zoom) }),
       nudgeZoom: (dir) => set((s) => ({ zoom: clampZoom(s.zoom + dir * ZOOM_STEP) })),
       setUiFont: (uiFont) => set({ uiFont }),
@@ -516,6 +547,7 @@ export const useUiStore = create<UiState>()(
         termFontSize: s.termFontSize,
         zoom: s.zoom,
         paneTheme: s.paneTheme,
+        columns: s.columns,
         uiFont: s.uiFont,
         monoFont: s.monoFont,
         detailHeaderCollapsed: s.detailHeaderCollapsed,
@@ -524,7 +556,7 @@ export const useUiStore = create<UiState>()(
       // an older build is still merged over the defaults on load, keys and all. So
       // the version is bumped whenever the shape changes, and `migrate` rebuilds the
       // state from scratch rather than trusting whatever was stored.
-      version: 13,
+      version: 14,
       migrate: migrateUiState,
     }
   )

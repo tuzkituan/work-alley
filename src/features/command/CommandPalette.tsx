@@ -14,6 +14,7 @@ import { useScanStore } from '@/stores/scan-store'
 import { useRunAction } from '@/hooks/use-action'
 import { useSkin, useTheme } from '@/hooks/use-theme'
 import { shortenHome, useHomeDir, useWorkspaceActions } from '@/features/workspace/WorkspacePicker'
+import { useTerminalStore } from '@/stores/terminal-store'
 
 /**
  * cmdk's default scorer is wrong for repo names: in a workspace where most names
@@ -245,6 +246,7 @@ export function CommandPalette({ boot }: { boot: Bootstrap | undefined }) {
               value="action:terminal"
               onSelect={() => {
                 setOpen(false)
+                useTerminalStore.getState().requestFocus()
                 run({ kind: 'openShell', ref: null })
               }}
             >
