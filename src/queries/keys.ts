@@ -8,6 +8,9 @@ export const keys = {
   setupPlan: ['setupPlan'] as const,
   stacks: ['stacks'] as const,
   gitAccounts: ['gitAccounts'] as const,
+  // Flat: exactly one project is configured at a time, same shape as `gitAccounts`.
+  githubProjectItems: ['githubProjectItems'] as const,
+  githubProjects: (owner: string) => ['githubProjects', owner] as const,
   sshConfig: ['sshConfig'] as const,
   checkoutPreview: (scope: string, branch: string) =>
     ['checkoutPreview', scope, branch] as const,

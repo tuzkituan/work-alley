@@ -11,8 +11,10 @@ import type {
   CommitEntry,
   ConfigPatch,
   DepUpdateReport,
+  GithubProjectListResult,
   PackageStatus,
   PackageVersion,
+  ProjectItemsResult,
   PullRequestsResult,
   Config,
   DevServer,
@@ -161,6 +163,11 @@ export const api = {
     call<PackageVersion[]>('list_dep_versions', { repo, package: pkg }),
 
   listPullRequests: (repo: RepoRef) => call<PullRequestsResult>('list_pull_requests', { repo }),
+  /** The configured GitHub Projects v2 board's items. Reads Config itself — no args. */
+  listGithubProjectItems: () => call<ProjectItemsResult>('list_github_project_items'),
+  /** Projects for one owner, for the Settings picker. */
+  listGithubProjects: (owner: string) =>
+    call<GithubProjectListResult>('list_github_projects', { owner }),
   /** Every workflow the repo defines, including disabled ones. Read-only. */
   listWorkflows: (repo: RepoRef) => call<WorkflowsResult>('list_workflows', { repo }),
   /**

@@ -15,6 +15,7 @@ import {
   type MonoFont,
   type UiFont,
 } from '@/stores/ui-store'
+import { GithubProjectSetting } from '@/features/github-projects/GithubProjectSetting'
 import { NumberField, Section, Segmented, SettingRow } from './sections'
 import { useConfig, useSetConfig } from './use-config'
 
@@ -233,6 +234,10 @@ export function SettingsPage() {
               ]}
             />
           </SettingRow>
+        </Section>
+
+        <Section title="GitHub Projects">
+          <GithubProjectSetting />
         </Section>
 
         <Section title="Scanning">

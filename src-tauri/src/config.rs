@@ -1,7 +1,21 @@
 use crate::paths::is_workspace;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
+
+/// Distinguishes "field absent" from "field present as `null`" for an
+/// `Option<Option<T>>` patch field — plain serde collapses a JSON `null` into
+/// the outer `None` either way, making `Some(None)` ("explicitly clear")
+/// unreachable. Paired with `#[serde(default)]`, which supplies the true
+/// "absent" case, since this function only runs when the key is present at
+/// all.
+fn deserialize_some<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    T: Deserialize<'de>,
+    D: Deserializer<'de>,
+{
+    Ok(Some(Option::deserialize(deserializer)?))
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -39,6 +53,13 @@ pub struct Config {
     /// override of one that does.
     #[serde(default)]
     pub preferred_package_manager: Option<String>,
+    /// The GitHub Projects v2 board this workspace treats as its orchestrator.
+    ///
+    /// `None` — the default — means no board is picked yet, which the Projects
+    /// page renders as an explicit "choose one in Settings" state rather than an
+    /// error. See `github_projects.rs`.
+    #[serde(default)]
+    pub github_project: Option<crate::model::GithubProjectRef>,
     /// Open the folder that was open when the app last quit, instead of the picker.
     ///
     /// On by default. The cost is real — launching goes straight into a scan of the
@@ -111,6 +132,7 @@ impl Config {
             max_log_lines_per_run: 5_000,
             auto_fetch_minutes: default_auto_fetch_minutes(),
             preferred_package_manager: None,
+            github_project: None,
             reopen_last_workspace: default_reopen_last_workspace(),
             recent_roots: Vec::new(),
             stacks: Vec::new(),
@@ -196,7 +218,11 @@ pub struct ConfigPatch {
     pub auto_fetch_minutes: Option<u64>,
     pub reopen_last_workspace: Option<bool>,
     /// `Some(None)` clears the choice, i.e. back to auto-detect.
+    #[serde(default, deserialize_with = "deserialize_some")]
     pub preferred_package_manager: Option<Option<String>>,
+    /// `Some(None)` clears the choice, i.e. back to unconfigured.
+    #[serde(default, deserialize_with = "deserialize_some")]
+    pub github_project: Option<Option<crate::model::GithubProjectRef>>,
     pub dev_command_overrides: Option<BTreeMap<String, Vec<String>>>,
     pub port_overrides: Option<BTreeMap<String, u16>>,
     /// Replaces the list wholesale; an empty vec is a real value meaning "show me
@@ -263,6 +289,11 @@ impl ConfigPatch {
             c.preferred_package_manager = v.filter(|m| {
                 matches!(m.as_str(), "bun" | "pnpm" | "yarn" | "npm")
             });
+        }
+        if let Some(v) = self.github_project {
+            // A blank owner is a half-filled form, not a choice — treat it as
+            // "unconfigured" rather than saving something no fetch could ever use.
+            c.github_project = v.filter(|p| !p.owner.trim().is_empty());
         }
         if let Some(v) = self.dev_command_overrides {
             c.dev_command_overrides = v;
@@ -426,6 +457,46 @@ mod tests {
         }
         .apply(&mut c);
         assert_eq!(c.preferred_package_manager, None, "back to auto");
+    }
+
+    /// The regression the test above cannot catch: it builds `ConfigPatch` as a
+    /// Rust struct literal, which trivially supports `Some(None)` since that's
+    /// just construction, not parsing. In production `ConfigPatch` only ever
+    /// arrives via `serde_json` over IPC, and plain serde collapses a JSON
+    /// `null` into the *outer* `None` of a nested `Option<Option<T>>` — so
+    /// `{"preferredPackageManager": null}` deserialized to `None` (same as the
+    /// key being absent), and Settings' "auto" option silently failed to clear
+    /// a previously chosen package manager. `deserialize_some` fixes this; this
+    /// test pins the fix at the actual JSON boundary.
+    #[test]
+    fn a_json_null_clears_through_deserialize_not_just_through_construction() {
+        let mut c = Config::defaults(PathBuf::from("/tmp/ws"));
+
+        let set: ConfigPatch = serde_json::from_str(r#"{"preferredPackageManager":"pnpm"}"#)
+            .unwrap();
+        set.apply(&mut c);
+        assert_eq!(c.preferred_package_manager.as_deref(), Some("pnpm"));
+
+        // The key absent entirely: must leave the stored value alone.
+        let untouched: ConfigPatch = serde_json::from_str(r#"{"staleDays":30}"#).unwrap();
+        untouched.apply(&mut c);
+        assert_eq!(c.preferred_package_manager.as_deref(), Some("pnpm"));
+
+        // The key present as JSON `null`: must clear it, not leave it alone.
+        let clear: ConfigPatch =
+            serde_json::from_str(r#"{"preferredPackageManager":null}"#).unwrap();
+        clear.apply(&mut c);
+        assert_eq!(c.preferred_package_manager, None, "back to auto");
+
+        // Same story for githubProject, added alongside this fix.
+        c.github_project = Some(crate::model::GithubProjectRef {
+            owner: "octocat".into(),
+            number: 1,
+        });
+        let clear_project: ConfigPatch =
+            serde_json::from_str(r#"{"githubProject":null}"#).unwrap();
+        clear_project.apply(&mut c);
+        assert_eq!(c.github_project, None, "back to unconfigured");
     }
 
     #[test]

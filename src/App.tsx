@@ -22,6 +22,7 @@ import { SetupPage } from '@/features/setup/SetupPage'
 import { LauncherPage } from '@/features/launcher/LauncherPage'
 import { SettingsPage } from '@/features/settings/SettingsPage'
 import { GitAccountsPage } from '@/features/accounts/GitAccountsPage'
+import { GithubProjectsPage } from '@/features/github-projects/GithubProjectsPage'
 import { MachinePage } from '@/features/setup/MachinePage'
 import { shouldOnboard } from '@/features/setup/should-onboard'
 import { useUiStore } from '@/stores/ui-store'
@@ -217,7 +218,13 @@ function Dashboard() {
     //
     // Checked before `hasWorkspace` on purpose: that is what makes Guided setup
     // reachable from the workspace picker on a machine that cannot clone yet.
-    if (page === 'toolbox' || page === 'setup' || page === 'settings' || page === 'accounts') {
+    if (
+      page === 'toolbox' ||
+      page === 'setup' ||
+      page === 'settings' ||
+      page === 'accounts' ||
+      page === 'projects'
+    ) {
       return (
         <TooltipProvider delayDuration={400}>
           <div className="flex h-full flex-col overflow-hidden border border-adaptive-200 bg-background text-adaptive-900">
@@ -232,6 +239,8 @@ function Dashboard() {
                   <SettingsPage />
                 ) : page === 'accounts' ? (
                   <GitAccountsPage />
+                ) : page === 'projects' ? (
+                  <GithubProjectsPage />
                 ) : (
                   <Toolbox toolsReady={boot?.toolsReady ?? false} />
                 )}

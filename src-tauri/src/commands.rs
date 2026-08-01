@@ -4482,6 +4482,30 @@ pub async fn list_pull_requests(
     })
 }
 
+/// The configured GitHub Projects v2 board's items, for the Projects page.
+/// Read-only. Takes no repo/owner — reads `Config::github_project` itself, so
+/// the frontend just asks for "the board" once one has been picked in Settings.
+#[tauri::command]
+pub async fn list_github_project_items(
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<ProjectItemsResult> {
+    let Some(project) = state.config().github_project else {
+        return Ok(ProjectItemsResult::NotConfigured);
+    };
+    let tc = state.toolchain();
+    Ok(crate::github_projects::fetch_items(&tc, &project).await)
+}
+
+/// Projects for one owner, for the Settings page's project picker. Read-only.
+#[tauri::command]
+pub async fn list_github_projects(
+    owner: String,
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<GithubProjectListResult> {
+    let tc = state.toolchain();
+    Ok(crate::github_projects::list_projects(&tc, &owner).await)
+}
+
 /// Cached for the process lifetime — the login does not change while running.
 async fn gh_current_user(gh: &std::path::Path, tc: &crate::toolchain::Toolchain) -> Option<String> {
     use std::sync::OnceLock;

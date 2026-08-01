@@ -15,6 +15,7 @@ mod error;
 mod events;
 mod gate;
 mod git;
+mod github_projects;
 mod model;
 mod packages;
 mod paths;
@@ -289,6 +290,8 @@ pub fn run() {
             commands::preview_checkout,
             commands::list_pull_requests,
             commands::list_workflows,
+            commands::list_github_project_items,
+            commands::list_github_projects,
             commands::list_workflow_runs,
             commands::workflow_dispatch_inputs,
             commands::list_changed_files,
