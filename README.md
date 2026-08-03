@@ -23,12 +23,12 @@ Grab the latest build from the [Releases page](https://github.com/lewisnguyen280
 | `.deb` | Debian, Ubuntu and derivatives |
 | `.rpm` | Fedora, RHEL, openSUSE |
 | `.AppImage` | any other Linux — no install, just `chmod +x` and run |
-| `.exe` | Windows, per-user install |
-| `.msi` | Windows, for deployment tooling |
+| `.exe` | Windows, per-user install — when a build is attached |
 
 The Linux packages declare `webkit2gtk 4.1` and `GTK 3` as dependencies, so your
-package manager pulls them in. The Windows installers fetch the WebView2 runtime if it
-is missing. They are unsigned, so SmartScreen warns on first run.
+package manager pulls them in. The Windows installer fetches the WebView2 runtime if it
+is missing; it is unsigned, so SmartScreen warns on first run, and it is cross-built
+from Linux rather than tested on Windows — see `docs/windows-support-plan.md`.
 
 ```bash
 sudo apt install ./work-alley_0.1.0_amd64.deb      # Debian / Ubuntu
@@ -239,14 +239,25 @@ shell.
 
 ### Releasing
 
-Pushing a `v*` tag builds Linux and Windows packages and attaches them to a draft GitHub
-release. Tests run first on both platforms; a red build never ships.
+Packages are built here, not in CI, and uploaded to a draft release. Actions only runs
+the suites (`.github/workflows/ci.yml`); a Tauri bundle is a quarter of an hour per
+platform and produced nothing a local build does not.
 
 ```bash
 npm version patch --no-git-tag-version   # bump package.json…
 # …and src-tauri/tauri.conf.json to match
-git commit -am 'release: v0.1.1' && git tag v0.1.1 && git push --follow-tags
+git commit -am 'release: v0.1.1'
+git tag -a v0.1.1 -m 'Work Alley v0.1.1'   # annotated: --follow-tags skips lightweight ones
+git push --follow-tags
+
+scripts/release.sh                       # test, build, upload — leaves it a draft
+scripts/release.sh --with-windows        # also cross-build the NSIS installer
+gh release edit v0.1.1 --draft=false     # publish when the assets look right
 ```
+
+The script refuses to run on a dirty tree, or when `HEAD` is not the tag it is
+uploading to — a build of uncommitted work attached to a tag that names something else
+is the one mistake nobody would catch later.
 
 ---
 
