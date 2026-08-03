@@ -67,7 +67,14 @@ if $run_tests; then
 fi
 
 log "Building Linux packages"
-bun run tauri build
+# NO_STRIP is not optional on a current distribution. linuxdeploy ships its own
+# ancient binutils, and that `strip` cannot read the `.relr.dyn` sections in
+# Fedora 43's system libraries — it fails on every one of the ~40 libraries it
+# copies into the AppDir and takes the AppImage down with it. The deb and rpm are
+# already built by then, so the failure looks like "two of three packages", which
+# is a confusing way to find out. Nothing is lost by keeping the symbols: this is
+# a debug-symbol strip of *system* libraries, not of the app.
+NO_STRIP=true bun run tauri build
 
 bundle="src-tauri/target/release/bundle"
 artifacts=()
