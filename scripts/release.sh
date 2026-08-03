@@ -113,6 +113,18 @@ fi
 # rather than erroring on a name that is already taken.
 gh release upload "$tag" "${artifacts[@]}" --clobber
 
+# A draft can already hold assets — a half-finished earlier attempt, or a build of
+# a different version someone attached by hand. `--clobber` only replaces names it
+# is uploading, so those survive and the release ships two versions of itself.
+# Reported rather than deleted: this script does not know what it did not upload.
+stale="$(gh release view "$tag" --json assets \
+  --jq "[.assets[].name | select(contains(\"$version\") | not)] | join(\" \")")"
+if [[ -n "$stale" ]]; then
+  printf '\033[33mwarning:\033[0m the draft also holds assets from another version:\n' >&2
+  printf '  %s\n' $stale >&2
+  printf 'Remove with:  gh release delete-asset %s <name> -y\n' "$tag" >&2
+fi
+
 log "Done — the release is a draft"
 gh release view "$tag" --json url --jq .url
 printf 'Publish it with:  gh release edit %s --draft=false\n' "$tag"
