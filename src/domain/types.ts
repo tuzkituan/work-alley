@@ -363,6 +363,8 @@ export interface Config {
    * installed. A repo with a lockfile or a `packageManager` field is unaffected.
    */
   preferredPackageManager: string | null
+  /** The GitHub Projects v2 board this workspace treats as its orchestrator. */
+  githubProject: GithubProjectRef | null
 }
 
 /**
@@ -388,6 +390,8 @@ export interface ConfigPatch {
   portOverrides?: Record<string, number>
   /** Replaces the list. `[]` is a real value: show everything again. */
   stacks?: string[]
+  /** `null` clears the choice, i.e. back to unconfigured. */
+  githubProject?: GithubProjectRef | null
 }
 
 /**
@@ -595,6 +599,60 @@ export type PullRequestsResult =
   | { kind: 'noRemote' }
   | { kind: 'failed'; message: string }
   | { kind: 'ok'; slug: string; prs: PullRequest[]; fetchedUnix: number }
+
+/** Which GitHub Projects v2 board a workspace points at. Persisted in Config. */
+export interface GithubProjectRef {
+  owner: string
+  number: number
+}
+
+export type ProjectItemContentType = 'issue' | 'pullRequest' | 'draftIssue' | 'unknown'
+
+export interface ProjectItem {
+  id: string
+  title: string
+  /** The project's own status field, verbatim — not a fixed set of values. */
+  status: string | null
+  assignees: string[]
+  labels: string[]
+  contentType: ProjectItemContentType
+  /** `"owner/repo"`. Null for a draft issue, which belongs to no repo. */
+  repository: string | null
+  number: number | null
+  url: string | null
+}
+
+export type ProjectItemsResult =
+  | { kind: 'ghMissing' }
+  | { kind: 'notAuthenticated'; message: string }
+  /** gh IS logged in, just lacks the `read:project` scope — a different fix. */
+  | { kind: 'missingScope'; message: string }
+  /** No project has been picked yet in Settings. Not an error. */
+  | { kind: 'notConfigured' }
+  | { kind: 'failed'; message: string }
+  | {
+      kind: 'ok'
+      owner: string
+      number: number
+      projectTitle: string
+      projectUrl: string
+      items: ProjectItem[]
+      fetchedUnix: number
+    }
+
+export interface GithubProjectSummary {
+  number: number
+  title: string
+  url: string
+  closed: boolean
+}
+
+export type GithubProjectListResult =
+  | { kind: 'ghMissing' }
+  | { kind: 'notAuthenticated'; message: string }
+  | { kind: 'missingScope'; message: string }
+  | { kind: 'failed'; message: string }
+  | { kind: 'ok'; projects: GithubProjectSummary[] }
 
 export interface ChangedFile {
   path: string

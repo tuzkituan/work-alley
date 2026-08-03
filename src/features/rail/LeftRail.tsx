@@ -6,6 +6,7 @@ import {
   Folder,
   FolderOpen,
   Layers,
+  LayoutDashboard,
   ListChecks,
   Play,
   Settings,
@@ -136,14 +137,20 @@ export function LeftRail({ boot }: { boot: Bootstrap | undefined }) {
           label="Git accounts"
           title="Switch which identity, ssh key and GitHub login this machine commits with"
         />
-        {/* A rule, because the two above describe this *machine* and this one
-            describes the app. Same control, different subject. */}
+        {/* A rule, because the three above describe this *machine* and the two below
+            describe the app/workspace. Same control, different subject. */}
         <span className="mx-1 my-0.5 h-px bg-adaptive-200" />
         <MachineButton
           page="settings"
           icon={<Settings className="size-3 flex-none" />}
           label="Settings"
           title="Appearance, fonts, scanning and background fetch"
+        />
+        <MachineButton
+          page="projects"
+          icon={<LayoutDashboard className="size-3 flex-none" />}
+          label="Projects"
+          title="A GitHub Projects board spanning every repo in this workspace"
         />
       </div>
 

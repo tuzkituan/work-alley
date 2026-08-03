@@ -662,6 +662,106 @@ pub struct ChangedFile {
     pub deleted: u32,
 }
 
+// --- github projects ---------------------------------------------------------
+
+/// Which GitHub Projects v2 board is configured as the workspace's orchestrator.
+/// Lives in `Config::github_project`. Defined here (a wire type both Rust and
+/// `src/domain/types.ts` share) rather than in `github_projects.rs`, since it
+/// crosses the IPC boundary as-is — unlike `RawProjectItem`, which never leaves
+/// the backend.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubProjectRef {
+    /// A user or org login. Never `"@me"` — resolved to a real login when picked.
+    pub owner: String,
+    pub number: u32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProjectItemContentType {
+    Issue,
+    PullRequest,
+    /// Belongs to no repo — created directly on the board.
+    DraftIssue,
+    /// `gh`'s content `type` was absent or not one of the above. Rendered as a
+    /// plain row rather than guessed into the wrong category.
+    Unknown,
+}
+
+/// One item on a Projects v2 board.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectItem {
+    pub id: String,
+    pub title: String,
+    /// The project's single-select "status"-like field, verbatim — a project's
+    /// status options are its own, so this is never a fixed enum. `None` when the
+    /// project has no such field, or the item hasn't been placed in one.
+    pub status: Option<String>,
+    pub assignees: Vec<String>,
+    pub labels: Vec<String>,
+    pub content_type: ProjectItemContentType,
+    /// `"owner/repo"`. `None` for a draft issue.
+    pub repository: Option<String>,
+    pub number: Option<u64>,
+    pub url: Option<String>,
+}
+
+/// One project in `gh project list`'s output, for the picker.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GithubProjectSummary {
+    pub number: u32,
+    pub title: String,
+    pub url: String,
+    pub closed: bool,
+}
+
+/// Same reasoning as `PullRequestsResult`: `gh` is optional and often
+/// unauthenticated, so absence is data, not an error. Two states have no
+/// analogue there:
+/// - `MissingScope` — gh IS logged in, just lacks `read:project`. A different fix
+///   (`gh auth refresh -s read:project`) than `NotAuthenticated`'s `gh auth login`,
+///   so it needs to render differently, not collapse into it.
+/// - `NotConfigured` — no project has been picked yet. A repo is always askable
+///   once you're looking at it; a project is not askable until chosen.
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum ProjectItemsResult {
+    GhMissing,
+    #[serde(rename_all = "camelCase")]
+    NotAuthenticated { message: String },
+    #[serde(rename_all = "camelCase")]
+    MissingScope { message: String },
+    NotConfigured,
+    #[serde(rename_all = "camelCase")]
+    Failed { message: String },
+    #[serde(rename_all = "camelCase")]
+    Ok {
+        owner: String,
+        number: u32,
+        project_title: String,
+        project_url: String,
+        items: Vec<ProjectItem>,
+        fetched_unix: i64,
+    },
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum GithubProjectListResult {
+    GhMissing,
+    #[serde(rename_all = "camelCase")]
+    NotAuthenticated { message: String },
+    #[serde(rename_all = "camelCase")]
+    MissingScope { message: String },
+    #[serde(rename_all = "camelCase")]
+    Failed { message: String },
+    #[serde(rename_all = "camelCase")]
+    Ok { projects: Vec<GithubProjectSummary> },
+}
+
 // --- repo shape -------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

@@ -37,7 +37,7 @@ export type Skin = (typeof SKINS)[number]
  * detail page already shows per repo, and a container list a `docker ps` already
  * answers, so the strip that switched between them was two clicks to nothing.
  */
-export type Page = 'repos' | 'toolbox' | 'setup' | 'settings' | 'accounts'
+export type Page = 'repos' | 'toolbox' | 'setup' | 'settings' | 'accounts' | 'projects'
 
 /**
  * The UI font choices, and the stack each one resolves to.
