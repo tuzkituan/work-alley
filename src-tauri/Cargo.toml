@@ -1,6 +1,6 @@
 [package]
 name = "work-alley"
-version = "0.1.0"
+version = "0.1.2"
 description = "Work Alley — multi-repo workspace dashboard"
 authors = ["Work Alley"]
 license = "MIT"
