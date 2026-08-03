@@ -55,6 +55,10 @@ export function ScopeTabs({
           <div
             key={o.id ?? ' workspace'}
             data-slot="scope-tab-cell"
+            // The cell, not the label button, is what a skin needs to fill: it is
+            // the full-height surface and it contains the close ×. `aria-selected`
+            // lives on the tab itself, so the state has to be readable out here too.
+            data-selected={selected}
             className={cn(
               'group flex max-w-[12rem] flex-none items-center border-r border-adaptive-200',
               selected

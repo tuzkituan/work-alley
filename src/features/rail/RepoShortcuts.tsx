@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Star, X } from 'lucide-react'
 import { StatusDot } from '@/components/wa/primitives'
 import { derive } from '@/domain/severity'
@@ -39,29 +39,81 @@ export function RepoShortcuts() {
   return (
     <div className="flex flex-col gap-1">
       {pinned.length > 0 && <ShortcutList title="Pinned" repos={pinned} pinned />}
-      {recent.length > 0 && <ShortcutList title="Recent" repos={recent} />}
+      {/* `settle` only on Recent: Pinned is ordered by the user and never reorders
+          itself, so there is nothing there to hold still. */}
+      {recent.length > 0 && <ShortcutList title="Recent" repos={recent} settle />}
     </div>
   )
+}
+
+/**
+ * The order to actually render, which is not always the order in the store.
+ *
+ * Recent is ordered by recency, so opening a repo promotes it to the top — under a
+ * cursor that is still sitting on the row it was in a moment ago. The list shuffles
+ * itself the instant you click it and the next row is somewhere else, which reads
+ * as the click having gone wrong.
+ *
+ * So the new order waits for the pointer to leave. Membership is *not* frozen —
+ * a repo that dropped off the end still disappears and a newcomer still appears at
+ * the bottom — because holding those back would mean rendering a repo that is no
+ * longer in the list at all. It is only the reordering that pauses.
+ */
+function useSettledOrder(repos: RepoRef[], hold: boolean): RepoRef[] {
+  const [held, setHeld] = useState<RepoRef[] | null>(null)
+
+  useEffect(() => {
+    // Snap to the live order the moment the pointer is off the list, and stay
+    // snapped: with no hold there is nothing to reconcile below.
+    if (!hold) setHeld(null)
+  }, [hold, repos])
+
+  // Entering the list captures what is on screen right now. Written in an effect
+  // rather than during render so the capture is the order the user is looking at.
+  useEffect(() => {
+    if (hold) setHeld((prev) => prev ?? repos)
+    // Only on the transition into hold — `repos` changing while held is exactly
+    // what this must not react to.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hold])
+
+  return useMemo(() => {
+    if (!held) return repos
+    const live = new Map(repos.map((r) => [repoId(r), r]))
+    const kept = held.filter((r) => live.has(repoId(r)))
+    const keptIds = new Set(kept.map(repoId))
+    return [...kept, ...repos.filter((r) => !keptIds.has(repoId(r)))]
+  }, [held, repos])
 }
 
 function ShortcutList({
   title,
   repos,
   pinned = false,
+  settle = false,
 }: {
   title: string
   repos: RepoRef[]
   pinned?: boolean
+  /** Hold the order still while the pointer is on the list. See `useSettledOrder`. */
+  settle?: boolean
 }) {
+  const [hovered, setHovered] = useState(false)
+  const shown = useSettledOrder(repos, settle && hovered)
+
   return (
-    <div className="flex flex-col gap-1">
+    <div
+      className="flex flex-col gap-1"
+      onPointerEnter={settle ? () => setHovered(true) : undefined}
+      onPointerLeave={settle ? () => setHovered(false) : undefined}
+    >
       <div className="flex items-center justify-between px-1.5 pb-1">
         <span className="text-[11px] font-bold tracking-[0.06em] text-adaptive-500 uppercase">
           {title}
         </span>
         <span className="wa-num font-mono text-[11px] text-adaptive-400">{repos.length}</span>
       </div>
-      {repos.map((r) => (
+      {shown.map((r) => (
         <ShortcutRow key={repoId(r)} repo={r} pinned={pinned} />
       ))}
     </div>

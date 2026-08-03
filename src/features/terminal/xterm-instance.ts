@@ -29,8 +29,12 @@ interface TermHandle {
   fit: FitAddon
   /** Owned here, never by React. Re-parented, never recreated. */
   root: HTMLDivElement
-  /** Bytes that arrived before the first mount, or while detached. */
+  /** Live bytes arriving while a scrollback restore is in flight. See `holdWrites`. */
   pending: Uint8Array[]
+  /** True while those are being held rather than written. */
+  holding: boolean
+  /** Whether anything has ever been written to this instance. See `hasOutput`. */
+  wrote: boolean
   disposers: (() => void)[]
 }
 
@@ -79,7 +83,15 @@ export function ensureTerm(
   // calls `open` itself, so the emulator is attached exactly one time.
   term.open(root)
 
-  const handle: TermHandle = { term, fit, root, pending: [], disposers: [] }
+  const handle: TermHandle = {
+    term,
+    fit,
+    root,
+    pending: [],
+    holding: false,
+    wrote: false,
+    disposers: [],
+  }
 
   // Wired here rather than in the component so it survives re-parenting.
   handle.disposers.push(
@@ -120,6 +132,57 @@ export function writeToTerm(termId: string, bytes: Uint8Array): void {
     queued.push(bytes)
     return
   }
+  if (handle.holding) {
+    handle.pending.push(bytes)
+    return
+  }
+  handle.wrote = true
+  handle.term.write(bytes)
+}
+
+/** Whether anything has ever reached this instance — live, buffered or restored. */
+export function hasOutput(termId: string): boolean {
+  return cache.get(termId)?.wrote ?? false
+}
+
+/**
+ * Holds live output while a scrollback snapshot is fetched.
+ *
+ * The snapshot is a round trip, and the shell does not stop talking during it. Its
+ * reply then began with a hard reset and was written wholesale — so anything that
+ * arrived in between was wiped, and the restored screen was a picture of the session
+ * as it had been some milliseconds ago with live output stitched around it. That is
+ * the "two things overlapping in one terminal" you see after a reload.
+ *
+ * Holding the live bytes and replaying them *after* the snapshot puts the two in the
+ * only order that reads correctly: history, then what happened since.
+ */
+export function holdWrites(termId: string): void {
+  const handle = cache.get(termId)
+  if (handle) handle.holding = true
+}
+
+/** Writes the held bytes, in arrival order, and goes back to writing live. */
+export function releaseWrites(termId: string): void {
+  const handle = cache.get(termId)
+  if (!handle) return
+  handle.holding = false
+  const queued = handle.pending
+  handle.pending = []
+  for (const chunk of queued) {
+    handle.wrote = true
+    handle.term.write(chunk)
+  }
+}
+
+/** Marks a restore as written, so `hasOutput` covers the snapshot too. */
+export function writeRestored(termId: string, bytes: Uint8Array): void {
+  const handle = cache.get(termId)
+  if (!handle) return
+  // A hard reset first: the snapshot is trimmed at a newline, best effort, so it can
+  // still begin partway through an escape sequence.
+  handle.term.write('\x1bc')
+  handle.wrote = true
   handle.term.write(bytes)
 }
 
@@ -132,7 +195,10 @@ export function drainPending(termId: string): void {
   earlyBytes.delete(termId)
   const handle = cache.get(termId)
   if (!handle) return
-  for (const chunk of queued) handle.term.write(chunk)
+  for (const chunk of queued) {
+    handle.wrote = true
+    handle.term.write(chunk)
+  }
 }
 
 /**

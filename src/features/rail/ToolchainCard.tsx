@@ -14,10 +14,15 @@ import { useUiStore } from '@/stores/ui-store'
  * question with real consequences, and this card is the only place that answers
  * it: each row carries the resolved path in its tooltip.
  *
- * Five rows at rest, because the rail is 214px and this is pinned below a
- * scrolling list. The rest is one click away rather than absent — a missing
- * `gradle` is exactly what you want to see when a chore fails, and hunting for
- * it in the Toolbox is the long way round.
+ * Three rows at rest, because the rail is 214px and this is pinned below a
+ * scrolling list. It was five, and the other two were `gh` and a container
+ * runtime reporting a version number every day of their lives — a card that is
+ * always the same is a card you stop reading. The rest is one click away rather
+ * than absent: a missing `gradle` is exactly what you want to see when a chore
+ * fails, and hunting for it in the Toolbox is the long way round.
+ *
+ * "Three" is a floor, not a cap. Any of the five that is *missing* stays on the
+ * card, because that is the one state worth the row — see `resting`.
  */
 export function ToolchainCard({ boot }: { boot: Bootstrap | undefined }) {
   const [open, setOpen] = useState(false)
@@ -36,7 +41,8 @@ export function ToolchainCard({ boot }: { boot: Bootstrap | undefined }) {
   const runtime = docker?.path ? docker : podman
 
   // The five that decide whether this app can do anything at all: clone, run,
-  // install, talk to GitHub, and start a container.
+  // install, talk to GitHub, and start a container. The first three are the ones
+  // nothing works without, which is why the resting list is cut there.
   const primary: { tool: ToolInfo | undefined; label: string; note?: string }[] = [
     { tool: find('git'), label: 'git' },
     { tool: find('node'), label: 'node' },
@@ -51,7 +57,12 @@ export function ToolchainCard({ boot }: { boot: Bootstrap | undefined }) {
     { tool: runtime, label: runtime?.name ?? 'docker' },
   ]
 
-  const shown = new Set(primary.map((p) => p.label))
+  // `gh` and the container runtime earn their row only by being absent. Everything
+  // present and past the cut moves under the chevron with the other 25.
+  const RESTING = 3
+  const resting = primary.filter((p, i) => i < RESTING || !p.tool?.path)
+
+  const shown = new Set(resting.map((p) => p.label))
   const rest = tools
     .filter((t) => !shown.has(t.name))
     // Found first, then missing; alphabetical within each. A list that reshuffles
@@ -87,7 +98,7 @@ export function ToolchainCard({ boot }: { boot: Bootstrap | undefined }) {
         />
       </button>
 
-      {primary.map((p) => (
+      {resting.map((p) => (
         <ToolRow key={p.label} label={p.label} tool={p.tool} note={p.note} />
       ))}
 

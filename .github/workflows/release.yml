@@ -1,4 +1,4 @@
-# Builds the Linux packages and attaches them to a GitHub release.
+# Builds the Linux and Windows packages and attaches them to a GitHub release.
 #
 # Triggered by pushing a version tag, so the tag is the only thing that decides a
 # release exists — nothing publishes off a branch push by accident.
@@ -26,18 +26,85 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  linux:
-    # Pinned to 22.04, not `ubuntu-latest`. A binary links against the glibc of the
-    # machine that built it, so building on 24.04 would produce packages that refuse
-    # to start on anything older — including current Debian stable.
-    runs-on: ubuntu-22.04
+  # The draft is created once, up front, and its id is handed to the build jobs. If
+  # each platform ran tauri-action's own release creation instead, two jobs starting
+  # at the same time would both find no release and both create one.
+  #
+  # Left as a draft: a release is public the moment it is published, and a human
+  # confirming every artifact is present costs one click.
+  create-release:
+    runs-on: ubuntu-latest
+    outputs:
+      release_id: ${{ steps.create.outputs.release_id }}
+      tag: ${{ steps.tag.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # On a tag push the tag is the ref. On workflow_dispatch there is none, so the
+      # version in package.json names the release instead.
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "tag=${{ github.ref_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=v$(node -p 'require("./package.json").version')" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Idempotent: a re-run against an existing tag reuses the draft rather than
+      # failing, so re-running one platform does not require deleting the release.
+      - name: Create or reuse the draft release
+        id: create
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          cat > notes.md <<'NOTES'
+          Linux packages built on Ubuntu 22.04, Windows installers built on windows-latest.
+
+          - `.deb` — Debian, Ubuntu and derivatives
+          - `.rpm` — Fedora, RHEL and openSUSE
+          - `.AppImage` — everything else, no install required
+          - `.exe` — Windows, per-user install
+          - `.msi` — Windows, for deployment tooling
+
+          The Linux packages declare webkit2gtk 4.1 and GTK 3 as dependencies, so a
+          package manager will pull them in. The Windows installers download the
+          WebView2 runtime if it is missing.
+          NOTES
+
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --draft --title "Work Alley $TAG" --notes-file notes.md
+          fi
+          gh api "repos/${{ github.repository }}/releases/tags/$TAG" \
+            --jq '"release_id=\(.id)"' >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: create-release
+
+    strategy:
+      # One platform failing should not bin the other's artifacts — the draft keeps
+      # whatever succeeded, and the failed platform can be re-run on its own.
+      fail-fast: false
+      matrix:
+        include:
+          # Pinned to 22.04, not `ubuntu-latest`. A binary links against the glibc of
+          # the machine that built it, so building on 24.04 would produce packages
+          # that refuse to start on anything older — including current Debian stable.
+          - os: ubuntu-22.04
+          - os: windows-latest
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
 
       # Tauri v2's Linux prerequisites. `libxdo-dev` is easy to miss and the failure
-      # it causes is a linker error a long way into the build.
+      # it causes is a linker error a long way into the build. Windows needs none of
+      # this — the WebView2 SDK comes from crates and NSIS/WiX are fetched by Tauri.
       - name: Install build dependencies
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
@@ -62,38 +129,29 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+          key: ${{ matrix.os }}
 
       - run: bun install --frozen-lockfile
 
       # Tested before published, deliberately. A tag that ships a red build is worse
-      # than a tag that never appears, and both suites take seconds next to the
-      # release build itself.
+      # than a tag that never appears, and the suites take seconds next to the release
+      # build itself. Run on both platforms: a good part of src-tauri is
+      # `#[cfg(windows)]` and only the Windows runner compiles it.
       - name: Test
         run: |
           bun test
           bun run lint
           cargo test --manifest-path src-tauri/Cargo.toml
 
-      # Builds the deb, rpm and AppImage listed in tauri.conf.json's bundle targets,
-      # then creates the release and uploads them.
+      # Builds whichever of tauri.conf.json's bundle targets apply to this host — deb,
+      # rpm and AppImage on Linux, NSIS and MSI on Windows — and uploads them to the
+      # draft created above.
       #
-      # Left as a draft: a release is public the moment it is published, and a human
-      # confirming the three artifacts are present costs one click. Set
-      # `releaseDraft: false` to publish straight away.
+      # The Windows installers are unsigned, so SmartScreen will warn on first run.
+      # Signing needs a certificate plus a `bundle > windows > certificateThumbprint`
+      # in tauri.conf.json.
       - uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
-          tagName: ${{ github.ref_type == 'tag' && github.ref_name || 'v__VERSION__' }}
-          releaseName: 'Work Alley v__VERSION__'
-          releaseBody: |
-            Linux packages, built on Ubuntu 22.04.
-
-            - `.deb` — Debian, Ubuntu and derivatives
-            - `.rpm` — Fedora, RHEL and openSUSE
-            - `.AppImage` — everything else, no install required
-
-            Both packages declare webkit2gtk 4.1 and GTK 3 as dependencies, so a
-            package manager will pull them in.
-          releaseDraft: true
-          prerelease: false
+          releaseId: ${{ needs.create-release.outputs.release_id }}

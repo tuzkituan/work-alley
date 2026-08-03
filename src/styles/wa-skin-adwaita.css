@@ -439,8 +439,16 @@ html[data-skin='adwaita'] [data-slot='tabs-trigger']::after {
 
 /* The output pane's scope tabs are a different mechanism — a segmented strip along
    an edge — so they keep their inset marker rather than becoming pills. Only the
-   marker colour needs saying; the geometry is already right. */
-html[data-skin='adwaita'] [data-slot='scope-tab'][aria-selected='true'] {
+   fill needs saying; the geometry and the marker colour are already right, the
+   latter because the inset rule resolves through --primary to the GNOME accent.
+
+   On the *cell*, not on `[data-slot='scope-tab']`: the tab is a cell holding two
+   buttons — the label and its close × — and the label button is only as tall as
+   its text inside a centred 28px row. Painting the fill there drew a short white
+   bar floating in the middle of the tab, stopping before the ×, instead of a
+   selected tab. The cell is the full-height surface, and it is where the base
+   layer already puts the selected background and the inset marker. */
+html[data-skin='adwaita'] [data-slot='scope-tab-cell'][data-selected='true'] {
   background-color: var(--wa-surface);
 }
 

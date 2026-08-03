@@ -4,6 +4,8 @@ import { api } from '@/ipc/commands'
 import { IpcError } from '@/ipc/errors'
 import { toolFix } from '@/domain/tool-fix'
 import { useManagerStore } from '@/stores/manager-store'
+import { useRunStore } from '@/stores/run-store'
+import { useTerminalStore } from '@/stores/terminal-store'
 import { useUiStore } from '@/stores/ui-store'
 import { repoId, type ActionIntent, type ActionSpec } from '@/domain/types'
 
@@ -55,6 +57,7 @@ export const useActionStore = create<ActionState>()((set, get) => ({
 
       if (intent.readOnly) {
         // Nothing is mutated, so there is nothing to confirm.
+        armFocus(intent.kind)
         await api.runAction(intent.id)
         set({ pending: false, lastRan: spec })
         return
@@ -118,6 +121,7 @@ export const useActionStore = create<ActionState>()((set, get) => ({
 
     set({ submitting: true })
     try {
+      armFocus(intent.kind)
       await api.runAction(intent.id, typedConfirm)
       consumed.add(intent.id)
       set({ intent: null, spec: null, submitting: false, lastRan: spec })
@@ -142,6 +146,33 @@ export const useActionStore = create<ActionState>()((set, get) => ({
     set({ intent: null, spec: null, submitting: false })
   },
 }))
+
+/**
+ * Kinds that produce neither a run nor a pty tab: they stop something, or hand the
+ * work to a window outside this app. Nothing will arrive to consume a flag armed for
+ * one, and a flag left armed would hand the pane to whatever started next.
+ */
+const NO_OUTPUT_KINDS = new Set(['devStop', 'openShell', 'openInTerminal', 'openInEditor'])
+
+/**
+ * "Show me the thing I just started."
+ *
+ * The pane deliberately does not follow runs around on its own — see the note in
+ * `bridge.ts` — but that rule was written for runs that merely *happen*. One you
+ * pressed a button for is the opposite: pressing Run and then having to find the
+ * output by hand is the whole complaint. This is the one place that knows both that a
+ * user confirmed an action and which surface its output will land on, so it is where
+ * the request is recorded.
+ *
+ * Split by kind because the two surfaces have separate one-shot flags: a `term*`
+ * intent opens a pty tab and emits `term:opened`, everything else emits
+ * `run:started`. Arming the wrong one leaves it set for an unrelated session later.
+ */
+function armFocus(kind: string): void {
+  if (NO_OUTPUT_KINDS.has(kind)) return
+  if (kind.startsWith('term')) useTerminalStore.getState().requestFocus()
+  else useRunStore.getState().requestFocus()
+}
 
 function reportError(e: unknown) {
   if (e instanceof IpcError) {

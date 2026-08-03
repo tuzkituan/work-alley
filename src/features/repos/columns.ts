@@ -93,6 +93,15 @@ export const DEFAULT_COLUMNS: Record<ColumnId, boolean> = {
  */
 const SACRIFICE: ColumnId[] = ['tracked', 'fetched', 'sync', 'dev', 'changes', 'branch']
 
+/**
+ * The tail of `SACRIFICE` that no preference reorders.
+ *
+ * These two are what the list is *read* for, so an opted-in column is promoted over
+ * the ones above them and not over these — a table showing a package version and no
+ * branch is not what anyone meant by ticking a box.
+ */
+const LAST_TO_GO: ColumnId[] = ['changes', 'branch']
+
 /** The width a row needs with these columns on. */
 export function requiredWidth(on: ColumnId[]): number {
   const cols = COLUMNS.filter((c) => on.includes(c.id))
@@ -116,11 +125,36 @@ export function fit(chosen: Record<ColumnId, boolean>, width: number): ColumnId[
   let on = COLUMNS.map((c) => c.id).filter((id) => chosen[id])
   if (width <= 0) return on
 
-  for (const victim of SACRIFICE) {
+  for (const victim of sacrificeOrder(chosen)) {
     if (requiredWidth(on) <= width) break
     on = on.filter((id) => id !== victim)
   }
   return on
+}
+
+/**
+ * `SACRIFICE`, with the columns the user turned on *against the default* moved to
+ * the back of the negotiable part of it.
+ *
+ * Without this, switching on a column that is off by default did nothing at all on
+ * any table narrower than 926px: `tracked` is both the one column that is off by
+ * default and the first one given up for width, so it was dropped again in the same
+ * frame it was chosen. The tick stayed on in the menu — the state was real — and the
+ * table never changed, which is indistinguishable from a broken control.
+ *
+ * Turning a column on is a statement about that column specifically, and the static
+ * order is only a guess at what matters least. So the guess yields — up to
+ * `LAST_TO_GO`, which it does not outrank. Nothing is *added* by this: `fit` still
+ * only ever removes.
+ */
+function sacrificeOrder(chosen: Record<ColumnId, boolean>): ColumnId[] {
+  const optedIn = (id: ColumnId) => chosen[id] && !DEFAULT_COLUMNS[id]
+  const negotiable = SACRIFICE.filter((id) => !LAST_TO_GO.includes(id))
+  return [
+    ...negotiable.filter((id) => !optedIn(id)),
+    ...negotiable.filter(optedIn),
+    ...LAST_TO_GO,
+  ]
 }
 
 /**

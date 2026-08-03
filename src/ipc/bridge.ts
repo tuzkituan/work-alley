@@ -113,7 +113,26 @@ async function wire(qc: QueryClient) {
     // rather than invisible. Additive and idempotent — and an *event*, not a
     // derived value, which is what lets a tab you closed by hand come back when
     // something new starts there rather than the instant a log line arrives.
-    rememberScopes(runScopeKeys(run))
+    //
+    // The run's *own* scope only, not `runScopeKeys` — a bulk run lists every repo
+    // it touches in `targets`, so fetch --all opened a tab per repo in the
+    // workspace and buried the strip. A bulk run has no `ref`, which means the
+    // workspace tab, which is exactly where its log shows up. Membership is still
+    // per-target (`inScope` below, and the pane's own filter): a repo tab blinks
+    // for a bulk run touching it, it just is not conjured into existence by one.
+    rememberScopes([run.ref ? repoId(run.ref) : WORKSPACE_KEY])
+
+    // Asked for by name — you pressed Run, or a script, or Fetch — so show it, scope
+    // and all. That is the exception to the paragraph above, not a reversal of it:
+    // what must not move the pane is a run that merely *arrives*, and this flag is
+    // set only where a user actually confirmed an action. See `armFocus`.
+    if (useRunStore.getState().takeFocusRequest()) {
+      useUiStore.getState().setOutputScope(run.ref ? repoId(run.ref) : null)
+      // `start` above already made it the active run; only the terminal has to be
+      // stood down, since a live shell outranks a run in the view resolution.
+      useTerminalStore.getState().setActive(null)
+      return
+    }
     if (inScope(runScopeKeys(run))) useTerminalStore.getState().setActive(null)
   })
   on('run:output', ({ runId, lines }) => queueFor(runId).pushAll(lines))

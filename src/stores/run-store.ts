@@ -113,6 +113,23 @@ interface RunState {
   exit(runId: string, e: RunExitFields): void
   setActive(runId: string | null): void
   /**
+   * The next run to start was asked for by name, so show it.
+   *
+   * The mirror of `useTerminalStore.requestFocus`, and for the same reason: whether
+   * a run is *the request* is knowledge only the caller has. Pressing Run, or a
+   * script, or Fetch is one — you pressed it to watch it, and having to hunt for its
+   * scope tab afterwards is the bug this closes. A run that merely arrives — the
+   * autofetch, a dev server restarting itself, a replay after reload — is not, and
+   * must not move the pane out from under whatever you are reading.
+   *
+   * Set by `useActionStore` at the point it actually calls `run_action`, not from
+   * the click: a dialog can still be cancelled, and a run that never starts must not
+   * leave the flag armed for the next one.
+   */
+  requestFocus(): void
+  /** Reads and clears the flag. Called once, by the `run:started` handler. */
+  takeFocusRequest(): boolean
+  /**
    * Marks a cancel as requested (or un-requests it, when the IPC call itself failed
    * and nothing is going to arrive to clear the flag).
    */
@@ -122,6 +139,11 @@ interface RunState {
   clear(runId: string): void
   dismiss(runId: string): void
 }
+
+// Module scope, not store state: nothing renders from it, and a `set` here would
+// re-render every subscriber to carry a boolean that lives for one round trip. Same
+// shape as the terminal store's, deliberately.
+let focusRequested = false
 
 export const useRunStore = create<RunState>()((set) => ({
   runs: new Map(),
@@ -297,6 +319,15 @@ export const useRunStore = create<RunState>()((set) => ({
     }),
 
   setActive: (activeRunId) => set({ activeRunId }),
+
+  requestFocus: () => {
+    focusRequested = true
+  },
+  takeFocusRequest: () => {
+    const v = focusRequested
+    focusRequested = false
+    return v
+  },
 
   setCancelling: (runId, cancelling) =>
     set((s) => {

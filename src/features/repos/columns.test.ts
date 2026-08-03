@@ -17,9 +17,27 @@ describe('fit', () => {
 
   it('drops the least useful first, and only as far as it must', () => {
     const width = requiredWidth(['branch', 'changes', 'sync', 'dev'])
-    const on = fit(ALL, width)
-    // `tracked` and `fetched` go before anything that describes the repo itself.
+    const on = fit(DEFAULT_COLUMNS, width)
+    // `fetched` goes before anything that describes the repo itself.
     expect(on).toEqual(['branch', 'changes', 'sync', 'dev'])
+  })
+
+  it('keeps a column the user turned on against the default, and drops another', () => {
+    // The reported bug: ticking `tracked` on a table too narrow for six columns did
+    // nothing, because it was also the first thing given up for width.
+    const chosen = { ...DEFAULT_COLUMNS, tracked: true }
+    const width = requiredWidth(['branch', 'changes', 'sync', 'tracked', 'dev'])
+    const on = fit(chosen, width)
+    expect(on).toContain('tracked')
+    expect(on).not.toContain('fetched')
+  })
+
+  it('still gives up an opted-in column before the row stops making sense', () => {
+    const chosen = { ...DEFAULT_COLUMNS, tracked: true }
+    // Room for one column. `tracked` is promoted over `sync`, `dev` and `fetched`,
+    // never over the two the list is read for.
+    expect(fit(chosen, requiredWidth(['branch']))).toEqual(['branch'])
+    expect(fit(chosen, requiredWidth(['changes', 'branch']))).toEqual(['branch', 'changes'])
   })
 
   it('keeps the name and actions at any width', () => {

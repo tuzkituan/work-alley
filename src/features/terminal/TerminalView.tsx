@@ -4,7 +4,14 @@ import { b64ToBytes } from '@/lib/b64'
 import { useTerminalStore } from '@/stores/terminal-store'
 import { monoFontStack, useUiStore } from '@/stores/ui-store'
 import { buildTermTheme } from './term-theme'
-import { drainPending, ensureTerm } from './xterm-instance'
+import {
+  drainPending,
+  ensureTerm,
+  hasOutput,
+  holdWrites,
+  releaseWrites,
+  writeRestored,
+} from './xterm-instance'
 
 /**
  * How long to wait after the last resize tick before telling the pty.
@@ -74,24 +81,28 @@ export function TerminalView({ termId }: { termId: string }) {
     })
 
     // Only for a session recovered from the backend — one that predates this
-    // webview, whose output was emitted to a frontend that no longer exists.
+    // webview, whose output was emitted to a frontend that no longer exists. And
+    // only when nothing has reached this instance yet: a *brand-new* terminal must
+    // not ask, or the reply lands a round trip later and is written over the prompt
+    // and any keystrokes that arrived live in the meantime.
     //
-    // The buffer check alone was not enough, and got this wrong in the one case that
-    // matters most. A *brand-new* terminal also has an empty buffer, so it asked for
-    // the snapshot too; the reply landed a round trip later and was written over the
-    // prompt and any keystrokes that had arrived live in the meantime. Typing quickly
-    // into a fresh shell duplicated characters.
-    if (restoredRef.current && handle.term.buffer.active.length <= 1) {
+    // `hasOutput` rather than `term.buffer.active.length <= 1`, which was the old
+    // test and was never true of anything: xterm pre-fills the viewport with blank
+    // lines at construction, so the length is the row count from the first frame and
+    // the restore this guards never ran at all.
+    //
+    // Live output is held for the round trip and replayed after the snapshot — see
+    // `holdWrites`. Without that the two interleave and the terminal shows one
+    // session's history tangled through another's output.
+    if (restoredRef.current && !hasOutput(termId)) {
+      holdWrites(termId)
       api
         .termScrollback(termId)
         .then((b64) => {
-          if (!b64) return
-          // A hard reset first: the snapshot is trimmed at a newline, best
-          // effort, so it can still begin partway through an escape sequence.
-          handle.term.write('\x1bc')
-          handle.term.write(b64ToBytes(b64))
+          if (b64) writeRestored(termId, b64ToBytes(b64))
         })
         .catch(() => {})
+        .finally(() => releaseWrites(termId))
     }
 
     return () => {

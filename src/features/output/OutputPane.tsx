@@ -6,7 +6,7 @@ import { api } from '@/ipc/commands'
 import { useRunStore } from '@/stores/run-store'
 import { useScanStore } from '@/stores/scan-store'
 import { useTerminalStore } from '@/stores/terminal-store'
-import { useUiStore } from '@/stores/ui-store'
+import { monoFontStack, useUiStore } from '@/stores/ui-store'
 import { useRunAction } from '@/hooks/use-action'
 import { TerminalView } from '@/features/terminal/TerminalView'
 import { useTermPalette } from '@/features/terminal/use-term-palette'
@@ -52,6 +52,7 @@ export function OutputPane() {
   // Still read here for the +/- controls and the pty geometry estimate; only the
   // *applying* of it moved out.
   const termFontSize = useUiStore((s) => s.termFontSize)
+  const monoFont = useUiStore((s) => s.monoFont)
   const scanRepos = useScanStore((s) => s.repos)
   const bodyRef = useRef<HTMLDivElement>(null)
 
@@ -141,7 +142,9 @@ export function OutputPane() {
       kind: 'openShell',
       ref: scopeRef,
       external,
-      size: estimateGeometry(bodyRef.current, termFontSize),
+      // The same family the instance will be built with, or the cell it is measured
+      // in is not the cell it is drawn in.
+      size: estimateGeometry(bodyRef.current, termFontSize, monoFontStack(monoFont)),
     })
   }
 
