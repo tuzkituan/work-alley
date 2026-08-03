@@ -994,6 +994,73 @@ pub fn parse_tasklist_csv(stdout: &str) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// Every child in the crate is shaped by one of the four functions above.
+    ///
+    /// This is a source-text test rather than a behavioural one because there is no
+    /// way to read creation flags back off a `Command`, and the failure it catches is
+    /// invisible on a Linux dev box and glaring on Windows: a child built by hand,
+    /// with no `CREATE_NO_WINDOW`, flashes a console window per spawn. `autofetch`
+    /// missed it and produced a wall of `git.exe` windows every cycle, one per repo,
+    /// which is what this exists to stop happening a second time.
+    ///
+    /// `detach` counts: a GUI child wants no console flag. So does the ConPTY path in
+    /// `windows.rs`, which owns a pseudoconsole rather than allocating one.
+    #[test]
+    fn every_spawned_child_is_shaped_by_this_module() {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut unshaped: Vec<String> = Vec::new();
+
+        for entry in walk_rs(&dir) {
+            let text = std::fs::read_to_string(&entry).unwrap();
+            let name = entry.file_name().unwrap().to_string_lossy().to_string();
+            // This module defines the shaping, and pty.rs spawns through ConPTY/openpty
+            // rather than through Command.
+            if matches!(name.as_str(), "mod.rs" | "windows.rs" | "unix.rs" | "pty.rs") {
+                continue;
+            }
+
+            let lines: Vec<&str> = text.lines().collect();
+            for (i, line) in lines.iter().enumerate() {
+                // A comment is allowed to name the type it is talking about.
+                if !line.contains("Command::new") || line.trim_start().starts_with("//") {
+                    continue;
+                }
+                // The shaping call sits with the rest of the builder, a handful of
+                // lines at most — args and stdio are all that come between.
+                let end = (i + 25).min(lines.len());
+                let shaped = lines[i..end].iter().any(|l| {
+                    l.contains("hide_console")
+                        || l.contains("new_group")
+                        || l.contains("platform::detach")
+                        || l.contains("git::harden")
+                        || l.contains("harden(&mut")
+                });
+                if !shaped {
+                    unshaped.push(format!("{name}:{}", i + 1));
+                }
+            }
+        }
+
+        assert!(
+            unshaped.is_empty(),
+            "these spawn sites shape no child — call platform::hide_console (or \
+             new_group/detach, or git::harden) on them: {unshaped:?}"
+        );
+    }
+
+    fn walk_rs(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut out = Vec::new();
+        for entry in std::fs::read_dir(dir).unwrap().flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                out.extend(walk_rs(&path));
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                out.push(path);
+            }
+        }
+        out
+    }
+
     #[test]
     fn parses_ss_single_holder() {
         let out = r#"LISTEN 0 511 *:8100 *:* users:(("node",pid=12345,fd=20))"#;

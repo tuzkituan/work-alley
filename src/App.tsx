@@ -100,6 +100,18 @@ function Dashboard() {
     retry: (count, err) =>
       err instanceof IpcError && err.code === 'NOT_READY' ? count < 25 : count < 1,
     retryDelay: 200,
+    // `tools:ready` is emitted once, and the bridge only starts listening after this
+    // query lands — so a probe that finishes before the webview attaches its listener
+    // was missed outright. `toolsReady` then stayed false for the whole session: the
+    // toolchain panel sat on "probing…", every tool read "not found", and the folder
+    // scan never started, which is the "loading forever until Rescan" launch. Polling
+    // until it flips does not depend on catching the event. It stops the moment the
+    // probe has landed, so this is a handful of reads over the first few seconds.
+    refetchInterval: (query) => (query.state.data?.toolsReady ? false : 400),
+    // A window that launched unfocused or hidden still has to finish booting; without
+    // this the interval is paused while the document is hidden and the same stall
+    // comes back for anyone who launches the app into the background.
+    refetchIntervalInBackground: true,
   })
 
   // Fetched once per launch, here rather than where it is used. The repo row menu

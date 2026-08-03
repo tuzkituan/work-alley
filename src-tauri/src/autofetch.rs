@@ -127,6 +127,13 @@ async fn cycle(app: &AppHandle, state: &Arc<AppState>) {
 /// state it could confirm.
 async fn fetch_one(git: &Path, path: &PathBuf) {
     let mut cmd = tokio::process::Command::new(git);
+    // The one git child in the app that was built by hand instead of going through
+    // `harden`, and it cost exactly what that function's comment warns about: on
+    // Windows this process owns no console, so every one of these fetches allocated
+    // its own — a wall of `git.exe` windows appearing every auto-fetch cycle, one per
+    // repo. `harden` is also what pins GIT_SSH_COMMAND to BatchMode, which a
+    // background fetch wants more than anything else here does.
+    crate::git::harden(&mut cmd);
     cmd.current_dir(path)
         .args([
             "fetch",

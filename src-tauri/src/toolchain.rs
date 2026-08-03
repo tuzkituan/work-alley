@@ -321,13 +321,17 @@ async fn collect_from_shell(tc: &mut Toolchain, shell: &std::path::Path, script:
     // -lic: login so profile files apply, interactive so rc files do too. Both are
     // needed in practice — nvm lives in .zshrc, asdf often in .bash_profile.
     for arg in ["-lic", "-lc"] {
-        let fut = tokio::process::Command::new(shell)
-            .arg(arg)
+        let mut cmd = tokio::process::Command::new(shell);
+        cmd.arg(arg)
             .arg(script)
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .output();
+            .stderr(Stdio::null());
+        // A no-op here — this path is `cfg(unix)` — but the rule is "every child in the
+        // crate is shaped", and an exception is how the next hand-built child gets
+        // waved through.
+        crate::platform::hide_console(&mut cmd);
+        let fut = cmd.output();
 
         // An interactive shell can hang on a misbehaving rc; that must not block
         // startup.
