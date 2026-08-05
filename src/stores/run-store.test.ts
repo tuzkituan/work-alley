@@ -234,6 +234,22 @@ describe('a run that continues a finished one', () => {
     expect(s().runs.has('r1')).toBe(false)
   })
 
+  it('keeps the log identity across the re-key, so measured rows stay measured', () => {
+    s().start(summary('r1', 'runScript'))
+    s().append('r1', [line(0, 'a line long enough to wrap')])
+    const logId = s().runs.get('r1')!.logId
+    done('r1')
+
+    s().start(summary('r2', 'runScript'))
+
+    // The lines are the same array with more appended, so the log — and every row
+    // height the view has cached against it — is the same log.
+    expect(s().runs.get('r2')!.logId).toBe(logId)
+    // A clear does replace them, so that is a different log.
+    s().clear('r2')
+    expect(s().runs.get('r2')!.logId).not.toBe(logId)
+  })
+
   it('leaves a live run its own entry', () => {
     s().start(summary('r1', 'devStart'))
     s().append('r1', [line(0, 'listening')])

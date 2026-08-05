@@ -18,6 +18,7 @@ function run(
 ): Run {
   return {
     runId,
+    logId: runId,
     summary: {
       runId,
       kind: 'pull',

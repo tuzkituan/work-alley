@@ -43,8 +43,6 @@ export function LogView({
   // memory, and per-line attribution now arrives from Rust on every bulk run.
   const lines = repoFilter ? run.lines.filter((l) => l.repo === repoFilter) : run.lines
 
-  // Keyed by the line, not by its index.
-  //
   // Rows are *measured* here, because a long line wraps to two or three, and the
   // measurement cache is keyed by whatever this returns. With the default — the
   // index — switching to another run left row 12's 57px cached against row 12 of
@@ -53,9 +51,17 @@ export function LogView({
   //
   // `droppedHead + i` rather than `i`: past 20k lines the head is trimmed and
   // every index shifts, which is the same bug arriving a different way.
+  //
+  // `logId`, not `runId`: this key must change exactly when the line at an index
+  // changes, and no more often. A run that continues a finished one keeps its lines
+  // and takes the new process's id, and keying on that id threw away the heights of
+  // rows that were still on screen — react-virtual only measures on mount or on a
+  // resize, so nothing put them back and every wrapped line collapsed to the 19px
+  // estimate under its neighbour. That is the overlap after "fetch all, then check
+  // out a branch".
   const getItemKey = useCallback(
-    (i: number) => `${run.runId}:${repoFilter ?? ''}:${run.droppedHead + i}`,
-    [run.runId, run.droppedHead, repoFilter]
+    (i: number) => `${run.logId}:${repoFilter ?? ''}:${run.droppedHead + i}`,
+    [run.logId, run.droppedHead, repoFilter]
   )
 
   const virtualizer = useVirtualizer({
@@ -137,7 +143,12 @@ export function LogView({
             const line = lines[vi.index]!
             return (
               <div
-                key={line.seq}
+                // The virtualizer's own key, so React's identity for a row and the
+                // measurement cache's identity for it are the same thing. `line.seq`
+                // is not unique: each process numbers its lines from zero, and a
+                // continued run holds the lines of both — duplicate keys, and React
+                // reconciled two different lines onto one node.
+                key={vi.key}
                 data-index={vi.index}
                 ref={virtualizer.measureElement}
                 className="absolute inset-x-0"

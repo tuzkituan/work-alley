@@ -25,6 +25,21 @@ export const WORKSPACE_KEY = ''
 
 export interface Run {
   runId: string
+  /**
+   * Identity of the *log*, as opposed to of the process.
+   *
+   * Not `runId`: a run that continues a finished one keeps its predecessor's lines
+   * and is re-keyed to the new process id, so `runId` changes under an array that
+   * did not. The virtualized log measures its rows and caches the heights by row
+   * key, and a key built on `runId` invalidated every one of those heights for rows
+   * that were already mounted — nothing re-measures a DOM node that did not change,
+   * so wrapped lines fell back to the one-line estimate and the rows after them
+   * were drawn on top of each other.
+   *
+   * So: a fresh id whenever the array is replaced (a new run, a hydrate, a clear),
+   * carried across unchanged when a run merely continues.
+   */
+  logId: string
   summary: RunSummary
   lines: LogLine[]
   lastSeq: number
@@ -145,6 +160,10 @@ interface RunState {
 // shape as the terminal store's, deliberately.
 let focusRequested = false
 
+/** Backs `Run.logId`. A counter rather than the run id — see that field. */
+let logSeq = 0
+const nextLogId = () => `log${++logSeq}`
+
 export const useRunStore = create<RunState>()((set) => ({
   runs: new Map(),
   order: [],
@@ -175,6 +194,8 @@ export const useRunStore = create<RunState>()((set) => ({
         // would point every one of them at the wrong place.
         runs.delete(prev.runId)
         runs.set(summary.runId, {
+          // `logId` rides along in the spread on purpose: the lines below are the
+          // same array with more appended, so every row measurement stays valid.
           ...prev,
           runId: summary.runId,
           summary,
@@ -204,6 +225,7 @@ export const useRunStore = create<RunState>()((set) => ({
 
       runs.set(summary.runId, {
         runId: summary.runId,
+        logId: nextLogId(),
         summary,
         lines: [],
         lastSeq: -1,
@@ -234,6 +256,7 @@ export const useRunStore = create<RunState>()((set) => ({
       const runs = new Map(s.runs)
       runs.set(summary.runId, {
         runId: summary.runId,
+        logId: nextLogId(),
         summary,
         lines,
         lastSeq: lines.length > 0 ? lines[lines.length - 1]!.seq : -1,
@@ -368,7 +391,9 @@ export const useRunStore = create<RunState>()((set) => ({
       // `lastSeq` is deliberately left alone: live lines still have to pass the
       // `seq > lastSeq` dedupe, so resetting it would let the backend replay
       // everything the user just cleared.
-      runs.set(runId, { ...run, lines: [], droppedHead: 0, cleared: true })
+      // A new `logId`: index 0 is about to mean a different line, so the row
+      // measurements from before the clear must not be reused.
+      runs.set(runId, { ...run, logId: nextLogId(), lines: [], droppedHead: 0, cleared: true })
       return { runs }
     }),
 
