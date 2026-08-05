@@ -245,15 +245,20 @@ platform and produced nothing a local build does not.
 
 ```bash
 npm version patch --no-git-tag-version   # bump package.json…
-# …and src-tauri/tauri.conf.json to match
+# …and src-tauri/tauri.conf.json, src-tauri/Cargo.toml and the lock to match:
+# the Rust version is what `get_bootstrap` reports as the app version in the UI
 git commit -am 'release: v0.1.1'
 git tag -a v0.1.1 -m 'Work Alley v0.1.1'   # annotated: --follow-tags skips lightweight ones
 git push --follow-tags
 
 scripts/release.sh                       # test, build, upload — leaves it a draft
-scripts/release.sh --with-windows        # also cross-build the NSIS installer
+scripts/release.sh --no-windows          # Linux only, if the cross-build is broken
 gh release edit v0.1.1 --draft=false     # publish when the assets look right
 ```
+
+The Linux packages and the Windows NSIS installer are both built, and only the
+version being released is uploaded — the bundle directories still hold every older
+build, so the upload is version-scoped rather than "everything in the folder".
 
 The script refuses to run on a dirty tree, or when `HEAD` is not the tag it is
 uploading to — a build of uncommitted work attached to a tag that names something else

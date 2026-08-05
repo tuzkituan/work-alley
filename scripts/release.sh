@@ -10,8 +10,8 @@
 # The release is left as a **draft**. Publishing is a separate click, so a bad
 # upload is never public.
 #
-#   scripts/release.sh                 # build Linux, upload to the current version's tag
-#   scripts/release.sh --with-windows  # also cross-build the NSIS installer
+#   scripts/release.sh                 # Linux packages + the Windows installer
+#   scripts/release.sh --no-windows    # Linux only, when the cross-build is broken
 #   scripts/release.sh --tag v0.1.1    # a tag other than package.json's version
 #   scripts/release.sh --no-test       # skip the suites (they run by default)
 #
@@ -23,12 +23,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
 
-with_windows=false
+# Windows is in by default: every published release so far carries an installer, and
+# the one release built with this script did not — an opt-in flag on a step that
+# belongs in every release is a step that gets forgotten.
+with_windows=true
 run_tests=true
 tag=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --no-windows) with_windows=false ;;
+    # Accepted and ignored: it is what the README said for two releases.
     --with-windows) with_windows=true ;;
     --no-test) run_tests=false ;;
     --tag) tag="${2:?--tag needs a value}"; shift ;;
@@ -78,19 +83,37 @@ NO_STRIP=true bun run tauri build
 
 bundle="src-tauri/target/release/bundle"
 artifacts=()
-for pattern in "$bundle/deb/"*.deb "$bundle/rpm/"*.rpm "$bundle/appimage/"*.AppImage; do
-  [[ -e "$pattern" ]] && artifacts+=("$pattern")
-done
-[[ ${#artifacts[@]} -gt 0 ]] || die "no Linux packages found under $bundle"
+
+# Only this version's packages.
+#
+# `*.deb` collected every deb in the bundle directory, and cargo never cleans that
+# directory out — so a machine that had built 0.1.0 through 0.1.2 uploaded all four
+# debs and all four rpms to the 0.1.3 release. The AppImages happened not to pile up
+# the same way (the older ones failed to bundle before NO_STRIP), which is why this
+# looked like six stale assets rather than a glob that was never version-scoped.
+#
+# The version is in every bundler's filename, in three different shapes —
+# `_0.1.3_amd64.deb`, `-0.1.3-1.x86_64.rpm`, `_0.1.3_x64-setup.exe` — so match it
+# loosely and let the extension do the rest.
+collect() {
+  local dir="$1" ext="$2" found=0 f
+  for f in "$dir"/*"$version"*"$ext"; do
+    [[ -e "$f" ]] || continue
+    artifacts+=("$f")
+    found=1
+  done
+  [[ $found -eq 1 ]] || die "no $ext for $version under $dir"
+}
+
+collect "$bundle/deb" .deb
+collect "$bundle/rpm" .rpm
+collect "$bundle/appimage" .AppImage
 
 if $with_windows; then
   log "Cross-building the Windows installer"
   # Unsigned, and never actually run on Windows — see the caveats this prints.
   scripts/build-windows.sh
-  nsis="src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis"
-  for exe in "$nsis/"*.exe; do
-    [[ -e "$exe" ]] && artifacts+=("$exe")
-  done
+  collect "src-tauri/target/x86_64-pc-windows-msvc/release/bundle/nsis" .exe
 fi
 
 log "Uploading to $tag"
