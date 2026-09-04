@@ -16,7 +16,7 @@ Built with Tauri 2, React 19 and Rust. Linux and Windows.
 
 ### Download a package
 
-Grab the latest build from the [Releases page](https://github.com/lewisnguyen2804/work-alley/releases).
+Grab the latest build from the [Releases page](https://github.com/tuzkituan/work-alley/releases).
 
 | File | For |
 | --- | --- |
@@ -49,7 +49,7 @@ sudo apt install libwebkit2gtk-4.1-dev libgtk-3-dev librsvg2-dev \
 Then:
 
 ```bash
-git clone https://github.com/lewisnguyen2804/work-alley.git
+git clone https://github.com/tuzkituan/work-alley.git
 cd work-alley
 bun install
 bun run tauri build     # packages land in src-tauri/target/release/bundle/
