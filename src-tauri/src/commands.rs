@@ -3786,6 +3786,25 @@ pub async fn complete_onboarding(state: State<'_, Arc<AppState>>) -> AppResult<B
     build_bootstrap(&state).await
 }
 
+/// Whether github.com has a newer release than this build.
+///
+/// On demand only. There is no launch-time check and no timer: a dashboard that
+/// phones home the moment it opens is a thing people notice, and the answer is
+/// only ever interesting when someone thought to ask.
+///
+/// Never an `Err`. Offline, no git, a timeout — all of it is rendered as a
+/// sentence in the row that asked, per the rule at the top of `error.rs`.
+#[tauri::command]
+pub async fn check_for_updates(
+    state: State<'_, Arc<AppState>>,
+) -> AppResult<crate::update::UpdateCheck> {
+    let git = state.toolchain().path("git").cloned();
+    // Machine-scoped, like the Toolbox's commands: this asks about the app, not
+    // about the open folder, and must work with no workspace at all.
+    let cwd = crate::paths::neutral_cwd(&state.workspace_root());
+    Ok(crate::update::check(git.as_deref(), &cwd).await)
+}
+
 /// The accounts page, in one call.
 ///
 /// Reads rather than trusts: the stored list comes from config, but "which one is

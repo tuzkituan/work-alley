@@ -30,6 +30,7 @@ mod scripts;
 mod setup;
 mod state;
 mod toolchain;
+mod update;
 
 use state::AppState;
 use std::sync::Arc;
@@ -280,6 +281,7 @@ pub fn run() {
             commands::list_setup_plan,
             commands::refresh_toolchain,
             commands::complete_onboarding,
+            commands::check_for_updates,
             commands::forget_recent_root,
             commands::list_stacks,
             commands::list_git_accounts,

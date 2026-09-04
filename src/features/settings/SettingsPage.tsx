@@ -17,6 +17,7 @@ import {
 } from '@/stores/ui-store'
 import { GithubProjectSetting } from '@/features/github-projects/GithubProjectSetting'
 import { NumberField, Section, Segmented, SettingRow } from './sections'
+import { UpdateRow } from './UpdateRow'
 import { useConfig, useSetConfig } from './use-config'
 
 /**
@@ -290,6 +291,10 @@ export function SettingsPage() {
               onCommit={(maxLogLinesPerRun) => save.mutate({ maxLogLinesPerRun })}
             />
           </SettingRow>
+        </Section>
+
+        <Section title="About">
+          <UpdateRow />
         </Section>
 
         <p className="pb-2 text-[11px] text-adaptive-400">

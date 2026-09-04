@@ -414,6 +414,18 @@ export interface Readiness {
   ready: boolean
 }
 
+/**
+ * The answer to "is there a newer version?".
+ *
+ * `failed` is a variant rather than a thrown error because being offline is a
+ * state the row renders, not a request the backend refused — see the note at the
+ * top of `src-tauri/src/update.rs`.
+ */
+export type UpdateCheck =
+  | { kind: 'upToDate'; current: string }
+  | { kind: 'available'; current: string; latest: string; url: string }
+  | { kind: 'failed'; current: string; reason: string }
+
 export interface Bootstrap {
   appVersion: string
   /** False while the toolchain probe is still running. */

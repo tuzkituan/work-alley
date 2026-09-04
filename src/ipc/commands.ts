@@ -35,6 +35,7 @@ import type {
   ToolInfo,
   StashEntry,
   TermInfo,
+  UpdateCheck,
   UpdateReport,
   WorkflowDispatchResult,
   WorkflowRunsResult,
@@ -119,6 +120,8 @@ export const api = {
   applySshConfig: () => call<string>('apply_ssh_config'),
   /** The first-run setup path: every step, in order, with what is already done. */
   listSetupPlan: () => call<SetupPlan>('list_setup_plan'),
+  /** Reads github.com's release tags. Never rejects — failure is a variant. */
+  checkForUpdates: () => call<UpdateCheck>('check_for_updates'),
   /** Read-only: what a checkout would do, per repo. `branch` null = each default. */
   previewCheckout: (refs: RepoRef[], branch: string | null) =>
     call<CheckoutPreview[]>('preview_checkout', { refs, branch }),
