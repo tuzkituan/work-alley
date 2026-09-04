@@ -16,25 +16,44 @@ Built with Tauri 2, React 19 and Rust. Linux and Windows.
 
 ### Download a package
 
-Grab the latest build from the [Releases page](https://github.com/tuzkituan/work-alley/releases).
+Grab the latest build from the [Releases page](https://github.com/tuzkituan/work-alley/releases)
+— `.deb`, `.rpm` and `.AppImage` for Linux, a universal `.dmg` for macOS, and an `.exe`
+installer for Windows. The macOS and Windows builds are unsigned; the release notes
+carry the one command macOS needs to open a quarantined app.
 
 | File | For |
 | --- | --- |
 | `.deb` | Debian, Ubuntu and derivatives |
 | `.rpm` | Fedora, RHEL, openSUSE |
 | `.AppImage` | any other Linux — no install, just `chmod +x` and run |
-| `.exe` | Windows, per-user install — when a build is attached |
+| `.dmg` | macOS, universal — one image for Apple Silicon and Intel |
+| `.exe` | Windows, per-user install |
 
 The Linux packages declare `webkit2gtk 4.1` and `GTK 3` as dependencies, so your
 package manager pulls them in. The Windows installer fetches the WebView2 runtime if it
-is missing; it is unsigned, so SmartScreen warns on first run, and it is cross-built
-from Linux rather than tested on Windows — see `docs/windows-support-plan.md`.
+is missing; it is unsigned, so SmartScreen warns on first run — see
+`docs/windows-support-plan.md`.
+
+The macOS build is unsigned too, and macOS is stricter about it than Windows:
+Gatekeeper refuses a quarantined app outright rather than warning. After dragging the
+app across, clear the quarantine flag once:
+
+```bash
+xattr -dr com.apple.quarantine "/Applications/Work Alley.app"
+```
+
+Signing and notarising need a paid Apple Developer account; the same goes for a
+Windows code-signing certificate. Neither is set up for this project.
 
 ```bash
 sudo apt install ./work-alley_0.1.0_amd64.deb      # Debian / Ubuntu
 sudo dnf install ./work-alley-0.1.0-1.x86_64.rpm   # Fedora
 chmod +x Work_Alley_0.1.0_amd64.AppImage && ./Work_Alley_0.1.0_amd64.AppImage
 ```
+
+The `.exe` is cross-built from Linux by `scripts/build-windows.sh` only when a release
+is cut by hand; the workflow builds it on Windows, which is what that script's own
+caveats recommend for a release.
 
 ### Build from source
 
@@ -55,8 +74,12 @@ bun install
 bun run tauri build     # packages land in src-tauri/target/release/bundle/
 ```
 
-macOS is not packaged or tested. The Unix code path is shared, so a source build may
-work, but nothing here verifies it.
+macOS is packaged as a universal `.dmg` and builds in CI, but it is not *tested* —
+nobody runs the app there before a release. It shares the Unix code path with Linux,
+and the one known gap is "Open a shell here": `find_terminal` knows Linux emulators
+only, so on macOS that action reports the command for you to copy instead of opening
+Terminal. Running a script is unaffected — it falls back to the integrated terminal,
+the same rewrite Windows uses.
 
 ### What Work Alley needs on your machine
 
@@ -239,10 +262,10 @@ shell.
 
 ### Releasing
 
-Pushing a `v*` tag is the whole release. `.github/workflows/release.yml` builds the
-Linux packages on Linux and the Windows installer on Windows, attaches them to a
-**draft** release, and stops there — publishing stays a separate, deliberate click,
-so a bad upload is never public.
+Pushing a `v*` tag is the whole release. `.github/workflows/release.yml` builds each
+platform on its own runner — Linux packages on Linux, a universal `.dmg` on macOS, the
+installer on Windows — attaches them to a **draft** release, and stops there:
+publishing stays a separate, deliberate click, so a bad upload is never public.
 
 ```bash
 npm version patch --no-git-tag-version   # bump package.json…
@@ -259,7 +282,8 @@ A tag pushed before the workflow existed, or a run that failed halfway through i
 upload, can be re-driven from the Actions tab — `release.yml` takes a tag as a manual
 input and replaces the assets of a release that already exists.
 
-Building locally is still supported and unchanged:
+Building locally is still supported and unchanged, though it only ever produced the
+Linux and Windows halves — macOS has no cross-build here and comes from CI only:
 
 ```bash
 scripts/release.sh                       # test, build, upload — leaves it a draft

@@ -32,6 +32,7 @@
       "deb",
       "rpm",
       "appimage",
+      "dmg",
       "nsis",
       "msi"
     ],

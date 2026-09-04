@@ -37,15 +37,26 @@ env:
 jobs:
   build:
     strategy:
-      # One platform failing must not cancel the other: a broken Windows bundler
+      # One platform failing must not cancel the others: a broken Windows bundler
       # should still leave the Linux packages downloadable from the run.
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-22.04
             name: linux
+            bundle: src-tauri/target/release/bundle
           - os: windows-latest
             name: windows
+            bundle: src-tauri/target/release/bundle
+          # One universal .dmg rather than an Intel one and an Apple Silicon one.
+          # It is the shape the rest of this release already has — a single asset
+          # per platform — and it avoids the macos-13 runner, which is the only
+          # way to build x86_64 natively and is on its way out. The cost is a
+          # binary carrying both architectures, so a larger download.
+          - os: macos-latest
+            name: macos
+            args: --target universal-apple-darwin
+            bundle: src-tauri/target/universal-apple-darwin/release/bundle
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -58,6 +69,12 @@ jobs:
           bun-version: latest
 
       - uses: dtolnay/rust-toolchain@stable
+
+      # A universal binary is two compilations, so both targets have to exist —
+      # the runner is arm64 and ships only its own.
+      - name: Add the macOS targets
+        if: matrix.name == 'macos'
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
 
       # Deliberately uncached, unlike ci.yml. A release build is a different
       # profile from the test build, so the cache would mostly miss anyway — and
@@ -87,7 +104,7 @@ jobs:
       # against the runner image moving, not a fix for it today.
       - name: Build
         shell: bash
-        run: NO_STRIP=true bun run tauri build
+        run: NO_STRIP=true bun run tauri build ${{ matrix.args }}
 
       # Only this version's packages, matched loosely because every bundler spells
       # the version differently — `_0.1.4_amd64.deb`, `-0.1.4-1.x86_64.rpm`,
@@ -107,11 +124,12 @@ jobs:
           set -euo pipefail
           shopt -s nullglob
           version="${TAG#v}"
-          b=src-tauri/target/release/bundle
+          b='${{ matrix.bundle }}'
           mkdir -p release-packages
           for f in "$b"/deb/*"$version"*.deb \
                    "$b"/rpm/*"$version"*.rpm \
                    "$b"/appimage/*"$version"*.AppImage \
+                   "$b"/dmg/*"$version"*.dmg \
                    "$b"/nsis/*"$version"*.exe; do
             cp "$f" release-packages/
           done
@@ -160,11 +178,24 @@ jobs:
 
           - \`.deb\` — Debian, Ubuntu and derivatives
           - \`.rpm\` — Fedora, RHEL and openSUSE
-          - \`.AppImage\` — everything else, no install required
-          - \`.exe\` — Windows installer, unsigned
+          - \`.AppImage\` — any other Linux, no install required
+          - \`.dmg\` — macOS, universal (Apple Silicon and Intel)
+          - \`.exe\` — Windows installer
 
           The Linux packages declare webkit2gtk 4.1 and GTK 3 as dependencies, so a
           package manager will pull them in.
+
+          **The macOS and Windows builds are unsigned.** Windows SmartScreen will
+          warn; choose More info → Run anyway. macOS Gatekeeper refuses outright,
+          and the app is quarantined on download, so after dragging it to
+          Applications run:
+
+          \`\`\`
+          xattr -dr com.apple.quarantine "/Applications/Work Alley.app"
+          \`\`\`
+
+          Signing needs an Apple Developer account and a Windows code-signing
+          certificate; neither is set up for this project.
           NOTES
 
           # Re-runnable: an existing release — a draft from a failed attempt, or
