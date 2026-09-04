@@ -45,18 +45,52 @@ pub fn discover_workspace_root() -> AppResult<PathBuf> {
     }
 
     if let Ok(cwd) = std::env::current_dir() {
-        let mut cur: Option<&Path> = Some(cwd.as_path());
-        while let Some(dir) = cur {
-            if is_workspace(dir) {
-                return Ok(dir.to_path_buf());
-            }
-            cur = dir.parent();
+        if let Some(root) = walk_up_to_workspace(&cwd, crate::platform::home_dir().as_deref()) {
+            return Ok(root);
         }
     }
 
     Err(AppError::WorkspaceNotFound(
-        "no folder with git repos in it was found above the working directory".into(),
+        "no folder with git repos was found between here and your home folder".into(),
     ))
+}
+
+/// The nearest ancestor of `cwd` holding repos — stopping *below* the home folder
+/// and the filesystem root.
+///
+/// The stop is the whole point. A window launched from a desktop file, a dock icon
+/// or an app bundle inherits `$HOME` (or `/`) as its working directory, and a home
+/// folder with two checkouts loose in it satisfies `is_workspace` — so the very
+/// first launch adopted `~` as the workspace, saved it, and opened the dashboard on
+/// it instead of the welcome screen. Nobody ever chose that folder; the walk simply
+/// started there and stopped immediately.
+///
+/// Launching from inside a real workspace is unaffected: that folder is reached
+/// before the walk climbs as far as home. Only the guess is restricted —
+/// `WORK_ALLEY_ROOT` and the folder picker can still name home, because those are
+/// someone saying so.
+fn walk_up_to_workspace(cwd: &Path, home: Option<&Path>) -> Option<PathBuf> {
+    let mut cur: Option<&Path> = Some(cwd);
+    while let Some(dir) = cur {
+        // Once the walk is at home, everything left above it is broader still.
+        if dir.parent().is_none() || home.is_some_and(|h| same_dir(dir, h)) {
+            return None;
+        }
+        if is_workspace(dir) {
+            return Some(dir.to_path_buf());
+        }
+        cur = dir.parent();
+    }
+    None
+}
+
+/// Whether two paths name the same directory, tolerating a symlinked home.
+///
+/// `HOME` is frequently a symlink (or a `/home` vs `/System/Volumes/Data/home`
+/// spelling on macOS) while `current_dir` hands back the resolved path, and a plain
+/// `==` would miss the match and let the walk adopt home after all.
+fn same_dir(a: &Path, b: &Path) -> bool {
+    a == b || matches!((a.canonicalize(), b.canonicalize()), (Ok(x), Ok(y)) if x == y)
 }
 
 /// A folder counts as a workspace if any git repo can be found in or under it:
@@ -372,6 +406,47 @@ mod tests {
         let d = scratch("empty");
         fs::create_dir_all(d.join("notes")).unwrap();
         assert!(!is_workspace(&d));
+    }
+
+    #[test]
+    fn the_guess_never_adopts_the_home_folder() {
+        // The bug: a GUI launch inherits `$HOME` as its working directory, and a home
+        // folder with a checkout loose in it is a workspace by every other measure —
+        // so the first launch opened `~` instead of the welcome screen.
+        let home = scratch("home");
+        repo(&home.join("some-checkout"));
+        assert!(is_workspace(&home), "precondition: it does look like a workspace");
+        assert_eq!(walk_up_to_workspace(&home, Some(&home)), None);
+    }
+
+    #[test]
+    fn the_guess_stops_below_home_rather_than_climbing_past_it() {
+        // Walking up from a plain folder inside home must not reach home and take it.
+        let home = scratch("home-above");
+        repo(&home.join("some-checkout"));
+        let notes = home.join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        assert_eq!(walk_up_to_workspace(&notes, Some(&home)), None);
+    }
+
+    #[test]
+    fn a_workspace_below_home_is_still_found() {
+        // The restriction is on the guess *reaching* home, not on the walk itself:
+        // `cd ~/work/notes && work-alley` still opens ~/work.
+        let home = scratch("home-with-work");
+        let work = home.join("work");
+        repo(&work.join("api"));
+        assert_eq!(walk_up_to_workspace(&work, Some(&home)), Some(work.clone()));
+        let notes = work.join("notes");
+        fs::create_dir_all(&notes).unwrap();
+        assert_eq!(walk_up_to_workspace(&notes, Some(&home)), Some(work));
+    }
+
+    #[test]
+    fn the_guess_never_adopts_the_filesystem_root() {
+        // The other working directory a launcher hands out. The walk must refuse it
+        // whatever it holds — and must not scan a whole disk to decide that.
+        assert_eq!(walk_up_to_workspace(Path::new("/"), None), None);
     }
 
     #[test]
