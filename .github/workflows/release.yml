@@ -210,12 +210,21 @@ jobs:
             # A published release is never touched this way — see release.sh,
             # which reports and leaves well alone for exactly that reason.
             if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ]; then
-              # Read line by line: every asset here is named "Work Alley_0.1.4…",
-              # and a `for` over command substitution would split it at the space.
-              keep=$(cd release-packages && ls)
+              # Compared under GitHub's own naming, not the filename on disk:
+              # uploading "Work Alley_0.1.4_amd64.deb" produces an asset called
+              # "Work.Alley_0.1.4_amd64.deb", because anything outside
+              # [A-Za-z0-9._-] becomes a dot. Comparing raw, every asset looked
+              # stale, so each re-run deleted all of them and uploaded them again
+              # — a hundred megabytes of churn, and a window where the release had
+              # no assets at all if the upload then failed.
+              #
+              # Read line by line: those names contain a space before GitHub gets
+              # them, and a `for` over command substitution would split there.
+              norm() { sed 's/[^A-Za-z0-9._-]/./g'; }
+              keep=$(cd release-packages && ls | norm)
               gh release view "$TAG" --json assets --jq '.assets[].name' |
                 while IFS= read -r a; do
-                  if ! grep -qxF "$a" <<<"$keep"; then
+                  if ! grep -qxF "$(printf '%s' "$a" | norm)" <<<"$keep"; then
                     echo "removing stale asset: $a"
                     gh release delete-asset "$TAG" "$a" -y
                   fi
