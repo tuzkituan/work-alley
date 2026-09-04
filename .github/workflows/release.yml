@@ -96,6 +96,11 @@ jobs:
       #
       # The `.msi` is built and not collected, matching every release so far: the
       # NSIS installer is the one Windows artifact this project ships.
+      # NOT `dist/`: that is Vite's output directory (`frontendDist: "../dist"`),
+      # which `tauri build` fills on its way past. Collecting into it shipped the
+      # frontend bundle — index.html, favicon.svg and an `assets/` directory —
+      # alongside the packages, and `gh release create` then failed on trying to
+      # upload a directory as an asset.
       - name: Collect the packages
         shell: bash
         run: |
@@ -103,20 +108,21 @@ jobs:
           shopt -s nullglob
           version="${TAG#v}"
           b=src-tauri/target/release/bundle
-          mkdir -p dist
+          mkdir -p release-packages
           for f in "$b"/deb/*"$version"*.deb \
                    "$b"/rpm/*"$version"*.rpm \
                    "$b"/appimage/*"$version"*.AppImage \
                    "$b"/nsis/*"$version"*.exe; do
-            cp "$f" dist/
+            cp "$f" release-packages/
           done
-          ls -l dist
-          [ -n "$(ls -A dist)" ] || { echo "no $version packages under $b" >&2; exit 1; }
+          ls -l release-packages
+          [ -n "$(ls -A release-packages)" ] ||
+            { echo "no $version packages under $b" >&2; exit 1; }
 
       - uses: actions/upload-artifact@v4
         with:
           name: packages-${{ matrix.name }}
-          path: dist/*
+          path: release-packages/*
           if-no-files-found: error
 
   publish:
@@ -130,7 +136,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          path: dist
+          path: release-packages
           merge-multiple: true
 
       - name: Draft the release
@@ -139,7 +145,15 @@ jobs:
           GH_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          ls -l dist
+          ls -l release-packages
+
+          # Every asset is a plain file. An artifact that somehow arrives as a
+          # directory is a packaging mistake, and gh's error for it — "read
+          # <path>: is a directory", thrown after some assets have already
+          # uploaded — is a poor way to find out.
+          for f in release-packages/*; do
+            [ -f "$f" ] || { echo "not a file: $f" >&2; exit 1; }
+          done
 
           cat > notes.md <<NOTES
           Built from \`$TAG\` by the release workflow.
@@ -153,11 +167,30 @@ jobs:
           package manager will pull them in.
           NOTES
 
-          # Re-runnable: an existing release (a draft from a failed attempt, or one
-          # made by hand) gets its assets replaced rather than an error on a name
-          # that is already taken.
+          # Re-runnable: an existing release — a draft from a failed attempt, or
+          # one made by hand — gets its assets replaced rather than an error on a
+          # name that is already taken.
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" dist/* --clobber
+            # A half-finished run can leave assets this one is not about to
+            # overwrite, and --clobber only replaces the names it uploads. On a
+            # *draft* those are cleared: a draft is unpublished by definition, so
+            # nothing can be depending on them, and a release that ships two
+            # versions of itself is worse than one that lost a hand-attached file.
+            # A published release is never touched this way — see release.sh,
+            # which reports and leaves well alone for exactly that reason.
+            if [ "$(gh release view "$TAG" --json isDraft --jq .isDraft)" = true ]; then
+              # Read line by line: every asset here is named "Work Alley_0.1.4…",
+              # and a `for` over command substitution would split it at the space.
+              keep=$(cd release-packages && ls)
+              gh release view "$TAG" --json assets --jq '.assets[].name' |
+                while IFS= read -r a; do
+                  if ! grep -qxF "$a" <<<"$keep"; then
+                    echo "removing stale asset: $a"
+                    gh release delete-asset "$TAG" "$a" -y
+                  fi
+                done
+            fi
+            gh release upload "$TAG" release-packages/* --clobber
           else
             # --verify-tag: without it gh would create the tag at whatever the
             # default branch points to today, quietly shipping a release that is
@@ -167,8 +200,10 @@ jobs:
               --verify-tag \
               --title "Work Alley $TAG" \
               --notes-file notes.md \
-              dist/*
+              release-packages/*
           fi
 
+          echo "--- assets now on $TAG ---"
+          gh release view "$TAG" --json assets --jq '.assets[] | "\(.name)  \(.size) bytes"'
           gh release view "$TAG" --json url --jq .url
           echo "Publish it with:  gh release edit $TAG --draft=false"
