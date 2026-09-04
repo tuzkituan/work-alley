@@ -239,30 +239,38 @@ shell.
 
 ### Releasing
 
-Packages are built here, not in CI, and uploaded to a draft release. Actions only runs
-the suites (`.github/workflows/ci.yml`); a Tauri bundle is a quarter of an hour per
-platform and produced nothing a local build does not.
+Pushing a `v*` tag is the whole release. `.github/workflows/release.yml` builds the
+Linux packages on Linux and the Windows installer on Windows, attaches them to a
+**draft** release, and stops there — publishing stays a separate, deliberate click,
+so a bad upload is never public.
 
 ```bash
 npm version patch --no-git-tag-version   # bump package.json…
 # …and src-tauri/tauri.conf.json, src-tauri/Cargo.toml and the lock to match:
 # the Rust version is what `get_bootstrap` reports as the app version in the UI
-git commit -am 'release: v0.1.1'
-git tag -a v0.1.1 -m 'Work Alley v0.1.1'   # annotated: --follow-tags skips lightweight ones
-git push --follow-tags
+git commit -am 'release: v0.1.4'
+git tag -a v0.1.4 -m 'Work Alley v0.1.4'   # annotated: --follow-tags skips lightweight ones
+git push --follow-tags                     # ← this starts the build
 
-scripts/release.sh                       # test, build, upload — leaves it a draft
-scripts/release.sh --no-windows          # Linux only, if the cross-build is broken
-gh release edit v0.1.1 --draft=false     # publish when the assets look right
+gh release edit v0.1.4 --draft=false       # publish when the assets look right
 ```
 
-The Linux packages and the Windows NSIS installer are both built, and only the
-version being released is uploaded — the bundle directories still hold every older
-build, so the upload is version-scoped rather than "everything in the folder".
+A tag pushed before the workflow existed, or a run that failed halfway through its
+upload, can be re-driven from the Actions tab — `release.yml` takes a tag as a manual
+input and replaces the assets of a release that already exists.
 
-The script refuses to run on a dirty tree, or when `HEAD` is not the tag it is
-uploading to — a build of uncommitted work attached to a tag that names something else
-is the one mistake nobody would catch later.
+Building locally is still supported and unchanged:
+
+```bash
+scripts/release.sh                       # test, build, upload — leaves it a draft
+scripts/release.sh --no-windows          # Linux only, if the cross-build is broken
+```
+
+Both paths upload only the version being released. The bundle directories still hold
+every older build, so the collection is version-scoped rather than "everything in the
+folder" — an unscoped glob once attached four releases' worth of `.deb`s to one
+release. The script additionally refuses to run on a dirty tree, or when `HEAD` is not
+the tag it is uploading to; the workflow gets that for free by checking out the tag.
 
 ---
 

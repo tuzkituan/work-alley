@@ -1,0 +1,174 @@
+# Builds the packages and drafts the GitHub release, on a tag.
+#
+# This restores the packaging jobs `ci.yml` describes as removed. The reasoning
+# that removed them still holds — a Tauri bundle is a quarter of an hour per
+# platform — but it assumed the person cutting the release has a Rust toolchain
+# and both targets to hand, and "wait fifteen minutes for a machine nobody is
+# looking at" beats "no release at all" whenever that assumption fails.
+#
+# `scripts/release.sh` is unchanged and still works. Use it when you want the
+# packages on your own disk, or when Actions is not an option; this is the path
+# that needs nothing but a pushed tag.
+#
+# Windows is built on Windows here, which is what `scripts/build-windows.sh` says
+# is the right answer for a release — its own cross-build exists so the target can
+# be checked without a Windows machine, not because it is the better artifact.
+#
+# The release is left as a **draft**, exactly as the script leaves it: publishing
+# stays a separate, deliberate click, so a bad upload is never public.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  # For a re-run after a failed upload, or a tag pushed before this workflow
+  # existed. The tag must already exist — nothing here creates one.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build and attach to (e.g. v0.1.4)'
+        required: true
+
+# On a tag push `github.ref_name` *is* the tag; on a manual run it is the branch,
+# so the input wins when there is one.
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    strategy:
+      # One platform failing must not cancel the other: a broken Windows bundler
+      # should still leave the Linux packages downloadable from the run.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            name: linux
+          - os: windows-latest
+            name: windows
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      # Deliberately uncached, unlike ci.yml. A release build is a different
+      # profile from the test build, so the cache would mostly miss anyway — and
+      # the thing it *would* carry between runs is a `target/` directory holding
+      # older versions' bundles, which is the exact shape of the bug the version
+      # scoping below exists to prevent. A release is cut rarely; correctness is
+      # worth ten minutes here.
+
+      - name: Install build dependencies
+        if: matrix.name == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libwebkit2gtk-4.1-dev \
+            libgtk-3-dev \
+            librsvg2-dev \
+            libxdo-dev \
+            libssl-dev \
+            patchelf \
+            file
+
+      - run: bun install --frozen-lockfile
+
+      # NO_STRIP is not optional on a current distribution — see the note in
+      # scripts/release.sh. ubuntu-22.04's libraries predate the `.relr.dyn`
+      # sections that break linuxdeploy's bundled `strip`, so this is insurance
+      # against the runner image moving, not a fix for it today.
+      - name: Build
+        shell: bash
+        run: NO_STRIP=true bun run tauri build
+
+      # Only this version's packages, matched loosely because every bundler spells
+      # the version differently — `_0.1.4_amd64.deb`, `-0.1.4-1.x86_64.rpm`,
+      # `_0.1.4_x64-setup.exe`. The glob that was not version-scoped once attached
+      # four releases' worth of debs to one release.
+      #
+      # The `.msi` is built and not collected, matching every release so far: the
+      # NSIS installer is the one Windows artifact this project ships.
+      - name: Collect the packages
+        shell: bash
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          version="${TAG#v}"
+          b=src-tauri/target/release/bundle
+          mkdir -p dist
+          for f in "$b"/deb/*"$version"*.deb \
+                   "$b"/rpm/*"$version"*.rpm \
+                   "$b"/appimage/*"$version"*.AppImage \
+                   "$b"/nsis/*"$version"*.exe; do
+            cp "$f" dist/
+          done
+          ls -l dist
+          [ -n "$(ls -A dist)" ] || { echo "no $version packages under $b" >&2; exit 1; }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: packages-${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-22.04
+    # The only job that needs it, and the reason no `gh auth login` is involved:
+    # the token Actions hands this workflow can write releases in its own repo.
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          ls -l dist
+
+          cat > notes.md <<NOTES
+          Built from \`$TAG\` by the release workflow.
+
+          - \`.deb\` — Debian, Ubuntu and derivatives
+          - \`.rpm\` — Fedora, RHEL and openSUSE
+          - \`.AppImage\` — everything else, no install required
+          - \`.exe\` — Windows installer, unsigned
+
+          The Linux packages declare webkit2gtk 4.1 and GTK 3 as dependencies, so a
+          package manager will pull them in.
+          NOTES
+
+          # Re-runnable: an existing release (a draft from a failed attempt, or one
+          # made by hand) gets its assets replaced rather than an error on a name
+          # that is already taken.
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            # --verify-tag: without it gh would create the tag at whatever the
+            # default branch points to today, quietly shipping a release that is
+            # not the commit it names.
+            gh release create "$TAG" \
+              --draft \
+              --verify-tag \
+              --title "Work Alley $TAG" \
+              --notes-file notes.md \
+              dist/*
+          fi
+
+          gh release view "$TAG" --json url --jq .url
+          echo "Publish it with:  gh release edit $TAG --draft=false"

@@ -1,9 +1,9 @@
 # The suites, on every push and pull request.
 #
-# What is left of the old `release` workflow. The packaging jobs are gone —
-# releases are built locally now and uploaded with `scripts/release.sh` — but the
-# tests were never the expensive part: they are seconds, where a Tauri bundle is
-# a quarter of an hour per platform.
+# Tests only. The packaging jobs live in `release.yml` and run on a tag, because
+# they are the expensive part — a Tauri bundle is a quarter of an hour per
+# platform, where these are seconds — and nothing about a branch push needs an
+# installer.
 #
 # Only Linux runs here. The Windows job existed to produce installers; the parts
 # of `src-tauri` behind `#[cfg(windows)]` are covered by `platform/mod.rs` keeping
