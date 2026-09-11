@@ -4370,6 +4370,40 @@ pub async fn workflow_dispatch_inputs(
     }
 }
 
+/// The fields every `gh` still in circulation understands.
+const GH_RUN_FIELDS: &str = "databaseId,number,displayTitle,workflowName,workflowDatabaseId,\
+                             event,headBranch,headSha,status,conclusion,url,createdAt,\
+                             startedAt,updatedAt";
+
+/// The same list plus `attempt`, which is the re-run counter behind the `a2` badge.
+const GH_RUN_FIELDS_WITH_ATTEMPT: &str = "databaseId,number,attempt,displayTitle,workflowName,\
+                                          workflowDatabaseId,event,headBranch,headSha,status,\
+                                          conclusion,url,createdAt,startedAt,updatedAt";
+
+/// Whether this machine's `gh` understands `run list --json attempt`.
+///
+/// It does not always. The field landed in gh 2.49, and Debian and Ubuntu still
+/// package 2.46. There, naming it does not just omit the column: it fails the
+/// whole call with `Unknown JSON field: "attempt"`, and the Actions tab renders
+/// nothing at all. One cosmetic badge is not worth the tab, so the field list is
+/// a capability rather than a constant. The first call asks for `attempt`, and a
+/// rejection downgrades every later one in this process.
+///
+/// The flag only ever moves toward the shorter list, so the cost of being wrong
+/// is one wasted call on the first fetch, never a wrong answer. A restart
+/// re-probes, which is what picks the badge back up after a gh upgrade.
+static GH_RUN_HAS_ATTEMPT: AtomicBool = AtomicBool::new(true);
+
+/// gh's complaint about a `--json` field it does not know.
+///
+/// Matched on the text because gh exits 1 for this the same way it does for a
+/// network failure, and the two want opposite handling: retry without the field,
+/// versus show the user the error.
+fn gh_rejected_json_field(message: &str, field: &str) -> bool {
+    let m = message.to_lowercase();
+    m.contains("unknown json field") && m.contains(&field.to_lowercase())
+}
+
 /// The last 50 workflow runs, optionally for one workflow. Read-only.
 ///
 /// `workflow` is a *path* (`.github/workflows/ci.yml`) rather than a display
@@ -4385,20 +4419,42 @@ pub async fn list_workflow_runs(
     let tc = state.toolchain();
     let path = crate::paths::resolve_repo(&root, &repo)?;
 
-    let mut args: Vec<&str> = vec![
-        "run",
-        "list",
-        "--limit",
-        "50",
-        "--json",
-        "databaseId,number,attempt,displayTitle,workflowName,workflowDatabaseId,\
-         event,headBranch,headSha,status,conclusion,url,createdAt,startedAt,updatedAt",
-    ];
-    if let Some(w) = workflow.as_deref() {
-        args.extend(["--workflow", w]);
+    async fn fetch(
+        tc: &crate::toolchain::Toolchain,
+        path: &std::path::Path,
+        workflow: Option<&str>,
+        fields: &str,
+    ) -> Result<(String, String), GhFail> {
+        let mut args: Vec<&str> = vec!["run", "list", "--limit", "50", "--json", fields];
+        if let Some(w) = workflow {
+            args.extend(["--workflow", w]);
+        }
+        gh_json(tc, path, &args).await
     }
 
-    match gh_json(&tc, &path, &args).await {
+    let asked_for_attempt = GH_RUN_HAS_ATTEMPT.load(Ordering::Relaxed);
+    let fields = if asked_for_attempt {
+        GH_RUN_FIELDS_WITH_ATTEMPT
+    } else {
+        GH_RUN_FIELDS
+    };
+    let mut out = fetch(&tc, &path, workflow.as_deref(), fields).await;
+
+    // An old gh rejecting `attempt` is not a failure to report, it is a field to
+    // stop asking for. Every run then parses with `attempt: 1`, which is what the
+    // badge already treats as "not a re-run".
+    if asked_for_attempt {
+        let rejected = matches!(
+            &out,
+            Err(GhFail::Failed(m)) if gh_rejected_json_field(m, "attempt")
+        );
+        if rejected {
+            GH_RUN_HAS_ATTEMPT.store(false, Ordering::Relaxed);
+            out = fetch(&tc, &path, workflow.as_deref(), GH_RUN_FIELDS).await;
+        }
+    }
+
+    match out {
         Ok((slug, stdout)) => {
             let now = crate::git::now_unix();
             let runs = parse_gh_runs(&stdout, now);
@@ -5206,6 +5262,41 @@ mod tests {
         // that for a repo with no workflows. The caller tells it apart from junk
         // by gh's exit code, never by this being empty.
         assert!(parse_gh_workflows("").is_empty());
+    }
+
+    #[test]
+    fn an_old_gh_rejecting_a_field_is_told_apart_from_a_real_failure() {
+        // Verbatim from gh 2.46, which Ubuntu packages and which predates the
+        // `attempt` field. The whole call fails, so without the downgrade the
+        // Actions tab shows this sentence where the runs should be.
+        let err = "Unknown JSON field: \"attempt\"\nAvailable fields:\n  conclusion\n  \
+                   createdAt\n  databaseId";
+        assert!(gh_rejected_json_field(err, "attempt"));
+
+        // Only that one field, and only that one complaint. A network or auth
+        // failure must still reach the user rather than trigger a silent retry.
+        assert!(!gh_rejected_json_field(err, "headSha"));
+        for real in [
+            "could not resolve to a Repository",
+            "gh timed out after 20s",
+            "HTTP 403: Resource not accessible",
+            "",
+        ] {
+            assert!(!gh_rejected_json_field(real, "attempt"), "{real:?}");
+        }
+    }
+
+    #[test]
+    fn a_run_from_a_gh_without_attempt_still_parses() {
+        // What the downgraded field list returns: no `attempt` key at all. The
+        // badge reads 1 as "not a re-run", so the row renders unchanged.
+        let json = r#"[{"databaseId":7,"number":12,"status":"completed",
+          "conclusion":"success","startedAt":"2026-07-31T03:12:48Z",
+          "updatedAt":"2026-07-31T03:13:06Z"}]"#;
+        let r = &parse_gh_runs(json, T0 + 3600)[0];
+        assert_eq!(r.attempt, 1);
+        assert_eq!(r.number, 12);
+        assert_eq!(r.state, RunState::Success);
     }
 
     #[test]
