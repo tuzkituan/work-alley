@@ -971,6 +971,11 @@ pub async fn prepare_action(
         expires_unix,
         targets: built.targets.clone(),
         read_only: built.read_only,
+        auto_confirm: crate::gate::skips_confirm(
+            &built.kind,
+            built.danger,
+            built.typed_confirm.as_deref(),
+        ),
     };
 
     st.intents.lock().unwrap().insert(
@@ -1016,6 +1021,37 @@ pub async fn run_action(
         pending.typed_confirm.as_deref(),
         typed_confirm.as_deref(),
     )?;
+
+    // The account switch happens here rather than in `prepare_action`, which is
+    // documented as having no side effects and has to keep that promise: the
+    // dialog may sit open for a minute, and switching the machine's gh login the
+    // moment a button lights up would be indefensible.
+    //
+    // Deliberately before the argv runs and not part of it. Bundling `gh auth
+    // switch` into the same command line would mean either a shell, which this
+    // crate avoids everywhere but one place, or a second argv that the frozen
+    // single-use intent cannot describe.
+    //
+    // A failure here aborts. Acting on the wrong GitHub account is exactly the
+    // mistake this is meant to prevent, so guessing past it would defeat the
+    // point. The intent is already consumed by then, which costs a re-click.
+    if pending.kind.starts_with("ghPr") {
+        let tc = state.toolchain();
+        if let (Ok(gh), Ok(git)) = (tc.require("gh"), tc.require("git")) {
+            if let Some(user) = gh_account_for_repo(state.inner(), &git, &pending.cwd).await {
+                let active = gh_current_user(state.inner(), &gh, &tc).await;
+                if active.as_deref() != Some(user.as_str()) {
+                    gh_switch_account(&gh, &tc, &user).await.map_err(|e| {
+                        AppError::Invalid(format!(
+                            "could not switch the GitHub CLI to {user}: {e}"
+                        ))
+                    })?;
+                    // The cached login is now a lie, and `is_mine` reads it.
+                    state.forget_gh_login();
+                }
+            }
+        }
+    }
 
     match pending.kind.as_str() {
         "devStop" => {
@@ -1149,6 +1185,16 @@ pub async fn run_action(
                     target_keys,
                 },
             )?;
+
+            // Applying an account globally runs `gh auth switch` inside the
+            // spawned script, so the cached login stops being true. Cleared on
+            // spawn rather than on exit, because nothing here watches for the
+            // exit; the window where a re-read could re-cache the old login is
+            // the script's own runtime, and the next PR listing is a user action
+            // well after that.
+            if kind == "useGitAccount" {
+                state.forget_gh_login();
+            }
 
             if kind == "devStart" {
                 if let Some(repo) = pending.repo.clone() {
@@ -1581,6 +1627,531 @@ async fn build_action(state: &Arc<AppState>, spec: ActionSpec) -> AppResult<Buil
                      resumed, only re-run."
                         .into(),
                 ],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhPrCreate { repo, title, body, base, draft } => {
+            let gh = tc.require("gh")?;
+            let git = tc.require("git")?;
+            let cwd = crate::paths::resolve_repo(&root, &repo)?;
+
+            let title = title.trim().to_string();
+            if title.is_empty() {
+                return Err(AppError::Invalid("a pull request needs a title".into()));
+            }
+            if !crate::git::valid_branch_name(&base) {
+                return Err(AppError::Invalid(format!("'{base}' is not a valid branch name")));
+            }
+
+            // The head branch and whether it is pushed both come from git rather
+            // than from the caller. The upstream check is not a nicety: gh asks
+            // "where should we push this branch?" when there is no upstream, and
+            // `git::harden` nulls stdin for every child here, so that question is
+            // not a prompt but a hang that ends in a confusing failure.
+            let porcelain = crate::git::git_output_public(
+                &git,
+                &cwd,
+                &["status", "--porcelain=v2", "--branch"],
+            )
+            .await
+            .ok()
+            .map(|t| crate::git::parse_porcelain_v2(&t));
+            let head = porcelain
+                .as_ref()
+                .and_then(|p| p.branch.clone())
+                .ok_or_else(|| {
+                    AppError::Invalid(
+                        "this repo has no branch checked out, so there is nothing to open a pull request from"
+                            .into(),
+                    )
+                })?;
+            if porcelain.as_ref().and_then(|p| p.upstream.as_ref()).is_none() {
+                return Err(AppError::Invalid(format!(
+                    "'{head}' has no upstream yet. Push it first, then open the pull request."
+                )));
+            }
+            if head == base {
+                return Err(AppError::Invalid(format!(
+                    "'{head}' is already the base branch"
+                )));
+            }
+
+            let slug = crate::git::remote_slug(&git, &cwd)
+                .await
+                .ok_or_else(|| AppError::Invalid("this repo has no origin remote".into()))?;
+
+            let mut argv = vec![
+                gh.display().to_string(),
+                "pr".into(),
+                "create".into(),
+                "--title".into(),
+                title,
+                // Always sent, even empty. Omitting it is what makes gh prompt.
+                "--body".into(),
+                body,
+                "--base".into(),
+                base.clone(),
+            ];
+            if draft {
+                argv.push("--draft".into());
+            }
+            // No `--head`: gh reads the checked-out branch from the cwd, and
+            // spelling it out breaks a fork, where the head has to be
+            // `owner:branch` rather than the local name.
+            argv.push("--repo".into());
+            argv.push(slug);
+
+            let ahead = porcelain.as_ref().map(|p| p.ahead).unwrap_or(0);
+            let mut warnings: Vec<String> = Vec::new();
+            if ahead > 0 {
+                warnings.push(format!(
+                    "{head} has {ahead} commit{} not pushed yet. Those will not be in the pull request until you push.",
+                    if ahead == 1 { "" } else { "s" }
+                ));
+            }
+
+            Ok(Built {
+                kind: "ghPrCreate".into(),
+                title: format!("Open a pull request from {head}"),
+                description: format!("Into {base}{}.", if draft { ", as a draft" } else { "" }),
+                argv,
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings,
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhPrMerge { repo, number, method, delete_branch } => {
+            let (gh, cwd, slug, label) = gh_pr_target(state, &root, &repo, number).await?;
+
+            // Refused rather than attempted, the way `DiscardChanges` refuses a
+            // clean repo: gh would fail anyway, and a dialog that offers a button
+            // which cannot work is worse than one that explains why.
+            if label.state == "MERGED" {
+                return Err(AppError::Invalid(format!("#{number} is already merged")));
+            }
+            if label.state == "CLOSED" {
+                return Err(AppError::Invalid(format!(
+                    "#{number} is closed. Reopen it first."
+                )));
+            }
+            if label.is_draft {
+                return Err(AppError::Invalid(format!(
+                    "#{number} is a draft. Mark it ready for review first."
+                )));
+            }
+            if label.mergeable == "CONFLICTING" {
+                return Err(AppError::Invalid(format!(
+                    "#{number} has conflicts with {}. Resolve them first.",
+                    label.base_ref
+                )));
+            }
+
+            let flag = match method {
+                MergeMethod::Merge => "--merge",
+                MergeMethod::Squash => "--squash",
+                MergeMethod::Rebase => "--rebase",
+            };
+            let mut argv = vec![
+                gh.display().to_string(),
+                "pr".into(),
+                "merge".into(),
+                number.to_string(),
+                // Exactly one strategy, always: gh prompts when none is given.
+                flag.into(),
+            ];
+            if delete_branch {
+                argv.push("--delete-branch".into());
+            }
+            argv.push("--repo".into());
+            argv.push(slug);
+
+            // Every warning is derived from the label, which is the backend's own
+            // last listing, so none of this is what the row happened to show.
+            let mut warnings: Vec<String> = Vec::new();
+            match label.checks.as_str() {
+                "failing" => warnings.push("CI is failing on this pull request.".into()),
+                "pending" => warnings.push("CI has not finished yet.".into()),
+                "" => warnings.push("This repo has no checks configured, so nothing has verified this.".into()),
+                _ => {}
+            }
+            if label.review_decision == "CHANGES_REQUESTED" {
+                warnings.push("A reviewer has requested changes.".into());
+            } else if label.review_decision != "APPROVED" {
+                warnings.push("Nobody has approved this yet.".into());
+            }
+            if label.mergeable == "UNKNOWN" {
+                warnings.push(
+                    "GitHub has not finished working out whether this merges cleanly."
+                        .into(),
+                );
+            }
+            if delete_branch {
+                // The one case where `--delete-branch` destroys work rather than
+                // tidying up. After a merge the branch's commits are in the base
+                // branch by construction, so deleting it loses nothing, unless
+                // the local branch is ahead of its upstream, in which case those
+                // commits are on this disk and nowhere else, and the delete makes
+                // them unreachable.
+                //
+                // Refused rather than escalated to a typed phrase. The house rule
+                // reserves the phrase for destroying local work, which this is, but
+                // declining to destroy beats asking permission to: the merge still
+                // goes through with the toggle off, so nothing is blocked.
+                let local_ahead = crate::git::list_branches(state, &repo)
+                    .await
+                    .ok()
+                    .and_then(|bs| {
+                        bs.into_iter()
+                            .find(|b| b.local && b.name == label.head_ref)
+                            .map(|b| b.ahead)
+                    })
+                    .unwrap_or(0);
+                if local_ahead > 0 {
+                    return Err(AppError::Invalid(format!(
+                        "{} has {local_ahead} commit{} that {} not pushed. Deleting the branch \
+                         would lose {}, so push or drop {} first, or merge without deleting.",
+                        label.head_ref,
+                        if local_ahead == 1 { "" } else { "s" },
+                        if local_ahead == 1 { "is" } else { "are" },
+                        if local_ahead == 1 { "it" } else { "them" },
+                        if local_ahead == 1 { "it" } else { "them" },
+                    )));
+                }
+                warnings.push(format!(
+                    "Deletes {} both on GitHub and locally.",
+                    label.head_ref
+                ));
+            }
+            let tc_git = tc.require("git")?;
+            if let Some(user) = gh_account_for_repo(state, &tc_git, &cwd).await {
+                warnings.push(format!(
+                    "Acts as {user}, and switches the GitHub CLI to that login for this machine. It stays switched afterwards."
+                ));
+            }
+
+            Ok(Built {
+                kind: "ghPrMerge".into(),
+                title: format!("Merge #{number} into {}", label.base_ref),
+                description: format!("{} ({}).", label.title, match method {
+                    MergeMethod::Merge => "merge commit",
+                    MergeMethod::Squash => "squash",
+                    MergeMethod::Rebase => "rebase",
+                }),
+                argv,
+                cwd,
+                env: vec![],
+                // Medium, not a typed confirm. Typed confirm is for destroying
+                // local work, and a merge is a remote effect; spending the phrase
+                // here would only teach people to type it without reading.
+                danger: Danger::Medium,
+                warnings,
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhPrReview { repo, number, verdict, body } => {
+            let (gh, cwd, slug, label) = gh_pr_target(state, &root, &repo, number).await?;
+            let body = body.trim().to_string();
+
+            // GitHub refuses a self approval. Caught here so the answer is a
+            // sentence rather than an API error in the output pane.
+            if matches!(verdict, ReviewVerdict::Approve) && label.is_mine {
+                return Err(AppError::Invalid(
+                    "GitHub does not let you approve your own pull request".into(),
+                ));
+            }
+            // Both of these need a body, on GitHub's side as well as gh's.
+            if body.is_empty() && !matches!(verdict, ReviewVerdict::Approve) {
+                return Err(AppError::Invalid(
+                    "a comment or a change request needs a body".into(),
+                ));
+            }
+
+            let flag = match verdict {
+                ReviewVerdict::Approve => "--approve",
+                ReviewVerdict::RequestChanges => "--request-changes",
+                ReviewVerdict::Comment => "--comment",
+            };
+            let mut argv = vec![
+                gh.display().to_string(),
+                "pr".into(),
+                "review".into(),
+                number.to_string(),
+                flag.into(),
+            ];
+            if !body.is_empty() {
+                argv.push("--body".into());
+                argv.push(body);
+            }
+            argv.push("--repo".into());
+            argv.push(slug);
+
+            Ok(Built {
+                kind: "ghPrReview".into(),
+                title: format!(
+                    "{} #{number}",
+                    match verdict {
+                        ReviewVerdict::Approve => "Approve",
+                        ReviewVerdict::RequestChanges => "Request changes on",
+                        ReviewVerdict::Comment => "Comment on",
+                    }
+                ),
+                description: label.title.clone(),
+                argv,
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhPrComment { repo, number, body } => {
+            let (gh, cwd, slug, label) = gh_pr_target(state, &root, &repo, number).await?;
+            let body = body.trim().to_string();
+            if body.is_empty() {
+                return Err(AppError::Invalid("a comment needs a body".into()));
+            }
+
+            Ok(Built {
+                kind: "ghPrComment".into(),
+                title: format!("Comment on #{number}"),
+                description: label.title.clone(),
+                argv: vec![
+                    gh.display().to_string(),
+                    "pr".into(),
+                    "comment".into(),
+                    number.to_string(),
+                    "--body".into(),
+                    body,
+                    "--repo".into(),
+                    slug,
+                ],
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhPrClose { repo, number } => {
+            let (gh, cwd, slug, label) = gh_pr_target(state, &root, &repo, number).await?;
+            if label.state != "OPEN" {
+                return Err(AppError::Invalid(format!("#{number} is not open")));
+            }
+            let mut warnings: Vec<String> = vec![format!(
+                "Closes #{number} without merging it. Reopening is possible, but the review \
+                 thread is disturbed either way."
+            )];
+            let tc_git = tc.require("git")?;
+            if let Some(user) = gh_account_for_repo(state, &tc_git, &cwd).await {
+                warnings.push(format!(
+                    "Acts as {user}, and switches the GitHub CLI to that login for this machine. It stays switched afterwards."
+                ));
+            }
+
+            Ok(Built {
+                kind: "ghPrClose".into(),
+                title: format!("Close #{number}"),
+                description: label.title.clone(),
+                argv: vec![
+                    gh.display().to_string(),
+                    "pr".into(),
+                    "close".into(),
+                    number.to_string(),
+                    "--repo".into(),
+                    slug,
+                ],
+                cwd,
+                env: vec![],
+                danger: Danger::Medium,
+                warnings,
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhPrReopen { repo, number } => {
+            let (gh, cwd, slug, label) = gh_pr_target(state, &root, &repo, number).await?;
+            // GitHub's rule, not this app's: a merged pull request is final.
+            if label.state == "MERGED" {
+                return Err(AppError::Invalid(format!(
+                    "#{number} was merged, and GitHub does not reopen a merged pull request"
+                )));
+            }
+            if label.state == "OPEN" {
+                return Err(AppError::Invalid(format!("#{number} is already open")));
+            }
+            Ok(Built {
+                kind: "ghPrReopen".into(),
+                title: format!("Reopen #{number}"),
+                description: label.title.clone(),
+                argv: vec![
+                    gh.display().to_string(),
+                    "pr".into(),
+                    "reopen".into(),
+                    number.to_string(),
+                    "--repo".into(),
+                    slug,
+                ],
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhPrReady { repo, number } => {
+            let (gh, cwd, slug, label) = gh_pr_target(state, &root, &repo, number).await?;
+            Ok(Built {
+                kind: "ghPrReady".into(),
+                title: format!("Mark #{number} ready for review"),
+                description: label.title.clone(),
+                argv: vec![
+                    gh.display().to_string(),
+                    "pr".into(),
+                    "ready".into(),
+                    number.to_string(),
+                    "--repo".into(),
+                    slug,
+                ],
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhPrDraft { repo, number } => {
+            let (gh, cwd, slug, label) = gh_pr_target(state, &root, &repo, number).await?;
+            Ok(Built {
+                kind: "ghPrDraft".into(),
+                title: format!("Convert #{number} back to a draft"),
+                description: label.title.clone(),
+                argv: vec![
+                    gh.display().to_string(),
+                    "pr".into(),
+                    "ready".into(),
+                    number.to_string(),
+                    // gh spells "make this a draft again" as an undo of ready.
+                    "--undo".into(),
+                    "--repo".into(),
+                    slug,
+                ],
+                cwd,
+                env: vec![],
+                danger: Danger::Low,
+                warnings: vec![],
+                typed_confirm: None,
+                repo: Some(repo.clone()),
+                targets: vec![repo],
+                preview: None,
+                task: None,
+                read_only: false,
+                size: None,
+            })
+        }
+
+        ActionSpec::GhPrCheckout { repo, number } => {
+            let (gh, cwd, slug, label) = gh_pr_target(state, &root, &repo, number).await?;
+
+            // The one PR action that touches the working tree, so the one with a
+            // local precondition. Not refused: git declines by itself and names the
+            // files in the way, which is more use than anything guessed here. But a
+            // dirty tree is worth saying out loud first, and Medium is how that gets
+            // said: `gate::skips_confirm` only waives the dialog at Low, so the
+            // escalation restores it for exactly this case and no other.
+            let git = tc.require("git")?;
+            let dirty = crate::git::git_output_public(
+                &git,
+                &cwd,
+                &["status", "--porcelain=v2", "--branch"],
+            )
+            .await
+            .ok()
+            .map(|t| crate::git::parse_porcelain_v2(&t))
+            .map(|p| p.dirty + p.untracked)
+            .unwrap_or(0);
+
+            let mut warnings: Vec<String> = Vec::new();
+            if dirty > 0 {
+                warnings.push(format!(
+                    "{dirty} uncommitted change{} here. git refuses to switch branches over \
+                     them, so commit or stash first.",
+                    if dirty == 1 { "" } else { "s" }
+                ));
+            }
+
+            Ok(Built {
+                kind: "ghPrCheckout".into(),
+                title: format!("Check out #{number}"),
+                description: format!("Switches this repo to {}.", label.head_ref),
+                argv: vec![
+                    gh.display().to_string(),
+                    "pr".into(),
+                    "checkout".into(),
+                    number.to_string(),
+                    "--repo".into(),
+                    slug,
+                ],
+                cwd,
+                env: vec![],
+                danger: if dirty > 0 { Danger::Medium } else { Danger::Low },
+                warnings,
                 typed_confirm: None,
                 repo: Some(repo.clone()),
                 targets: vec![repo],
@@ -4404,6 +4975,108 @@ fn gh_rejected_json_field(message: &str, field: &str) -> bool {
     m.contains("unknown json field") && m.contains(&field.to_lowercase())
 }
 
+/// Resolves everything a `gh pr` action needs, and refuses an unknown PR.
+///
+/// `gh_run_target`'s counterpart, gate for gate. `gh_pr_label` is the closed set:
+/// a number this app never listed for this repo has no label, and without one
+/// there is no action. The label is also where the dialog's facts come from, so
+/// "CI is failing on #12" is the backend's own last answer rather than whatever
+/// the row was rendering when the button was clicked.
+async fn gh_pr_target(
+    state: &Arc<AppState>,
+    root: &std::path::Path,
+    repo: &RepoRef,
+    number: u64,
+) -> AppResult<(PathBuf, PathBuf, String, crate::state::GhPrLabel)> {
+    let tc = state.toolchain();
+    let gh = tc.require("gh")?;
+    let cwd = crate::paths::resolve_repo(root, repo)?;
+
+    let label = state.gh_pr_label(&repo.key(), number).ok_or_else(|| {
+        AppError::Invalid(
+            "that pull request is not in the current list. Refresh the Pull requests tab."
+                .into(),
+        )
+    })?;
+
+    // `--repo` as well as the cwd, for the same reason the run actions pass it: a
+    // repo with two GitHub remotes must not be able to merge a fork's PR.
+    let git = tc.require("git")?;
+    let slug = crate::git::remote_slug(&git, &cwd)
+        .await
+        .ok_or_else(|| AppError::Invalid("this repo has no origin remote".into()))?;
+
+    Ok((gh, cwd, slug, label))
+}
+
+/// Switches gh's active account.
+///
+/// One account is active per machine, which `accounts.rs` spells out: gh has no
+/// per-invocation login flag and no per-repo notion of one, so this is the only
+/// lever there is, and pulling it is a machine-wide side effect that outlives the
+/// action. That is why the merge and close dialogs say so out loud.
+///
+/// Shaped by `git::harden` like every other child here, which is also what nulls
+/// its stdin. `gh auth switch` does not prompt when given `--user`, and a version
+/// that decided to would hang rather than ask.
+async fn gh_switch_account(
+    gh: &std::path::Path,
+    tc: &crate::toolchain::Toolchain,
+    user: &str,
+) -> Result<(), String> {
+    let mut cmd = tokio::process::Command::new(gh);
+    cmd.args(["auth", "switch", "--user", user])
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    crate::git::harden(&mut cmd);
+    tc.apply_path(&mut cmd);
+
+    match tokio::time::timeout(Duration::from_secs(15), cmd.output()).await {
+        Ok(Ok(o)) if o.status.success() => Ok(()),
+        Ok(Ok(o)) => {
+            let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
+            Err(if err.is_empty() {
+                "gh auth switch failed".to_string()
+            } else {
+                err
+            })
+        }
+        Ok(Err(e)) => Err(e.to_string()),
+        Err(_) => Err("gh auth switch timed out after 15s".into()),
+    }
+}
+
+/// The gh login this repo's stored account says to act as, if any.
+///
+/// Matched the way `accounts.rs` matches everywhere else: on the effective
+/// `user.email`, which is `--get` rather than `--global --get` so a repo-level
+/// override wins. That override is the whole point of the repo scope, and it is
+/// how a work laptop holding three personal repos gets this right.
+///
+/// `None` covers every ordinary case: no accounts configured, an email matching
+/// none of them, or an account with no gh login. All of them mean "leave gh alone",
+/// never "fail the action".
+async fn gh_account_for_repo(
+    state: &Arc<AppState>,
+    git: &std::path::Path,
+    repo_path: &std::path::Path,
+) -> Option<String> {
+    let cfg = state.config();
+    if cfg.git_accounts.is_empty() {
+        return None;
+    }
+    let email = crate::git::git_output_public(git, repo_path, &["config", "--get", "user.email"])
+        .await
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    let id = crate::accounts::match_account(&cfg.git_accounts, Some(&email))?;
+    cfg.git_accounts
+        .iter()
+        .find(|a| a.id == id)
+        .and_then(|a| a.gh_user.clone())
+}
+
 /// The last 50 workflow runs, optionally for one workflow. Read-only.
 ///
 /// `workflow` is a *path* (`.github/workflows/ci.yml`) rather than a display
@@ -4474,15 +5147,31 @@ pub async fn list_workflow_runs(
     }
 }
 
-/// Open PRs for one repo.
+/// Pull requests for one repo.
 ///
 /// Never returns Err for the ordinary failure modes — gh missing, not logged in,
 /// no remote — because those are states the detail page must render, not crashes.
+///
+/// `pr_state` is `open` (the default), `closed` or `all`, and it is a closed set
+/// rather than a passthrough: gh understands `merged` as well, the panel has no
+/// such chip, and anything else is the frontend asking for something it could not
+/// have rendered. That *is* an impossible request, so it is the one `Err` here.
+///
+/// The filter exists because reopening depends on it. A PR write is gated on the
+/// PR being in this app's last listing, so while the listing was open-only a
+/// closed PR could never be reopened: the gate had nothing to find.
 #[tauri::command]
 pub async fn list_pull_requests(
     repo: RepoRef,
+    pr_state: Option<String>,
     state: State<'_, Arc<AppState>>,
 ) -> AppResult<PullRequestsResult> {
+    let pr_state = pr_state.unwrap_or_else(|| "open".to_string());
+    if !matches!(pr_state.as_str(), "open" | "closed" | "all") {
+        return Err(AppError::Invalid(format!(
+            "'{pr_state}' is not a pull request state this app lists"
+        )));
+    }
     let root = state.workspace_root();
     let tc = state.toolchain();
     let path = crate::paths::resolve_repo(&root, &repo)?;
@@ -4507,15 +5196,20 @@ pub async fn list_pull_requests(
         "--repo",
         &slug,
         "--state",
-        "open",
+        &pr_state,
         "--limit",
         "50",
         "--json",
         // statusCheckRollup, labels and mergeable ride along on the call that was
         // already being made — gh charges the same round trip for twelve fields or
         // fifteen, and "is CI green" is the first thing anyone asks of a PR list.
+        //
+        // `state` joined them once the list stopped being open-PRs-only: reopening
+        // and closing are opposite directions, and which one a row may offer is
+        // not derivable from anything else here.
         "number,title,author,headRefName,baseRefName,isDraft,reviewDecision,url,\
-         additions,deletions,changedFiles,updatedAt,statusCheckRollup,labels,mergeable",
+         additions,deletions,changedFiles,updatedAt,statusCheckRollup,labels,\
+         mergeable,state",
     ])
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::piped())
@@ -4547,8 +5241,14 @@ pub async fn list_pull_requests(
         return Ok(PullRequestsResult::Failed { message: err });
     }
 
-    let me = gh_current_user(&gh, &tc).await;
+    let st = state.inner().clone();
+    let me = gh_current_user(&st, &gh, &tc).await;
     let prs = parse_gh_prs(&String::from_utf8_lossy(&out.stdout), me.as_deref());
+
+    // The closed set every `ghPr*` action is checked against. This listing is
+    // scoped to the state filter that fetched it, so switching that chip does not
+    // disarm the rows the previous filter put on screen.
+    st.remember_gh_prs(&repo.key(), &prs, &pr_state);
 
     Ok(PullRequestsResult::Ok {
         slug,
@@ -4581,12 +5281,19 @@ pub async fn list_github_projects(
     Ok(crate::github_projects::list_projects(&tc, &owner).await)
 }
 
-/// Cached for the process lifetime — the login does not change while running.
-async fn gh_current_user(gh: &std::path::Path, tc: &crate::toolchain::Toolchain) -> Option<String> {
-    use std::sync::OnceLock;
-    static ME: OnceLock<Option<String>> = OnceLock::new();
-    if let Some(v) = ME.get() {
-        return v.clone();
+/// Who gh is currently signed in as.
+///
+/// Cached on `AppState` rather than in a `static OnceLock`, because the app can now
+/// switch gh itself and the answer feeds `is_mine`, which is what refuses a self
+/// approval. See `AppState::gh_login` for why the cache is kept at all and why it
+/// is invalidated by event rather than by clock.
+async fn gh_current_user(
+    state: &Arc<AppState>,
+    gh: &std::path::Path,
+    tc: &crate::toolchain::Toolchain,
+) -> Option<String> {
+    if let Some(v) = state.cached_gh_login() {
+        return v;
     }
 
     let mut cmd = tokio::process::Command::new(gh);
@@ -4608,7 +5315,7 @@ async fn gh_current_user(gh: &std::path::Path, tc: &crate::toolchain::Toolchain)
         }
         _ => None,
     };
-    let _ = ME.set(login.clone());
+    state.set_gh_login(login.clone());
     login
 }
 
@@ -4678,6 +5385,16 @@ pub fn parse_gh_prs(stdout: &str, me: Option<&str>) -> Vec<PullRequest> {
                     .get("mergeable")
                     .and_then(|m| m.as_str())
                     .unwrap_or("")
+                    .to_string(),
+                // Defaulted to OPEN rather than empty. Every listing before this
+                // field existed was `--state open`, so a row with no `state` is
+                // an open one, and defaulting to empty would make the close
+                // button vanish from every row on a stale cache.
+                state: v
+                    .get("state")
+                    .and_then(|m| m.as_str())
+                    .filter(|m| !m.is_empty())
+                    .unwrap_or("OPEN")
                     .to_string(),
                 updated_relative: if updated_unix > 0 {
                     crate::git::relative_time(updated_unix, now)
@@ -5736,6 +6453,28 @@ on:
         assert!(parse_gh_prs("[]", None).is_empty());
         assert!(parse_gh_prs("not json", None).is_empty());
         assert!(parse_gh_prs("", None).is_empty());
+    }
+    #[test]
+    fn a_pr_with_no_state_field_is_treated_as_open() {
+        // Every listing before the state filter existed was `--state open`, so a
+        // row with no `state` is an open one. Defaulting to empty instead would
+        // make Close disappear from every row served by a stale cache.
+        let json = r#"[{"number":1,"title":"t","headRefName":"h","baseRefName":"b"}]"#;
+        assert_eq!(parse_gh_prs(json, None)[0].state, "OPEN");
+    }
+
+    #[test]
+    fn a_pr_state_is_carried_through_verbatim() {
+        // gh's own vocabulary, uppercased, like `mergeable` and `reviewDecision`
+        // beside it. The arms compare against these exact strings to refuse
+        // merging a merged PR and reopening one.
+        for want in ["OPEN", "CLOSED", "MERGED"] {
+            let json = format!(r#"[{{"number":1,"state":"{want}"}}]"#);
+            assert_eq!(parse_gh_prs(&json, None)[0].state, want);
+        }
+        // An empty string is gh declining to say, which is not a fourth state.
+        let json = r#"[{"number":1,"state":""}]"#;
+        assert_eq!(parse_gh_prs(json, None)[0].state, "OPEN");
     }
 
     #[test]

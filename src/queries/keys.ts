@@ -1,3 +1,5 @@
+import type { PrStateFilter } from '@/domain/types'
+
 export const keys = {
   bootstrap: ['bootstrap'] as const,
   config: ['config'] as const,
@@ -20,7 +22,9 @@ export const keys = {
   repoPackages: (key: string) => ['repoPackages', key] as const,
   repoPackageUpdates: (key: string) => ['repoPackageUpdates', key] as const,
   depVersions: (key: string, name: string) => ['depVersions', key, name] as const,
-  prs: (key: string) => ['prs', key] as const,
+  // `state` last, for the same reason `ghRuns` puts `workflow` last: invalidating
+  // the 2-element prefix ['prs', id] then clears open, closed and all at once.
+  prs: (key: string, state: PrStateFilter) => ['prs', key, state] as const,
   ghWorkflows: (key: string) => ['ghWorkflows', key] as const,
   // `workflow` last, so invalidating the 2-element prefix ['ghRuns', id] clears
   // every filter at once — the same trick `repoCommits` uses for its page size.

@@ -346,6 +346,13 @@ export interface Config {
   trackedPackage: string | null
   devCommandOverrides: Record<string, string[]>
   portOverrides: Record<string, number>
+  /**
+   * How each repo prefers to merge a PR, by repo key. A missing entry means squash.
+   *
+   * Per repo because the answer belongs to the project: a repo with a linear-history
+   * rule wants one strategy and nothing else.
+   */
+  mergeMethodOverrides: Record<string, MergeMethod>
   maxLogLinesPerRun: number
   /**
    * Minutes between background fetches; 0 turns it off.
@@ -388,6 +395,7 @@ export interface ConfigPatch {
   preferredPackageManager?: string | null
   devCommandOverrides?: Record<string, string[]>
   portOverrides?: Record<string, number>
+  mergeMethodOverrides?: Record<string, MergeMethod>
   /** Replaces the list. `[]` is a real value: show everything again. */
   stacks?: string[]
   /** `null` clears the choice, i.e. back to unconfigured. */
@@ -500,6 +508,15 @@ export interface PullRequest {
   labels: string[]
   /** gh's mergeable: MERGEABLE / CONFLICTING / UNKNOWN, or ''. */
   mergeable: string
+  /**
+   * gh's `state`: OPEN / CLOSED / MERGED.
+   *
+   * Only interesting since the listing stopped being open-only. Which of close and
+   * reopen a row may offer follows from this and nothing else, and a merged pull
+   * request can be neither.
+   */
+  state: 'OPEN' | 'CLOSED' | 'MERGED'
+
 }
 
 /** gh is optional and often unauthenticated, so absence is data, not an error. */
@@ -948,6 +965,27 @@ export interface TermExit {
   endedUnix: number
 }
 
+/**
+ * Which pull requests a listing asks for.
+ *
+ * A closed set rather than a passthrough to gh, which also understands `merged`.
+ * Reopening needs this to exist at all: a PR write is gated on the PR being in the
+ * last listing, so a closed one has to be listable before it can be reopened.
+ */
+export type PrStateFilter = 'open' | 'closed' | 'all'
+
+/**
+ * How `gh pr merge` lands the commits.
+ *
+ * A closed set, unlike the PR fields that come back *from* gh as bare strings. The
+ * asymmetry follows the direction of the data: a value gh reports has to survive gh
+ * inventing a new one, a value that becomes a command-line flag must not.
+ */
+export type MergeMethod = 'merge' | 'squash' | 'rebase'
+
+/** What a review says. */
+export type ReviewVerdict = 'approve' | 'requestChanges' | 'comment'
+
 export type ActionSpec =
   | { kind: 'pull'; ref: RepoRef }
   | { kind: 'pullMany'; refs: RepoRef[] }
@@ -1021,6 +1059,39 @@ export type ActionSpec =
   | { kind: 'ghRunLog'; ref: RepoRef; runId: number; failedOnly?: boolean }
   | { kind: 'ghRunRerun'; ref: RepoRef; runId: number; failedOnly?: boolean }
   | { kind: 'ghRunCancel'; ref: RepoRef; runId: number }
+  /**
+   * Open a pull request from the repo's checked-out branch.
+   *
+   * The head branch is read from git in Rust, not sent from here, and a branch
+   * with no upstream is refused: gh asks where to push it, and every child process
+   * in the backend has its stdin closed, so the question becomes a hang.
+   */
+  | {
+      kind: 'ghPrCreate'
+      ref: RepoRef
+      title: string
+      body?: string
+      base: string
+      draft?: boolean
+    }
+  | {
+      kind: 'ghPrMerge'
+      ref: RepoRef
+      number: number
+      method: MergeMethod
+      /** Deletes the local branch as well as the remote one. */
+      deleteBranch?: boolean
+    }
+  | { kind: 'ghPrReview'; ref: RepoRef; number: number; verdict: ReviewVerdict; body?: string }
+  /** An ordinary comment, not a review. */
+  | { kind: 'ghPrComment'; ref: RepoRef; number: number; body: string }
+  | { kind: 'ghPrClose'; ref: RepoRef; number: number }
+  | { kind: 'ghPrReopen'; ref: RepoRef; number: number }
+  | { kind: 'ghPrReady'; ref: RepoRef; number: number }
+  /** Back to a draft. `gh pr ready --undo`. */
+  | { kind: 'ghPrDraft'; ref: RepoRef; number: number }
+  /** `gh pr checkout`, which unlike a plain git checkout also works for a fork. */
+  | { kind: 'ghPrCheckout'; ref: RepoRef; number: number }
   /** `workflow_dispatch`. Values are free text; keys are checked in Rust. */
   | {
       kind: 'ghWorkflowRun'
@@ -1050,6 +1121,15 @@ export interface ActionIntent {
   targets: RepoRef[]
   /** True for read-only inspections, which the UI runs without a dialog. */
   readOnly: boolean
+  /**
+   * True for a mutating action that still runs without a dialog.
+   *
+   * Separate from `readOnly`, which used to mean both "changes nothing" and "needs
+   * no dialog" and so could not express "confirm the two that matter". Rust decides
+   * this, in one list, and nothing about the gate itself relaxes: the argv is still
+   * resolved and frozen there, and the intent is still single-use with a deadline.
+   */
+  autoConfirm: boolean
 }
 
 export interface ScanOptions {

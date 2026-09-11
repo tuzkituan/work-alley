@@ -93,6 +93,33 @@ describe('staleKeysFor', () => {
     expect(heads('ghRunLog')).toEqual(['runs'])
   })
 
+  it('refetches only the PR list after a PR write GitHub alone knows about', () => {
+    // An approve or a comment changes nothing on disk, so none of the git views
+    // move. `prs` is the expensive key this table exists to protect, and it is
+    // exactly the one that did change.
+    for (const kind of [
+      'ghPrCreate',
+      'ghPrReview',
+      'ghPrComment',
+      'ghPrClose',
+      'ghPrReopen',
+      'ghPrReady',
+      'ghPrDraft',
+    ]) {
+      expect(heads(kind).sort()).toEqual(['prs', 'runs'].sort())
+    }
+  })
+
+  it('also refetches the git views after a merge or a PR checkout', () => {
+    // The two that touch the working tree: a merge can delete the local branch and
+    // lands commits on the base, and a PR checkout switches branch outright.
+    for (const kind of ['ghPrMerge', 'ghPrCheckout']) {
+      expect(heads(kind).sort()).toEqual(
+        ['branches', 'changedFiles', 'prs', 'repoCommits', 'runs'].sort()
+      )
+    }
+  })
+
   it('treats an unknown kind as harmless rather than throwing', () => {
     expect(heads('somethingNew')).toEqual(['runs'])
   })

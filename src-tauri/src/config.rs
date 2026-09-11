@@ -36,6 +36,18 @@ pub struct Config {
     pub dev_command_overrides: BTreeMap<String, Vec<String>>,
     #[serde(default)]
     pub port_overrides: BTreeMap<String, u16>,
+    /// How each repo prefers to merge a pull request, by `RepoRef::key()`.
+    ///
+    /// Per repo rather than one global setting, because the answer is a property of
+    /// the project and not of the person: a repo with a linear-history rule wants
+    /// squash or rebase and nothing else, and being asked every time is how people
+    /// end up picking the wrong one on the repo that cares.
+    ///
+    /// A missing entry means squash. Stored as a string rather than
+    /// `model::MergeMethod` so a config written by a later version that learned a
+    /// fourth strategy still loads; the value is validated on the way in.
+    #[serde(default)]
+    pub merge_method_overrides: BTreeMap<String, String>,
     pub max_log_lines_per_run: usize,
     /// Minutes between background fetches; 0 turns it off.
     ///
@@ -129,6 +141,7 @@ impl Config {
             tracked_package: None,
             dev_command_overrides: BTreeMap::new(),
             port_overrides: BTreeMap::new(),
+            merge_method_overrides: BTreeMap::new(),
             max_log_lines_per_run: 5_000,
             auto_fetch_minutes: default_auto_fetch_minutes(),
             preferred_package_manager: None,
@@ -225,6 +238,7 @@ pub struct ConfigPatch {
     pub github_project: Option<Option<crate::model::GithubProjectRef>>,
     pub dev_command_overrides: Option<BTreeMap<String, Vec<String>>>,
     pub port_overrides: Option<BTreeMap<String, u16>>,
+    pub merge_method_overrides: Option<BTreeMap<String, String>>,
     /// Replaces the list wholesale; an empty vec is a real value meaning "show me
     /// everything again", which is why this is not `Option<Option<_>>` like the
     /// package manager.
@@ -300,6 +314,15 @@ impl ConfigPatch {
         }
         if let Some(v) = self.port_overrides {
             c.port_overrides = v;
+        }
+        if let Some(v) = self.merge_method_overrides {
+            // Only the three gh implements. An unknown strategy would otherwise sit
+            // in the config until someone clicked Merge and got a flag gh rejects,
+            // which is a long way from where it was chosen.
+            c.merge_method_overrides = v
+                .into_iter()
+                .filter(|(_, m)| matches!(m.as_str(), "merge" | "squash" | "rebase"))
+                .collect();
         }
     }
 }

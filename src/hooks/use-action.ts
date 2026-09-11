@@ -55,8 +55,12 @@ export const useActionStore = create<ActionState>()((set, get) => ({
     try {
       const intent = await api.prepareAction(spec)
 
-      if (intent.readOnly) {
-        // Nothing is mutated, so there is nothing to confirm.
+      if (intent.readOnly || intent.autoConfirm) {
+        // `readOnly` mutates nothing, so there is nothing to confirm. `autoConfirm`
+        // does mutate, and Rust has said this particular write does not warrant a
+        // dialog: a PR comment or an approve, where the click is the decision.
+        // Rust decides which; see `runs_without_confirmation`. Everything else
+        // about the gate is unchanged, including that this id is single use.
         armFocus(intent.kind)
         await api.runAction(intent.id)
         set({ pending: false, lastRan: spec })

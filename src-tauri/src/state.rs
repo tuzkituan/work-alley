@@ -45,6 +45,41 @@ pub struct GhRunLabel {
     pub branch: String,
 }
 
+/// What a pull request is, in the words the merge dialog needs.
+///
+/// Carries more than `GhRunLabel` on purpose. A re-run only has to name itself,
+/// but a merge has to state whether CI passed, whether the branch conflicts and
+/// whether anyone approved, and every one of those has to be the backend's own
+/// last answer rather than what the row was showing when the button was clicked.
+/// The alternative is a dialog that says "checks passing" about a PR that went red
+/// two minutes ago.
+///
+/// The fields are the same shapes `PullRequest` uses, strings included, because
+/// they are copied straight off it and comparing them to gh's vocabulary is the
+/// whole job.
+#[derive(Debug, Clone)]
+pub struct GhPrLabel {
+    pub number: u64,
+    pub title: String,
+    pub head_ref: String,
+    pub base_ref: String,
+    pub is_draft: bool,
+    /// gh's `mergeable`: MERGEABLE / CONFLICTING / UNKNOWN, or empty.
+    pub mergeable: String,
+    /// Rolled-up CI: "passing" / "failing" / "pending", or empty for a repo with
+    /// no checks configured, which is not the same as passing.
+    pub checks: String,
+    /// gh's `reviewDecision`: APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED, or
+    /// empty.
+    pub review_decision: String,
+    /// Whether the PR is the current gh login's own. GitHub refuses a self
+    /// approval, so this is a gate and not a badge.
+    pub is_mine: bool,
+    /// gh's `state`: OPEN / CLOSED / MERGED. What makes close and reopen refuse
+    /// each other's cases, and makes merging a merged PR impossible to ask for.
+    pub state: String,
+}
+
 /// A workflow, in the words a dispatch needs: its display name, and the inputs it
 /// declares once anyone has asked.
 #[derive(Debug, Clone, Default)]
@@ -120,6 +155,30 @@ pub struct AppState {
     /// The label rides along so the confirmation dialog's text is server-derived
     /// too. Bounded: one 50-ish entry map per repo, cleared on workspace switch.
     pub gh_runs: Mutex<HashMap<String, HashMap<u64, GhRunLabel>>>,
+    /// Pull request numbers most recently listed for each repo, by `RepoRef::key()`.
+    ///
+    /// The same closed set as `gh_runs`, for the same reason and with the same
+    /// caveat: a PR number is a `u64`, so this is scope rather than sanitisation.
+    /// What it prevents is a stale panel merging a PR in a repo nobody is looking
+    /// at, and it is the only thing standing between a `number` the frontend made
+    /// up and an argv.
+    pub gh_prs: Mutex<HashMap<String, HashMap<u64, GhPrLabel>>>,
+    /// The gh login `gh api user` last reported, cached until something switches it.
+    ///
+    /// This was a `static OnceLock` on the reasoning that the login does not change
+    /// while the app runs. Switching accounts from inside the app makes that false
+    /// on purpose, and the stale answer is not cosmetic: it feeds `is_mine`, which
+    /// is what refuses a self approval, and GitHub rejects those.
+    ///
+    /// The cache stays, because the alternative is a network round trip on every PR
+    /// listing. What changes is that it can now be dropped. `None` means "not asked
+    /// yet"; `Some(None)` means "asked, and gh could not say", which is a real
+    /// answer worth keeping rather than a reason to ask again every time.
+    ///
+    /// Deliberately not invalidated on a timer. Every switch this app performs
+    /// clears it; a switch made in a terminal behind the app's back is stale until
+    /// restart, which is what it already was.
+    gh_login: Mutex<Option<Option<String>>>,
     /// Workflows most recently listed for each repo, by `RepoRef::key()` then by
     /// path — the closed set `GhWorkflowRun` is checked against.
     ///
@@ -157,6 +216,8 @@ impl AppState {
             dev: Mutex::new(HashMap::new()),
             dev_meta: Mutex::new(HashMap::new()),
             gh_runs: Mutex::new(HashMap::new()),
+            gh_prs: Mutex::new(HashMap::new()),
+            gh_login: Mutex::new(None),
             gh_workflows: Mutex::new(HashMap::new()),
             last_scan: RwLock::new(None),
             scan_cancel: Mutex::new(HashMap::new()),
@@ -184,6 +245,7 @@ impl AppState {
         self.dev.lock().unwrap().clear();
         self.dev_meta.lock().unwrap().clear();
         self.gh_runs.lock().unwrap().clear();
+        self.gh_prs.lock().unwrap().clear();
         self.gh_workflows.lock().unwrap().clear();
         self.intents.lock().unwrap().clear();
         // `ptys` is deliberately *not* cleared. A shell you are halfway through a
@@ -465,6 +527,82 @@ impl AppState {
             .unwrap()
             .get(repo_key)
             .and_then(|m| m.get(&run_id))
+            .cloned()
+    }
+
+    /// Records the pull requests a listing just handed to the UI.
+    ///
+    /// Merges rather than replacing, for the reason `remember_gh_runs` merges a
+    /// filtered listing: the panel can be showing open PRs or closed ones, and
+    /// switching that chip must not disarm the buttons on rows that were on
+    /// screen a moment ago. `all` is the one authoritative superset, so it
+    /// replaces.
+    ///
+    /// A row left behind by a narrower filter going stale is not a hole in the
+    /// gate. Every label carries its `state`, and the arms refuse on it: a PR
+    /// merged elsewhere cannot be merged again through a stale label, because
+    /// the label says `OPEN` and gh and GitHub both disagree, and the arm asks
+    /// GitHub rather than trusting the map.
+    pub fn remember_gh_prs(
+        &self,
+        repo_key: &str,
+        prs: &[crate::model::PullRequest],
+        pr_state: &str,
+    ) {
+        const CAP: usize = 500;
+        let mut all = self.gh_prs.lock().unwrap();
+        let entry = all.entry(repo_key.to_string()).or_default();
+        if pr_state == "all" || entry.len() > CAP {
+            // Same reasoning as the runs map: there is no ordering to evict by,
+            // and the point is only that this stays bounded.
+            entry.clear();
+        }
+        for p in prs {
+            entry.insert(
+                p.number,
+                GhPrLabel {
+                    number: p.number,
+                    title: p.title.clone(),
+                    head_ref: p.head_ref.clone(),
+                    base_ref: p.base_ref.clone(),
+                    is_draft: p.is_draft,
+                    mergeable: p.mergeable.clone(),
+                    checks: p.checks.clone(),
+                    review_decision: p.review_decision.clone(),
+                    is_mine: p.is_mine,
+                    state: p.state.clone(),
+                },
+            );
+        }
+    }
+
+    /// The cached gh login, or None when nothing has asked yet.
+    ///
+    /// The double option is load-bearing: the outer one is "is there a cached
+    /// answer", the inner one is "did gh have a login to report".
+    pub fn cached_gh_login(&self) -> Option<Option<String>> {
+        self.gh_login.lock().unwrap().clone()
+    }
+
+    pub fn set_gh_login(&self, login: Option<String>) {
+        *self.gh_login.lock().unwrap() = Some(login);
+    }
+
+    /// Drops the cached login. Called by every path that switches gh.
+    pub fn forget_gh_login(&self) {
+        *self.gh_login.lock().unwrap() = None;
+    }
+
+    /// The label for a PR this app listed, or None if it never did.
+    ///
+    /// None is the gate, exactly as in `gh_run_label`: a merge for a number that
+    /// was never listed is refused before an argv exists.
+    pub fn gh_pr_label(&self, repo_key: &str, number: u64) -> Option<GhPrLabel> {
+        self.gh_prs
+            .lock()
+            .unwrap()
+            .get(repo_key)
+            .and_then(|m| m.get(&number))
             .cloned()
     }
 

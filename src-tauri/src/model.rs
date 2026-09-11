@@ -483,6 +483,12 @@ pub struct PullRequest {
     pub labels: Vec<String>,
     /// gh's mergeable: MERGEABLE / CONFLICTING / UNKNOWN, or "".
     pub mergeable: String,
+    /// gh's `state`: OPEN / CLOSED / MERGED.
+    ///
+    /// Only interesting once the listing stopped being open-only. Which of close
+    /// and reopen a row may offer follows from this and from nothing else, and a
+    /// merged pull request can be neither.
+    pub state: String,
 }
 
 /// `gh` is optional and often unauthenticated, so absence is modelled as data.
@@ -1217,6 +1223,44 @@ pub struct SetupPlan {
 
 // --- actions ----------------------------------------------------------------
 
+/// How `gh pr merge` should land the commits.
+///
+/// A real enum, where the PR fields coming *out* of gh (`review_decision`,
+/// `mergeable`, `checks`) are all bare `String`. The asymmetry is deliberate and
+/// runs in the direction of the data: a value gh reports has to tolerate gh
+/// inventing a new one next release, while a value that becomes a command-line
+/// flag must not. A closed set here means an unknown strategy cannot reach an
+/// argv at all, which is the same reasoning `DirtyPolicy` is built on.
+///
+/// gh prompts for a strategy when none of the three flags is passed, and
+/// `git::harden` nulls stdin for every child in this crate, so a prompt is not a
+/// question but a hang turned into a failure. Exactly one flag, always.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MergeMethod {
+    /// `--merge`: a merge commit, history kept as it happened.
+    Merge,
+    /// `--squash`: one commit on the base branch. The default, and what most
+    /// review-then-land workflows expect.
+    Squash,
+    /// `--rebase`: the commits replayed onto the base, so no merge commit.
+    Rebase,
+}
+
+/// What a review says. `gh pr review --approve` / `--request-changes` / `--comment`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ReviewVerdict {
+    Approve,
+    /// gh requires a body for this one, and so does GitHub. Refused earlier, in
+    /// `build_action`, rather than letting gh fail in the output pane.
+    RequestChanges,
+    /// A review that neither approves nor blocks. Distinct from
+    /// `ActionSpec::GhPrComment`, which posts an ordinary issue comment instead
+    /// of a review.
+    Comment,
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum ActionSpec {
@@ -1508,6 +1552,93 @@ pub enum ActionSpec {
         repo: RepoRef,
         run_id: u64,
     },
+    /// Open a pull request from the repo's current branch.
+    ///
+    /// The only PR variant with no `number`, because there is no PR yet and so
+    /// nothing to check against the closed set. What stands in for that gate is
+    /// narrower: `base` is checked against `git::valid_branch_name`, and the head
+    /// is left to gh, which uses the checked-out branch.
+    ///
+    /// `title` and `body` are free text, like `Commit`'s message, and safe for the
+    /// same reason: argv reaches the child directly and never through a shell. A
+    /// title is always sent even when empty, because gh prompts without one.
+    GhPrCreate {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        title: String,
+        #[serde(default)]
+        body: String,
+        /// The branch to merge into.
+        base: String,
+        #[serde(default)]
+        draft: bool,
+    },
+    /// Merge a pull request.
+    ///
+    /// Gated on `state::gh_pr_label`, the closed set `list_pull_requests` fills,
+    /// the same way every `GhRun*` variant is gated on `gh_run_label`. The label
+    /// is also where the dialog's warnings come from, so "CI is failing" is the
+    /// backend's own last answer rather than what the row happened to show.
+    GhPrMerge {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        number: u64,
+        method: MergeMethod,
+        /// `--delete-branch`, which deletes the **local** branch as well as the
+        /// remote one. The one PR action that destroys local work.
+        #[serde(default)]
+        delete_branch: bool,
+    },
+    /// Approve, request changes on, or comment on a pull request as a review.
+    GhPrReview {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        number: u64,
+        verdict: ReviewVerdict,
+        #[serde(default)]
+        body: String,
+    },
+    /// Post an ordinary comment, not a review.
+    GhPrComment {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        number: u64,
+        body: String,
+    },
+    /// Close a pull request without merging it.
+    GhPrClose {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        number: u64,
+    },
+    /// Reopen a closed pull request.
+    GhPrReopen {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        number: u64,
+    },
+    /// Take a pull request out of draft.
+    GhPrReady {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        number: u64,
+    },
+    /// Put a pull request back into draft. `gh pr ready --undo`.
+    GhPrDraft {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        number: u64,
+    },
+    /// Check out a pull request's branch locally.
+    ///
+    /// `gh pr checkout <n>`, not `git checkout <branch>`. The difference is forks:
+    /// a fork PR's `headRefName` does not exist on `origin`, so the plain git
+    /// checkout the panel used to offer could only ever work for same-repo PRs.
+    GhPrCheckout {
+        #[serde(rename = "ref")]
+        repo: RepoRef,
+        number: u64,
+    },
 }
 
 /// Initial terminal geometry, measured by the pane that will host it.
@@ -1545,6 +1676,19 @@ pub struct ActionIntent {
     pub expires_unix: i64,
     pub targets: Vec<RepoRef>,
     pub read_only: bool,
+    /// Run without a confirmation dialog even though this action mutates.
+    ///
+    /// `read_only` used to carry both meanings at once, which made "confirm the
+    /// two that matter and nothing else" impossible to express. Splitting them
+    /// costs one field and weakens nothing that `read_only` was protecting: the
+    /// frontend still sends an `ActionSpec` rather than an argv, `prepare_action`
+    /// still resolves and freezes that argv here, and `run_action` still takes
+    /// only the opaque id, still consumes it once, and still checks the TTL. The
+    /// dialog is the only thing this skips.
+    ///
+    /// Set for the PR writes that are a click on a row with nothing to weigh up.
+    /// Merging and closing keep their dialog.
+    pub auto_confirm: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]

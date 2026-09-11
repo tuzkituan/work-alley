@@ -19,7 +19,10 @@ export function staleKeysFor(kind: string, id: RepoId): readonly unknown[][] {
   const changed = [...keys.changedFiles(id)]
   const commits = ['repoCommits', id]
   const branches = [...keys.branches(id)]
-  const prs = [...keys.prs(id)]
+  // Written literally rather than through `keys.prs`, which now takes a state
+  // filter this table does not have: the prefix is the point, and it covers every
+  // filter.
+  const prs = ['prs', id]
   const ghRuns = ['ghRuns', id]
   const deps = [...keys.repoPackages(id)]
   const depUpdates = [...keys.repoPackageUpdates(id)]
@@ -81,6 +84,25 @@ export function staleKeysFor(kind: string, id: RepoId): readonly unknown[][] {
     case 'ghRunCancel':
     case 'ghWorkflowRun':
       return [ghRuns, ...always]
+
+    // The PR writes that GitHub alone knows about. Nothing local moved, so only
+    // the PR list is stale. `prs` is the expensive key this table exists to
+    // protect, but here it is the one thing that definitely did change.
+    case 'ghPrCreate':
+    case 'ghPrReview':
+    case 'ghPrComment':
+    case 'ghPrClose':
+    case 'ghPrReopen':
+    case 'ghPrReady':
+    case 'ghPrDraft':
+      return [prs, ...always]
+
+    // A merge can also delete the local branch, and lands commits on the base
+    // branch that a later pull will bring down. `ghPrCheckout` switches branch
+    // outright. Both move the local tree, so the git views go with them.
+    case 'ghPrMerge':
+    case 'ghPrCheckout':
+      return [changed, commits, branches, prs, ...always]
 
     // Read-only, or nothing to do with git state: status, diff, logGraph,
     // branchList, stashList, openShell, openInEditor, killPort, dockerPs…

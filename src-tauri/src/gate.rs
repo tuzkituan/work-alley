@@ -5,6 +5,7 @@
 //! operation itself, which is why there is no "used" flag to get wrong.
 
 use crate::error::{AppError, AppResult};
+use crate::model::Danger;
 use std::time::Instant;
 
 pub fn check_expiry(expires_at: Instant, now: Instant) -> AppResult<()> {
@@ -26,6 +27,42 @@ pub fn check_typed_confirm(expected: Option<&str>, given: Option<&str>) -> AppRe
             _ => Err(AppError::ConfirmMismatch),
         },
     }
+}
+
+/// Whether a mutating action runs without a confirmation dialog.
+///
+/// `read_only` used to answer both "does this change anything" and "does this need
+/// a dialog", which made "confirm the two that matter and nothing else" impossible
+/// to say. This is the second question only; `read_only` keeps its one meaning.
+///
+/// Three conditions, and all of them have to hold. The allowlist is the policy: a
+/// deliberately short list of PR writes where the click is itself the decision, or
+/// where a form already collected one. The other two are structural, and they are
+/// the reason this is a function rather than a field on every action: an intent
+/// that carries a typed phrase or `Danger::High` **cannot** be auto-confirmed, no
+/// matter what any future caller puts in the list.
+///
+/// `Danger::Low` also makes the flag computed rather than fixed, which one arm
+/// leans on: a PR checkout of a dirty tree is Medium, so the single case with
+/// something worth reading gets a dialog to read it in.
+///
+/// Merging and closing are absent on purpose. Both are hard to walk back, and both
+/// carry warnings that exist to be read.
+///
+/// The allowlist is still needed rather than "Low danger alone": `gitIdentity` and
+/// `useGitAccount` are both Low mutations that must keep their dialogs.
+pub fn skips_confirm(kind: &str, danger: Danger, typed: Option<&str>) -> bool {
+    let allowed = matches!(
+        kind,
+        "ghPrCreate"
+            | "ghPrReview"
+            | "ghPrComment"
+            | "ghPrReopen"
+            | "ghPrReady"
+            | "ghPrDraft"
+            | "ghPrCheckout"
+    );
+    allowed && danger == Danger::Low && typed.is_none()
 }
 
 #[cfg(test)]
@@ -66,6 +103,61 @@ mod tests {
                 "TYPED_CONFIRM_MISMATCH",
                 "expected {given:?} to be refused"
             );
+        }
+    }
+
+    #[test]
+    fn the_light_pr_writes_skip_their_dialog() {
+        for kind in [
+            "ghPrCreate",
+            "ghPrReview",
+            "ghPrComment",
+            "ghPrReopen",
+            "ghPrReady",
+            "ghPrDraft",
+            "ghPrCheckout",
+        ] {
+            assert!(skips_confirm(kind, Danger::Low, None), "{kind}");
+        }
+    }
+
+    #[test]
+    fn merging_and_closing_always_confirm() {
+        // The requirement, and the whole reason this function exists.
+        for kind in ["ghPrMerge", "ghPrClose"] {
+            for danger in [Danger::Low, Danger::Medium, Danger::High] {
+                assert!(!skips_confirm(kind, danger, None), "{kind} at {danger:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn danger_and_a_typed_phrase_override_the_allowlist() {
+        // Structural, not a convention: an arm that escalates its own danger gets
+        // its dialog back without touching this list. `ghPrCheckout` does exactly
+        // that on a dirty tree.
+        assert!(!skips_confirm("ghPrCheckout", Danger::Medium, None));
+        assert!(!skips_confirm("ghPrCheckout", Danger::High, None));
+        assert!(!skips_confirm("ghPrCheckout", Danger::Low, Some("discard")));
+    }
+
+    #[test]
+    fn everything_else_keeps_its_dialog() {
+        // Including the two Low-danger mutations that are not PR writes, which is
+        // why the allowlist cannot be replaced by a danger check alone.
+        for kind in [
+            "gitIdentity",
+            "useGitAccount",
+            "push",
+            "commit",
+            "discardChanges",
+            "ghRunRerun",
+            "prList",
+            "",
+            "ghPr",
+            "ghPrSomethingNew",
+        ] {
+            assert!(!skips_confirm(kind, Danger::Low, None), "{kind}");
         }
     }
 }

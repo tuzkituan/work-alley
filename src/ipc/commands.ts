@@ -13,6 +13,7 @@ import type {
   DepUpdateReport,
   GithubProjectListResult,
   PackageStatus,
+  PrStateFilter,
   PackageVersion,
   ProjectItemsResult,
   PullRequestsResult,
@@ -165,7 +166,8 @@ export const api = {
   listDepVersions: (repo: RepoRef, pkg: string) =>
     call<PackageVersion[]>('list_dep_versions', { repo, package: pkg }),
 
-  listPullRequests: (repo: RepoRef) => call<PullRequestsResult>('list_pull_requests', { repo }),
+  listPullRequests: (repo: RepoRef, prState: PrStateFilter = 'open') =>
+    call<PullRequestsResult>('list_pull_requests', { repo, prState }),
   /** The configured GitHub Projects v2 board's items. Reads Config itself — no args. */
   listGithubProjectItems: () => call<ProjectItemsResult>('list_github_project_items'),
   /** Projects for one owner, for the Settings picker. */
